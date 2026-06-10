@@ -172,6 +172,7 @@ def sanitize_project_dirname(name):
 class FileStat:
     def __init__(self, path, project_dir):
         self.path = path
+        self.source = path  # original location (snapshot copies override this)
         self.project_dir = project_dir
         self.mtime = path.stat().st_mtime
         self.size = path.stat().st_size
@@ -368,29 +369,47 @@ def run_ccusage(version, subcommand, config_dir):
     return json.loads(out.stdout), cmd
 
 
-def capture_expectations(version, selected, project_dirs, expected_dir):
+def snapshot_selected(selected, snap_root):
+    """Copy each selected file ONCE into a temp fake config tree and rescan.
+
+    Claude Code appends to live session logs while we run; sanitizing and
+    expectation-capturing from the same frozen snapshot is the only way to
+    keep the committed fixtures and the fixture-scoped ccusage expectations
+    consistent with each other. Returns fresh FileStats pointing at the
+    snapshot copies (criteria and original source path carried over).
+    """
+    frozen = []
+    for stat in selected:
+        d = snap_root / "projects" / sanitize_project_dirname(stat.project_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        dest = d / stat.path.name
+        shutil.copyfile(stat.path, dest)
+        fresh = FileStat(dest, stat.project_dir)
+        fresh.scan()
+        fresh.criteria = stat.criteria
+        fresh.source = stat.path
+        frozen.append(fresh)
+    return frozen
+
+
+def capture_expectations(version, snap_root, project_dirs, expected_dir):
     expected_dir.mkdir(parents=True, exist_ok=True)
     commands = {}
 
-    # fixture-scoped set (CI): originals of selected files under sanitized names
-    with tempfile.TemporaryDirectory(prefix="tatitok-harvest-") as tmp:
-        tmp_projects = Path(tmp) / "projects"
-        for stat in selected:
-            d = tmp_projects / sanitize_project_dirname(stat.project_dir)
-            d.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(stat.path, d / stat.path.name)
-        for sub, fname in (("daily", "ccusage-daily.json"),
-                           ("session", "ccusage-session.json")):
-            data, cmd = run_ccusage(version, sub, tmp)
-            (expected_dir / fname).write_text(
-                json.dumps(data, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8")
-            commands[fname] = {
-                "command": cmd,
-                "CLAUDE_CONFIG_DIR": "<temp fixture tree>",
-                "scope": "fixture",
-            }
-            print("  wrote expected/%s" % fname)
+    # fixture-scoped set (CI): the frozen snapshot tree is already laid out
+    # as a fake config root (projects/<sanitized-dir>/<session>.jsonl)
+    for sub, fname in (("daily", "ccusage-daily.json"),
+                       ("session", "ccusage-session.json")):
+        data, cmd = run_ccusage(version, sub, str(snap_root))
+        (expected_dir / fname).write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        commands[fname] = {
+            "command": cmd,
+            "CLAUDE_CONFIG_DIR": "<frozen fixture snapshot tree>",
+            "scope": "fixture",
+        }
+        print("  wrote expected/%s" % fname)
 
     # full-history set (local parity): the real config roots
     roots = ",".join(str(p.parent) for p in project_dirs)
@@ -479,12 +498,18 @@ def main():
     print("selected %d fixture files:" % len(selected))
 
     out_root.mkdir(parents=True, exist_ok=True)
+    snap_ctx = tempfile.TemporaryDirectory(prefix="tatitok-harvest-snap-")
+    snap_root = Path(snap_ctx.name)
+    # freeze the selected files: live session logs grow while we run, and the
+    # fixtures + fixture-scoped expectations must come from identical bytes
+    selected = snapshot_selected(selected, snap_root)
+
     manifest_files = []
     for stat in selected:
         rel = write_fixture(stat, out_root)
         print("  %-60s %s" % (rel, ",".join(stat.criteria)))
         manifest_files.append({
-            "source": redact_home(str(stat.path)),
+            "source": redact_home(str(stat.source)),
             "fixture": rel,
             "criteria": stat.criteria,
             "lines": stat.lines,
@@ -515,20 +540,25 @@ def main():
 
     if args.no_expectations:
         print("skipping ccusage expectations (--no-expectations)")
+        snap_ctx.cleanup()
         return 0
 
     if shutil.which("npx") is None or shutil.which("npm") is None:
         print("error: npx/npm not found — install Node, or re-run with "
               "--no-expectations and capture expectations separately",
               file=sys.stderr)
+        snap_ctx.cleanup()
         return 1
 
     print("capturing ccusage expectations ...")
     meta_path = expected_dir / "META.json"
     version = resolve_ccusage_version(meta_path, args.ccusage_version)
     t0 = time.time()
-    commands = capture_expectations(version, selected, project_dirs,
-                                    expected_dir)
+    try:
+        commands = capture_expectations(version, snap_root, project_dirs,
+                                        expected_dir)
+    finally:
+        snap_ctx.cleanup()
     meta = {
         "ccusage_version": version,
         "captured_at": datetime.datetime.now(datetime.timezone.utc)
