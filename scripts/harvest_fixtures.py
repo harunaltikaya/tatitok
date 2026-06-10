@@ -74,6 +74,13 @@ CONTENT_KEYS = {
     "prompt",
     "stdout",
     "stderr",
+    # short content-bearing fields found in real logs that slip under the
+    # 80-char conservative rule: AI-generated session titles, the user's
+    # last prompt, task-reminder subjects/descriptions
+    "aiTitle",
+    "lastPrompt",
+    "subject",
+    "description",
 }
 
 # Keys whose string values are known-safe metadata: never stripped (paths are
