@@ -8,6 +8,7 @@ package claudecode
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,8 @@ const harnessName = "claude-code"
 type Adapter struct{}
 
 func (Adapter) Name() string { return harnessName }
+
+func (Adapter) Version() int { return AdapterVersion }
 
 // Detect returns the log roots to ingest. CLAUDE_CONFIG_DIR overrides
 // (comma-separated list supported, matching Claude Code and ccusage);
@@ -104,17 +107,18 @@ type usage struct {
 }
 
 // Backfill parses every session file under src.Root and emits one event
-// per billable assistant message. Files are processed in order of their
-// earliest record timestamp — ccusage's order, so when duplicated
-// (message id, request id) pairs carry diverging fields, the same copy
-// wins on both sides.
+// per billable assistant message, in size-bounded batches (contract v2).
+// Files are processed in order of their earliest record timestamp —
+// ccusage's order, so when duplicated (message id, request id) pairs carry
+// diverging fields, the same copy wins on both sides.
 //
 // I/O failures are honest, never silent: an unreadable project dir or
-// session file, or a non-EOF read error mid-file, emits a skipped-source
-// marker (FileResult.ReadError) that the ingest layer counts and persists.
-// A read error fails that file's backfill — its partial events are
-// discarded so the next run retries the whole file.
-func (Adapter) Backfill(src adapters.Source, emit func(adapters.Event)) error {
+// session file, or a non-EOF read error mid-file, reports a skipped
+// source (FileDone with ReadError) that the ingest layer counts and
+// persists; the ingest layer discards the file's already-emitted events
+// so the next run retries the whole file. A sink error cancels the
+// remaining backfill and is returned unchanged.
+func (Adapter) Backfill(ctx context.Context, src adapters.Source, sink adapters.Sink) error {
 	files, skipped, err := listSessionFiles(src.Root)
 	if err != nil {
 		return err
@@ -122,18 +126,28 @@ func (Adapter) Backfill(src adapters.Source, emit func(adapters.Event)) error {
 	for _, s := range skipped {
 		slog.Warn("skipping unreadable project dir",
 			"adapter", harnessName, "dir", s.path, "error", s.err)
-		emit(adapters.Event{File: adapters.FileResult{
+		if err := sink.FileDone(adapters.FileResult{
 			Path: s.path, ReadError: s.err.Error(),
-		}})
+		}); err != nil {
+			return err
+		}
 	}
 	sortByEarliestTimestamp(files)
 	for _, f := range files {
-		if err := backfillFile(src, f, emit); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		res, readErr, sinkErr := backfillFile(src, f, sink)
+		if sinkErr != nil {
+			return sinkErr
+		}
+		if readErr != nil {
 			slog.Warn("skipping unreadable session file",
-				"adapter", harnessName, "file", f, "error", err)
-			emit(adapters.Event{File: adapters.FileResult{
-				Path: f, ReadError: err.Error(),
-			}})
+				"adapter", harnessName, "file", f, "error", readErr)
+			res = adapters.FileResult{Path: f, ReadError: readErr.Error()}
+		}
+		if err := sink.FileDone(res); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -225,18 +239,23 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 	return line, err
 }
 
-func backfillFile(src adapters.Source, path string, emit func(adapters.Event)) error {
+// backfillFile streams one session file's billable events to the sink in
+// batches of at most adapters.BatchSize. The two error returns are
+// distinct on purpose: readErr means the FILE could not be (fully) read —
+// Backfill reports it as a skipped source; sinkErr came back from the
+// sink and must cancel the whole backfill unchanged.
+func backfillFile(src adapters.Source, path string, sink adapters.Sink) (res adapters.FileResult, readErr, sinkErr error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return err
+		return res, err, nil
 	}
 	defer func() { _ = f.Close() }()
 	st, err := f.Stat()
 	if err != nil {
-		return err
+		return res, err, nil
 	}
 
-	res := adapters.FileResult{
+	res = adapters.FileResult{
 		Path:  path,
 		MTime: st.ModTime().UTC(),
 		Size:  st.Size(),
@@ -244,20 +263,30 @@ func backfillFile(src adapters.Source, path string, emit func(adapters.Event)) e
 	project := filepath.Base(filepath.Dir(path))
 	sessionFromName := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 
-	var events []core.Event
+	var batch []core.Event
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		err := sink.EmitBatch(path, batch)
+		res.Events += len(batch)
+		batch = nil // the sink may retain the slice; never reuse it
+		return err
+	}
 	r := bufio.NewReaderSize(f, 256*1024)
 	for lineIdx := 0; ; lineIdx++ {
-		line, readErr := readLine(r)
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			// Non-EOF read error: fail the whole file (the partial events
-			// are discarded); Backfill records it as a skipped source.
-			return readErr
+		line, lineErr := readLine(r)
+		if lineErr != nil && !errors.Is(lineErr, io.EOF) {
+			// Non-EOF read error: fail the whole file; Backfill records it
+			// as a skipped source and the ingest layer discards the
+			// already-emitted partial events.
+			return res, lineErr, nil
 		}
 		if len(line) > 0 {
 			res.LineCount++
 			ev, ok, perr := parseLine(line, src, path, lineIdx, project, sessionFromName)
 			switch {
-			case perr != nil && errors.Is(readErr, io.EOF):
+			case perr != nil && errors.Is(lineErr, io.EOF):
 				// Unterminated final line that does not parse: a write in
 				// progress, not a malformed line — bookkeeping, not a
 				// parse error. The next backfill clears it (the full tail
@@ -271,23 +300,22 @@ func backfillFile(src adapters.Source, path string, emit func(adapters.Event)) e
 					"adapter", harnessName, "file", path,
 					"line", lineIdx+1, "error", perr)
 			case ok:
-				events = append(events, ev)
+				batch = append(batch, ev)
+				if len(batch) == adapters.BatchSize {
+					if err := flush(); err != nil {
+						return res, nil, err
+					}
+				}
 			}
 		}
-		if readErr != nil {
+		if lineErr != nil {
 			break
 		}
 	}
-
-	for i := range events {
-		emit(adapters.Event{Event: events[i], File: res})
+	if err := flush(); err != nil {
+		return res, nil, err
 	}
-	if len(events) == 0 {
-		// Still surface the file to the ingest layer so the sources table
-		// records it (zero-event marker, no core event).
-		emit(adapters.Event{File: res})
-	}
-	return nil
+	return res, nil, nil
 }
 
 // parseLine returns (event, true, nil) for a billable assistant message,

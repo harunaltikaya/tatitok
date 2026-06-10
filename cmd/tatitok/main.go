@@ -25,12 +25,14 @@ Usage:
   tatitok ingest --backfill [--db PATH] [--source claude-code]
   tatitok stats  --daily|--session [--json] [--db PATH] [--timezone TZ]
   tatitok doctor --scan-content [--db PATH] [LITERAL...]
+  tatitok doctor --provenance [--db PATH] [--json]
 
 stats buckets days in the local timezone by default (ccusage's rule);
 pass --timezone for like-for-like comparisons across machines.
 doctor --scan-content re-checks every stored record against the
 sanitizer invariants; extra LITERAL arguments are also grepped for and
-must not appear anywhere in stored raw/meta.`
+must not appear anywhere in stored raw/meta.
+doctor --provenance lists stored row counts by adapter@version.`
 
 func main() { os.Exit(run(os.Args[1:])) }
 
@@ -220,10 +222,12 @@ func cmdStats(args []string) error {
 func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	scan := fs.Bool("scan-content", false, "verify no prompt/response text is stored")
+	provenance := fs.Bool("provenance", false, "list row counts by adapter@version")
+	asJSON := fs.Bool("json", false, "JSON output (with --provenance)")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	_ = fs.Parse(args)
-	if !*scan {
-		return fmt.Errorf("doctor currently supports only --scan-content")
+	if *scan == *provenance {
+		return fmt.Errorf("pass exactly one of --scan-content or --provenance")
 	}
 	st, err := openStore(*dbPath)
 	if err != nil {
@@ -231,5 +235,8 @@ func cmdDoctor(args []string) error {
 	}
 	defer func() { _ = st.Close() }()
 
+	if *provenance {
+		return doctorProvenance(context.Background(), st, *asJSON)
+	}
 	return doctorScanContent(context.Background(), st, fs.Args())
 }

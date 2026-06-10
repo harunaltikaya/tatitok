@@ -41,15 +41,73 @@ func fixtureSource(t *testing.T) adapters.Source {
 	return adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}
 }
 
-func backfillAll(t *testing.T) []adapters.Event {
+// collectSink is a contract-v2 test sink: it collects everything and
+// fails the test on any sequencing violation (oversized batch, batches
+// interleaving across files, a batch after its file's FileDone, or a
+// second FileDone for the same path).
+type collectSink struct {
+	t       *testing.T
+	events  []core.Event // billable events in emission order
+	byFile  map[string][]core.Event
+	results []adapters.FileResult
+	done    map[string]bool
+	open    string // file with batches emitted but no FileDone yet
+}
+
+func newCollectSink(t *testing.T) *collectSink {
+	return &collectSink{t: t,
+		byFile: map[string][]core.Event{}, done: map[string]bool{}}
+}
+
+func (c *collectSink) EmitBatch(path string, events []core.Event) error {
+	c.t.Helper()
+	if len(events) == 0 || len(events) > adapters.BatchSize {
+		c.t.Fatalf("batch of %d events for %s (BatchSize %d)",
+			len(events), path, adapters.BatchSize)
+	}
+	if c.done[path] {
+		c.t.Fatalf("batch for %s after its FileDone", path)
+	}
+	if c.open != "" && c.open != path {
+		c.t.Fatalf("batch for %s while %s is still open", path, c.open)
+	}
+	c.open = path
+	c.events = append(c.events, events...)
+	c.byFile[path] = append(c.byFile[path], events...)
+	return nil
+}
+
+func (c *collectSink) FileDone(res adapters.FileResult) error {
+	c.t.Helper()
+	if c.done[res.Path] {
+		c.t.Fatalf("second FileDone for %s", res.Path)
+	}
+	if c.open != "" && c.open != res.Path {
+		c.t.Fatalf("FileDone for %s while %s is still open", res.Path, c.open)
+	}
+	// A skipped source (ReadError) may follow partial batches that the
+	// ingest layer would discard; the Events count contract only holds
+	// for files read to completion.
+	if got := len(c.byFile[res.Path]); res.ReadError == "" && got != res.Events {
+		c.t.Fatalf("%s: FileDone.Events=%d but %d events emitted",
+			res.Path, res.Events, got)
+	}
+	c.done[res.Path] = true
+	c.open = ""
+	c.results = append(c.results, res)
+	return nil
+}
+
+func backfillAll(t *testing.T) *collectSink {
 	t.Helper()
-	var events []adapters.Event
-	if err := (Adapter{}).Backfill(fixtureSource(t), func(e adapters.Event) {
-		events = append(events, e)
-	}); err != nil {
+	sink := newCollectSink(t)
+	if err := (Adapter{}).Backfill(context.Background(), fixtureSource(t), sink); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
-	return events
+	if sink.open != "" {
+		t.Fatalf("backfill returned with %s still open", sink.open)
+	}
+	return sink
 }
 
 func TestDetect(t *testing.T) {
@@ -109,25 +167,21 @@ func TestDetect(t *testing.T) {
 }
 
 func TestBackfillFixtures(t *testing.T) {
-	events := backfillAll(t)
+	sink := backfillAll(t)
 
-	var billable []adapters.Event
 	ids := map[string]bool{}
-	for _, e := range events {
-		if e.ID == "" { // zero-event file marker
-			continue
-		}
-		billable = append(billable, e)
+	for _, e := range sink.events {
 		ids[e.ID] = true
 	}
-	if len(billable) != wantEmitted {
-		t.Errorf("emitted %d billable events, want %d", len(billable), wantEmitted)
+	if len(sink.events) != wantEmitted {
+		t.Errorf("emitted %d billable events, want %d", len(sink.events), wantEmitted)
 	}
 	if len(ids) != wantUnique {
 		t.Errorf("got %d unique ids, want %d", len(ids), wantUnique)
 	}
 
-	for _, e := range billable {
+	for i := range sink.events {
+		e := &sink.events[i]
 		if err := e.Validate(); err != nil {
 			t.Fatalf("invalid event: %v", err)
 		}
@@ -138,17 +192,29 @@ func TestBackfillFixtures(t *testing.T) {
 			t.Fatalf("synthetic record emitted: %s", e.ID)
 		}
 		if e.Provider != "anthropic" || e.Harness != harnessName || e.Machine != "gx10" {
-			t.Fatalf("bad identity fields: %+v", e.Event)
+			t.Fatalf("bad identity fields: %+v", e)
 		}
 		if e.Project == "" || e.SessionID == "" || len(e.Raw) == 0 {
 			t.Fatalf("missing project/session/raw on %s", e.ID)
 		}
-		if e.File.Path == "" || e.File.LineCount == 0 {
-			t.Fatalf("missing file provenance on %s", e.ID)
+	}
+
+	// Per-file health: every fixture file reports clean, with provenance.
+	totalEvents := 0
+	for _, res := range sink.results {
+		if res.Path == "" || res.LineCount == 0 {
+			t.Fatalf("missing file provenance: %+v", res)
 		}
-		if e.File.ParseErrors != 0 {
-			t.Fatalf("fixture parse errors in %s: %d", e.File.Path, e.File.ParseErrors)
+		if res.ParseErrors != 0 {
+			t.Fatalf("fixture parse errors in %s: %d", res.Path, res.ParseErrors)
 		}
+		if res.ReadError != "" || res.IncompleteTail {
+			t.Fatalf("fixture file reported unhealthy: %+v", res)
+		}
+		totalEvents += res.Events
+	}
+	if totalEvents != wantEmitted {
+		t.Errorf("FileResult.Events sums to %d, want %d", totalEvents, wantEmitted)
 	}
 }
 
@@ -246,19 +312,18 @@ func TestSkippedSourcesSurfaced(t *testing.T) {
 	})
 
 	src := adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}
+	sink := newCollectSink(t)
+	if err := (Adapter{}).Backfill(context.Background(), src, sink); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
 	skipped := map[string]bool{}
 	billableFiles := map[string]bool{}
-	if err := (Adapter{}).Backfill(src, func(e adapters.Event) {
-		if e.File.ReadError != "" {
-			if e.ID != "" {
-				t.Errorf("skipped source %s carries an event", e.File.Path)
-			}
-			skipped[e.File.Path] = true
-		} else if e.ID != "" {
-			billableFiles[e.File.Path] = true
+	for _, res := range sink.results {
+		if res.ReadError != "" {
+			skipped[res.Path] = true
+		} else if res.Events > 0 {
+			billableFiles[res.Path] = true
 		}
-	}); err != nil {
-		t.Fatalf("backfill: %v", err)
 	}
 	if !skipped[unreadableFile] || !skipped[unreadableDir] || len(skipped) != 2 {
 		t.Fatalf("skipped markers wrong: %v", skipped)
@@ -351,12 +416,14 @@ func TestIncompleteTailClassification(t *testing.T) {
 	}
 	src := adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}
 
-	var res adapters.FileResult
-	if err := (Adapter{}).Backfill(src, func(e adapters.Event) {
-		res = e.File
-	}); err != nil {
+	tailSink := newCollectSink(t)
+	if err := (Adapter{}).Backfill(context.Background(), src, tailSink); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
+	if len(tailSink.results) != 1 {
+		t.Fatalf("want 1 file result, got %d", len(tailSink.results))
+	}
+	res := tailSink.results[0]
 	if !res.IncompleteTail {
 		t.Error("unterminated unparseable tail not flagged as IncompleteTail")
 	}
@@ -422,15 +489,15 @@ commit the golden diff together with the AdapterVersion bump and note the parity
 func TestGoldenEvents(t *testing.T) {
 	golden := filepath.Join(fixtureBase, "expected", "events.json")
 
-	events := backfillAll(t)
+	sink := backfillAll(t)
 	var normalized []core.Event
 	seen := map[string]bool{}
-	for _, e := range events {
-		if e.ID == "" || seen[e.ID] {
+	for _, e := range sink.events {
+		if seen[e.ID] {
 			continue
 		}
 		seen[e.ID] = true
-		normalized = append(normalized, e.Event)
+		normalized = append(normalized, e)
 	}
 	got, err := json.MarshalIndent(normalized, "", " ")
 	if err != nil {

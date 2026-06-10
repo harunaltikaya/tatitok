@@ -63,6 +63,34 @@ func printSessionTable(rows []store.SessionRow) {
 	}
 }
 
+// doctorProvenance lists stored row counts by adapter@version — the
+// queryable record of which format-handling version produced what, for
+// future recompute decisions.
+func doctorProvenance(ctx context.Context, st *store.Store, asJSON bool) error {
+	rows, err := st.Provenance(ctx)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return printJSON(map[string]any{"provenance": rows})
+	}
+	if len(rows) == 0 {
+		fmt.Println("no events ingested yet — run: tatitok ingest --backfill")
+		return nil
+	}
+	fmt.Printf("%-24s %15s %14s\n", "ADAPTER@VERSION", "EVENTS", "SOURCE FILES")
+	for _, r := range rows {
+		version := "pre-provenance"
+		if r.AdapterVersion != nil {
+			version = fmt.Sprintf("v%d", *r.AdapterVersion)
+		}
+		fmt.Printf("%-24s %15s %14s\n",
+			fmt.Sprintf("%s@%s", r.Harness, version),
+			formatTokens(r.Events), formatTokens(r.SourceFiles))
+	}
+	return nil
+}
+
 // doctorScanContent re-checks every stored raw/meta blob against the
 // sanitizer invariants and greps for caller-supplied literals (e.g. known
 // real content strings the owner checks privately). Findings → exit 1.

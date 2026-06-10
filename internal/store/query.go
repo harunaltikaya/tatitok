@@ -166,6 +166,48 @@ func (s *Store) Sessions(ctx context.Context, tz *time.Location) ([]SessionRow, 
 	return out, nil
 }
 
+// ProvenanceRow is one adapter@version slice of the DB: how many event
+// rows and ingested source files that adapter version produced. A nil
+// AdapterVersion marks rows ingested before provenance existed
+// (pre-migration-4 databases).
+type ProvenanceRow struct {
+	Harness        string `json:"harness"`
+	AdapterVersion *int64 `json:"adapter_version"`
+	Events         int64  `json:"events"`
+	SourceFiles    int64  `json:"source_files"`
+}
+
+// Provenance aggregates row counts by adapter@version across both the
+// events and sources tables (`doctor --provenance`) — the queryable basis
+// for future recompute decisions.
+func (s *Store) Provenance(ctx context.Context) ([]ProvenanceRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT harness, adapter_version,
+			SUM(events), SUM(files)
+		FROM (
+			SELECT COALESCE(harness,'') AS harness, adapter_version,
+			       COUNT(*) AS events, 0 AS files
+			FROM usage_events GROUP BY 1, 2
+			UNION ALL
+			SELECT harness, adapter_version, 0, COUNT(*)
+			FROM sources GROUP BY 1, 2
+		)
+		GROUP BY harness, adapter_version
+		ORDER BY harness, adapter_version`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ProvenanceRow
+	for rows.Next() {
+		var r ProvenanceRow
+		if err := rows.Scan(&r.Harness, &r.AdapterVersion, &r.Events, &r.SourceFiles); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // CountEvents returns the total number of stored events (test/diagnostic
 // helper).
 func (s *Store) CountEvents(ctx context.Context) (int64, error) {
