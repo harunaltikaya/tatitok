@@ -18,8 +18,10 @@ What it does:
      tool_use input, tool_result content, summaries, attachments, ...) are
      replaced with "<stripped len=N sha256=FIRST12HEX>" placeholders; all
      structure, ids, timestamps, models, usage objects and unknown fields are
-     preserved. $HOME in paths becomes "~"; the encoded home prefix in project
-     dir names becomes "-home-user". Malformed source lines are replaced with
+     preserved. $HOME in paths becomes "~", the path-encoded home form
+     ("-home-<user>") becomes "-home-user", and the bare username is redacted
+     in all kept strings AND object keys (some records key maps by file
+     path). Malformed source lines are replaced with
      a single-key placeholder object so line counts stay identical.
   4. Captures ccusage expectations (both `daily` and `session`, --json
      --offline) twice:
@@ -107,8 +109,10 @@ MAX_FREE_LEN = 80  # unknown string fields longer than this get stripped
 
 HOME = str(Path.home())
 # project dir names encode the cwd with "/" -> "-", so $HOME appears as e.g.
-# "-home-mamimok" or "-Users-harun" at the start of the dir name
+# "-home-alice" or "-Users-alice" at the start of the dir name; that encoded
+# form also shows up INSIDE path strings and object keys in the logs
 ENCODED_HOME = HOME.replace("/", "-")
+USERNAME = Path.home().name
 
 
 def placeholder(value):
@@ -120,7 +124,24 @@ def placeholder(value):
 
 
 def redact_home(s):
-    return s.replace(HOME, "~") if HOME in s else s
+    s = s.replace(HOME, "~")
+    s = s.replace(ENCODED_HOME, "-home-user")
+    # bare username belt-and-braces; skip very short usernames that would
+    # mangle unrelated text
+    if len(USERNAME) >= 4:
+        s = s.replace(USERNAME, "user")
+    return s
+
+
+def sanitize_key(k):
+    """Object keys in Claude Code records can be file paths (e.g. the
+    readFileState / file-backup maps are keyed by absolute path)."""
+    s = redact_home(k)
+    if looks_safe_short(s):
+        return s
+    if s.startswith(("/", "~", ".")) and "\n" not in s and len(s) <= 300:
+        return s
+    return placeholder(k)
 
 
 def looks_safe_short(s):
@@ -140,7 +161,7 @@ def sanitize_value(node, key=None):
     if key == "content" and isinstance(node, str):
         return placeholder(node)
     if isinstance(node, dict):
-        return {k: sanitize_value(v, k) for k, v in node.items()}
+        return {sanitize_key(k): sanitize_value(v, k) for k, v in node.items()}
     if isinstance(node, list):
         return [sanitize_value(v, key) for v in node]
     if isinstance(node, str):
