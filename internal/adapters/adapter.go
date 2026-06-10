@@ -40,6 +40,12 @@ type FileResult struct {
 	Size        int64
 	LineCount   int
 	ParseErrors int
+	// ReadError, when non-empty, marks a SKIPPED source: the file or
+	// directory at Path could not be (fully) read. No events accompany a
+	// skipped source — partially parsed events are discarded so the next
+	// backfill retries the whole file. Distinct from ParseErrors, which
+	// are contained per line.
+	ReadError string
 }
 
 // Event pairs a normalized usage event with the provenance of the file

@@ -14,6 +14,11 @@ type IngestSummary struct {
 	Emitted     int // billable events emitted by the adapter
 	Inserted    int // new rows (duplicates collapse via INSERT OR IGNORE)
 	ParseErrors int
+	// Skipped counts sources (files or project dirs) the adapter could
+	// not read — recorded in the sources table with their read error,
+	// reported distinctly from parse errors. Skipped > 0 means the run
+	// completed but the DB does not reflect the full log history.
+	Skipped int
 }
 
 // IngestBackfill runs adapter backfill over the given sources and writes
@@ -33,13 +38,17 @@ func IngestBackfill(ctx context.Context, st *store.Store, a Adapter, srcs []Sour
 			n, err := st.InsertBatch(ctx, batch, store.SourceInfo{
 				Path: cur.Path, Harness: src.Harness, MTime: cur.MTime,
 				Size: cur.Size, LineCount: cur.LineCount,
-				ParseErrors: cur.ParseErrors,
+				ParseErrors: cur.ParseErrors, ReadError: cur.ReadError,
 			})
 			if err != nil {
 				emitErr = err
 				return
 			}
-			sum.Files++
+			if cur.ReadError != "" {
+				sum.Skipped++
+			} else {
+				sum.Files++
+			}
 			sum.Lines += cur.LineCount
 			sum.Inserted += n
 			sum.ParseErrors += cur.ParseErrors

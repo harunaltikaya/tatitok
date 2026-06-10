@@ -205,6 +205,120 @@ func TestReingestIdempotent(t *testing.T) {
 	}
 }
 
+// I/O failure honesty: unreadable project dirs and session files are
+// counted as skipped sources, persisted to the sources table with their
+// read error, and never silently dropped. Uses COPIES of a real fixture
+// file with permissions removed — no log lines are fabricated.
+func TestSkippedSourcesSurfaced(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based test cannot run as root")
+	}
+	fixtures, err := filepath.Glob(filepath.Join(fixtureBase, "projects", "*", "*.jsonl"))
+	if err != nil || len(fixtures) == 0 {
+		t.Fatalf("no fixture session files: %v", err)
+	}
+	realLog, err := os.ReadFile(fixtures[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	root := filepath.Join(t.TempDir(), "projects")
+	mk := func(project, name string, perm os.FileMode) string {
+		p := filepath.Join(root, project, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, realLog, perm); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	readable := mk("-project-ok", "a.jsonl", 0o644)
+	unreadableFile := mk("-project-locked", "b.jsonl", 0o000)
+	unreadableDir := filepath.Join(root, "-project-dark")
+	if err := os.MkdirAll(unreadableDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { // let TempDir cleanup succeed
+		_ = os.Chmod(unreadableDir, 0o755)
+		_ = os.Chmod(unreadableFile, 0o644)
+	})
+
+	src := adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}
+	skipped := map[string]bool{}
+	billableFiles := map[string]bool{}
+	if err := (Adapter{}).Backfill(src, func(e adapters.Event) {
+		if e.File.ReadError != "" {
+			if e.ID != "" {
+				t.Errorf("skipped source %s carries an event", e.File.Path)
+			}
+			skipped[e.File.Path] = true
+		} else if e.ID != "" {
+			billableFiles[e.File.Path] = true
+		}
+	}); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if !skipped[unreadableFile] || !skipped[unreadableDir] || len(skipped) != 2 {
+		t.Fatalf("skipped markers wrong: %v", skipped)
+	}
+	if !billableFiles[readable] || len(billableFiles) != 1 {
+		t.Fatalf("readable file not ingested normally: %v", billableFiles)
+	}
+
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+
+	sum, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src})
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if sum.Skipped != 2 || sum.Files != 1 {
+		t.Fatalf("summary: skipped=%d files=%d, want 2/1", sum.Skipped, sum.Files)
+	}
+
+	readError := func(path string) (string, bool) {
+		var re *string
+		err := s.DB().QueryRow(`SELECT read_error FROM sources WHERE path = ?`, path).Scan(&re)
+		if err != nil {
+			t.Fatalf("sources row for %s: %v", path, err)
+		}
+		if re == nil {
+			return "", false
+		}
+		return *re, true
+	}
+	if re, ok := readError(unreadableFile); !ok || re == "" {
+		t.Fatalf("unreadable file has no persisted read_error")
+	}
+	if re, ok := readError(unreadableDir); !ok || re == "" {
+		t.Fatalf("unreadable dir has no persisted read_error")
+	}
+	if _, ok := readError(readable); ok {
+		t.Fatalf("readable file has a read_error")
+	}
+
+	// Once readable again, the next backfill ingests the file and clears
+	// its read_error via the sources upsert.
+	if err := os.Chmod(unreadableFile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum, err = adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src})
+	if err != nil {
+		t.Fatalf("re-ingest: %v", err)
+	}
+	if sum.Skipped != 1 { // the dir is still unreadable
+		t.Fatalf("re-ingest skipped=%d, want 1", sum.Skipped)
+	}
+	if _, ok := readError(unreadableFile); ok {
+		t.Fatalf("read_error not cleared after successful re-ingest")
+	}
+}
+
 // Golden test: fixtures in → exact expected normalized events out.
 // expected/events.json is generated ONCE from the first verified-parity
 // run (milestone-1 Task 4), then frozen. Regenerate explicitly with:

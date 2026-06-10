@@ -53,10 +53,18 @@ func (Adapter) Detect(env adapters.Probe) ([]adapters.Source, error) {
 	}
 	var sources []adapters.Source
 	for _, root := range candidates {
-		if st, err := os.Stat(root); err == nil && st.IsDir() {
+		st, err := os.Stat(root)
+		switch {
+		case err == nil && st.IsDir():
 			sources = append(sources, adapters.Source{
 				Harness: harnessName, Root: root, Machine: env.Machine,
 			})
+		case err != nil && !errors.Is(err, os.ErrNotExist):
+			// A root that exists but cannot be probed must not vanish
+			// silently — the user would see "no log roots found" and
+			// believe there is nothing to ingest.
+			slog.Warn("cannot probe candidate log root",
+				"adapter", harnessName, "root", root, "error", err)
 		}
 	}
 	return sources, nil
@@ -98,46 +106,67 @@ type usage struct {
 // earliest record timestamp — ccusage's order, so when duplicated
 // (message id, request id) pairs carry diverging fields, the same copy
 // wins on both sides.
+//
+// I/O failures are honest, never silent: an unreadable project dir or
+// session file, or a non-EOF read error mid-file, emits a skipped-source
+// marker (FileResult.ReadError) that the ingest layer counts and persists.
+// A read error fails that file's backfill — its partial events are
+// discarded so the next run retries the whole file.
 func (Adapter) Backfill(src adapters.Source, emit func(adapters.Event)) error {
-	files, err := listSessionFiles(src.Root)
+	files, skipped, err := listSessionFiles(src.Root)
 	if err != nil {
 		return err
+	}
+	for _, s := range skipped {
+		slog.Warn("skipping unreadable project dir",
+			"adapter", harnessName, "dir", s.path, "error", s.err)
+		emit(adapters.Event{File: adapters.FileResult{
+			Path: s.path, ReadError: s.err.Error(),
+		}})
 	}
 	sortByEarliestTimestamp(files)
 	for _, f := range files {
 		if err := backfillFile(src, f, emit); err != nil {
-			// Unreadable file: contained like a malformed line — log,
-			// count nothing, move on (hard rule 8).
 			slog.Warn("skipping unreadable session file",
 				"adapter", harnessName, "file", f, "error", err)
+			emit(adapters.Event{File: adapters.FileResult{
+				Path: f, ReadError: err.Error(),
+			}})
 		}
 	}
 	return nil
 }
 
-func listSessionFiles(root string) ([]string, error) {
+// skippedSource is a directory or file that could not be read.
+type skippedSource struct {
+	path string
+	err  error
+}
+
+func listSessionFiles(root string) ([]string, []skippedSource, error) {
 	projects, err := os.ReadDir(root)
 	if err != nil {
-		return nil, fmt.Errorf("read log root %s: %w", root, err)
+		return nil, nil, fmt.Errorf("read log root %s: %w", root, err)
 	}
 	var files []string
+	var skipped []skippedSource
 	for _, p := range projects {
 		if !p.IsDir() {
 			continue
 		}
-		entries, err := os.ReadDir(filepath.Join(root, p.Name()))
+		dir := filepath.Join(root, p.Name())
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			slog.Warn("skipping unreadable project dir",
-				"adapter", harnessName, "dir", p.Name(), "error", err)
+			skipped = append(skipped, skippedSource{path: dir, err: err})
 			continue
 		}
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
-				files = append(files, filepath.Join(root, p.Name(), e.Name()))
+				files = append(files, filepath.Join(dir, e.Name()))
 			}
 		}
 	}
-	return files, nil
+	return files, skipped, nil
 }
 
 // sortByEarliestTimestamp orders files by the first timestamp field found
@@ -217,7 +246,9 @@ func backfillFile(src adapters.Source, path string, emit func(adapters.Event)) e
 	r := bufio.NewReaderSize(f, 256*1024)
 	for lineIdx := 0; ; lineIdx++ {
 		line, readErr := readLine(r)
-		if readErr != nil && len(line) == 0 && !errors.Is(readErr, io.EOF) {
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			// Non-EOF read error: fail the whole file (the partial events
+			// are discarded); Backfill records it as a skipped source.
 			return readErr
 		}
 		if len(line) > 0 {

@@ -157,6 +157,15 @@ func cmdIngest(args []string) error {
 	}
 	fmt.Printf("ingested %d files (%d lines): %d events emitted, %d new rows, %d parse errors\n",
 		sum.Files, sum.Lines, sum.Emitted, sum.Inserted, sum.ParseErrors)
+	if sum.Skipped > 0 {
+		// Distinct from parse errors and from exit 0: the run finished,
+		// but unreadable sources mean the DB is missing history (they are
+		// recorded in the sources table with their read error).
+		fmt.Printf("WARNING: %d sources skipped (unreadable) — totals are incomplete\n",
+			sum.Skipped)
+		return exitError{code: 3, msg: fmt.Sprintf(
+			"ingest complete with %d skipped sources (see warnings above)", sum.Skipped)}
+	}
 	return nil
 }
 

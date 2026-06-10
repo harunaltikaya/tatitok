@@ -59,6 +59,9 @@ var migrations = []string{
 		ingested_at TEXT NOT NULL,                   -- RFC3339 UTC
 		parse_errors INTEGER NOT NULL DEFAULT 0
 	);`,
+	// read_error: why this source was skipped (NULL = read fully); a
+	// later successful ingest of the same path clears it via the upsert.
+	`ALTER TABLE sources ADD COLUMN read_error TEXT;`,
 }
 
 // Open opens (creating if needed) the database at path, enables WAL, and
@@ -121,6 +124,9 @@ type SourceInfo struct {
 	Size        int64
 	LineCount   int
 	ParseErrors int
+	// ReadError non-empty marks a skipped source (could not be read);
+	// stored so `sources` always reflects what the DB is missing.
+	ReadError string
 }
 
 // InsertBatch writes one file's events and its sources row in a single
@@ -181,15 +187,15 @@ func (s *Store) InsertBatch(ctx context.Context, events []core.Event, src Source
 	}
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sources
-		(path, harness, mtime, size, line_count, ingested_at, parse_errors)
-		VALUES (?,?,?,?,?,?,?)
+		(path, harness, mtime, size, line_count, ingested_at, parse_errors, read_error)
+		VALUES (?,?,?,?,?,?,?,?)
 		ON CONFLICT(path) DO UPDATE SET
 			harness=excluded.harness, mtime=excluded.mtime, size=excluded.size,
 			line_count=excluded.line_count, ingested_at=excluded.ingested_at,
-			parse_errors=excluded.parse_errors`,
+			parse_errors=excluded.parse_errors, read_error=excluded.read_error`,
 		src.Path, src.Harness, src.MTime.UTC().Format(time.RFC3339Nano),
 		src.Size, src.LineCount, time.Now().UTC().Format(time.RFC3339Nano),
-		src.ParseErrors); err != nil {
+		src.ParseErrors, nullStr(src.ReadError)); err != nil {
 		return 0, fmt.Errorf("record source %s: %w", src.Path, err)
 	}
 	return inserted, tx.Commit()
