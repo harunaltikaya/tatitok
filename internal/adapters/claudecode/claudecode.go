@@ -24,7 +24,9 @@ import (
 )
 
 // AdapterVersion is bumped whenever format handling changes.
-const AdapterVersion = 1
+// v2: length-prefixed ID hashing; fallback IDs keyed by project-relative
+// path (M1.1 ID hardening — all event IDs changed).
+const AdapterVersion = 2
 
 const harnessName = "claude-code"
 
@@ -320,12 +322,15 @@ func parseLine(line []byte, src adapters.Source, path string, lineIdx int,
 
 	// message.id is opaque — real logs carry UUID-shaped ids, not only
 	// msg_*. Both native ids present → the ccusage dedup key; either
-	// missing → per-occurrence fallback (ccusage does not dedup those).
+	// missing → per-occurrence fallback (ccusage does not dedup those),
+	// keyed by the source-relative path (project dir + basename) so equal
+	// filenames across project dirs cannot collide.
 	var id string
 	if rec.Message.ID != "" && rec.RequestID != "" {
 		id = core.EventID(harnessName, rec.Message.ID, rec.RequestID)
 	} else {
-		id = core.FallbackID(harnessName, filepath.Base(path), lineIdx, rec.Timestamp)
+		fileRel := project + "/" + filepath.Base(path)
+		id = core.FallbackID(harnessName, fileRel, lineIdx, rec.Timestamp)
 	}
 
 	raw, err := core.SanitizeRaw(line)

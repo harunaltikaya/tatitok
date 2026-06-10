@@ -29,6 +29,11 @@ func TestEventIDDistinguishesParts(t *testing.T) {
 		"other message":    EventID("claude-code", "msg_abd", "req_def"),
 		"other request":    EventID("claude-code", "msg_abc", "req_deg"),
 		"shifted boundary": EventID("claude-code", "msg_abcr", "eq_def"),
+		// length-prefixing: embedded separator bytes cannot shift
+		// component boundaries either
+		"embedded nul": EventID("claude-code", "msg_abc\x00x", "req_def"),
+		"embedded len": EventID("claude-code", "msg_abc", "3:req_def"),
+		"moved nul":    EventID("claude-code", "msg_abc\x00", "xreq_def"),
 	}
 	seen := map[string]string{}
 	for name, id := range ids {
@@ -53,27 +58,32 @@ func TestEventIDOpaqueMessageID(t *testing.T) {
 }
 
 func TestFallbackIDPerOccurrence(t *testing.T) {
-	a := FallbackID("claude-code", "session.jsonl", 7, "2026-06-10T14:23:43.448Z")
-	b := FallbackID("claude-code", "session.jsonl", 7, "2026-06-10T14:23:43.448Z")
+	a := FallbackID("claude-code", "-proj-a/session.jsonl", 7, "2026-06-10T14:23:43.448Z")
+	b := FallbackID("claude-code", "-proj-a/session.jsonl", 7, "2026-06-10T14:23:43.448Z")
 	if a != b {
 		t.Fatalf("fallback id not deterministic: %s vs %s", a, b)
 	}
 	if !hexID.MatchString(a) {
 		t.Fatalf("fallback id %q is not 32 lowercase hex chars", a)
 	}
-	if FallbackID("claude-code", "session.jsonl", 8, "2026-06-10T14:23:43.448Z") == a {
+	if FallbackID("claude-code", "-proj-a/session.jsonl", 8, "2026-06-10T14:23:43.448Z") == a {
 		t.Error("different line index must give a different id")
 	}
-	if FallbackID("claude-code", "other.jsonl", 7, "2026-06-10T14:23:43.448Z") == a {
+	if FallbackID("claude-code", "-proj-a/other.jsonl", 7, "2026-06-10T14:23:43.448Z") == a {
 		t.Error("different file must give a different id")
+	}
+	// The M1.1 hardening point: the same session filename under two
+	// different project dirs is two different sources.
+	if FallbackID("claude-code", "-proj-b/session.jsonl", 7, "2026-06-10T14:23:43.448Z") == a {
+		t.Error("same basename in a different project dir must give a different id")
 	}
 }
 
 func TestFallbackNeverCollidesWithPrimary(t *testing.T) {
 	// Same textual parts through both forms: the line-index field makes the
 	// preimages differ, so ids must too.
-	p := EventID("claude-code", "session.jsonl", "2026-06-10T14:23:43.448Z")
-	f := FallbackID("claude-code", "session.jsonl", 0, "2026-06-10T14:23:43.448Z")
+	p := EventID("claude-code", "-proj-a/session.jsonl", "2026-06-10T14:23:43.448Z")
+	f := FallbackID("claude-code", "-proj-a/session.jsonl", 0, "2026-06-10T14:23:43.448Z")
 	if p == f {
 		t.Fatalf("primary and fallback ids collide: %s", p)
 	}
