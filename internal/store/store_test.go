@@ -1,0 +1,219 @@
+package store
+
+// Synthetic core.Event values are fine here: this tests the store's SQL
+// behavior (pure infrastructure), not adapter parsing — no log lines are
+// fabricated (CLAUDE.md hard rule 1).
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/harunaltikaya/tatitok/internal/core"
+)
+
+func openTemp(t *testing.T) *Store {
+	t.Helper()
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+func event(msgID, reqID, model, session string, ts time.Time, sums TokenSums) core.Event {
+	return core.Event{
+		ID:          core.EventID("claude-code", msgID, reqID),
+		TS:          ts.UTC(),
+		Machine:     "test",
+		SourceKind:  core.SourceKindHarnessLog,
+		Harness:     "claude-code",
+		Provider:    "anthropic",
+		Model:       model,
+		ModelFamily: model,
+		SessionID:   session,
+		RequestID:   reqID,
+		TokensInput: sums.Input, TokensOutput: sums.Output,
+		TokensCacheWrite: sums.CacheWrite, TokensCacheRead: sums.CacheRead,
+		Accuracy: core.AccuracyExact,
+	}
+}
+
+func testSource(n int) SourceInfo {
+	return SourceInfo{Path: "/tmp/test.jsonl", Harness: "claude-code",
+		MTime: time.Now(), Size: 1, LineCount: n}
+}
+
+func TestInsertBatchIdempotent(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	batch := []core.Event{
+		event("m1", "r1", "model-a", "s1", ts, TokenSums{Input: 10, Output: 20, CacheWrite: 30, CacheRead: 40}),
+		event("m2", "r2", "model-a", "s1", ts.Add(time.Minute), TokenSums{Input: 1, Output: 2}),
+	}
+
+	n, err := s.InsertBatch(ctx, batch, testSource(2))
+	if err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("first insert: got %d new rows, want 2", n)
+	}
+
+	n, err = s.InsertBatch(ctx, batch, testSource(2))
+	if err != nil {
+		t.Fatalf("re-insert: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("re-insert: got %d new rows, want 0", n)
+	}
+
+	total, err := s.CountEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("count after re-ingest: got %d, want 2", total)
+	}
+}
+
+func TestInsertBatchRejectsInvalid(t *testing.T) {
+	s := openTemp(t)
+	bad := event("m1", "r1", "model-a", "s1", time.Now(), TokenSums{})
+	bad.Accuracy = "nope"
+	if _, err := s.InsertBatch(context.Background(), []core.Event{bad}, testSource(1)); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
+// Day bucketing happens in the query timezone, not UTC: 22:30Z on June 9 is
+// already June 10 in Europe/Istanbul (+03).
+func TestDailyTimezoneBucketing(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ist, err := time.LoadLocation("Europe/Istanbul")
+	if err != nil {
+		t.Skipf("tzdata unavailable: %v", err)
+	}
+	batch := []core.Event{
+		event("m1", "r1", "model-a", "s1",
+			time.Date(2026, 6, 9, 22, 30, 0, 0, time.UTC), TokenSums{Input: 5}),
+		event("m2", "r2", "model-b", "s1",
+			time.Date(2026, 6, 10, 1, 0, 0, 0, time.UTC), TokenSums{Output: 7}),
+		event("m3", "r3", "model-a", "s2",
+			time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC), TokenSums{CacheRead: 9}),
+	}
+	if _, err := s.InsertBatch(ctx, batch, testSource(3)); err != nil {
+		t.Fatal(err)
+	}
+
+	days, err := s.Daily(ctx, ist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 2 {
+		t.Fatalf("got %d days, want 2: %+v", len(days), days)
+	}
+	if days[0].Date != "2026-06-09" || days[0].CacheRead != 9 {
+		t.Errorf("day 0 wrong: %+v", days[0])
+	}
+	if days[1].Date != "2026-06-10" || days[1].Input != 5 || days[1].Output != 7 {
+		t.Errorf("day 1 wrong: %+v", days[1])
+	}
+	if len(days[1].ModelBreakdowns) != 2 || days[1].ModelBreakdowns[0].Model != "model-a" {
+		t.Errorf("day 1 breakdowns wrong: %+v", days[1].ModelBreakdowns)
+	}
+
+	// Same data in UTC buckets differently.
+	utcDays, err := s.Daily(ctx, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(utcDays) != 2 || utcDays[0].Input != 5 || utcDays[0].CacheRead != 9 {
+		t.Errorf("utc bucketing wrong: %+v", utcDays)
+	}
+}
+
+func TestSessions(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	batch := []core.Event{
+		event("m1", "r1", "model-a", "s1", ts, TokenSums{Input: 1}),
+		event("m2", "r2", "model-b", "s1", ts.Add(time.Hour), TokenSums{Output: 2}),
+		event("m3", "r3", "model-a", "s2", ts.Add(2*time.Hour), TokenSums{CacheWrite: 3}),
+	}
+	if _, err := s.InsertBatch(ctx, batch, testSource(3)); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := s.Sessions(ctx, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("got %d sessions, want 2", len(sessions))
+	}
+	if sessions[0].SessionID != "s1" || sessions[0].Input != 1 || sessions[0].Output != 2 {
+		t.Errorf("s1 wrong: %+v", sessions[0])
+	}
+	if len(sessions[0].ModelsUsed) != 2 {
+		t.Errorf("s1 models wrong: %+v", sessions[0].ModelsUsed)
+	}
+}
+
+func TestMigrateIsIdempotentAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	if _, err := s.InsertBatch(context.Background(),
+		[]core.Event{event("m1", "r1", "model-a", "s1", ts, TokenSums{Input: 1})},
+		testSource(1)); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = s2.Close() }()
+	n, err := s2.CountEvents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("data lost across reopen: %d", n)
+	}
+}
+
+func TestScanRawForContent(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	e := event("m1", "r1", "model-a", "s1", ts, TokenSums{Input: 1})
+	e.Raw = []byte(`{"message":{"content":"<stripped len=42 sha256=abcdef123456>"}}`)
+	if _, err := s.InsertBatch(ctx, []core.Event{e}, testSource(1)); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := s.ScanRawForContent(ctx, "stripped len=42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits != 1 {
+		t.Fatalf("expected to find placeholder, got %d hits", hits)
+	}
+	hits, err = s.ScanRawForContent(ctx, "the actual secret prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits != 0 {
+		t.Fatalf("unexpected content hit: %d", hits)
+	}
+}
