@@ -19,9 +19,6 @@ node_modules/
 *.sqlite-wal
 *.sqlite-shm
 
-# --- Secrets / local-only files (e.g. fixture PROJECT_MAP.local.json) ---
-*.local.json
-
 # --- Editor / OS junk ---
 .idea/
 .vscode/
@@ -34,3 +31,8 @@ Thumbs.db
 # testdata/fixtures/** MUST be committed — never add ignore rules for it.
 # Re-include in case a broad pattern above ever matches inside fixtures:
 !testdata/fixtures/**
+
+# --- Secrets / local-only files (e.g. fixture PROJECT_MAP.local.json) ---
+# Must stay BELOW the fixtures re-include: later rules win, and the secret
+# map lives inside testdata/fixtures/.
+*.local.json
