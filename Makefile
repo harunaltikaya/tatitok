@@ -4,7 +4,7 @@ DIST      := dist
 
 export CGO_ENABLED := 0
 
-.PHONY: test leakcheck lint build build-all parity-full clean
+.PHONY: test leakcheck lint build build-all parity-full parity-full-codex clean
 
 test: leakcheck
 	go test ./...
@@ -35,4 +35,7 @@ clean:
 # logs at comparison time (pinned version from expected/META.json) —
 # never reads an on-disk -full expectation file.
 parity-full:
-	TATITOK_PARITY_FULL=1 go test -v -run TestParityFull ./internal/parity
+	TATITOK_PARITY_FULL=1 go test -v -run 'TestParityFull$$' ./internal/parity
+
+parity-full-codex:
+	TATITOK_PARITY_FULL_CODEX=1 go test -v -run TestParityFullCodex ./internal/parity
