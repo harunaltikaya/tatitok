@@ -6,6 +6,10 @@
 *.out
 coverage.*
 
+# --- Python (owner-machine harvest/check scripts; .pyc embeds local paths) ---
+__pycache__/
+*.pyc
+
 # --- Node (frontend, later milestones) ---
 node_modules/
 .npm/
