@@ -23,8 +23,9 @@ What it does:
      in all kept strings AND object keys (some records key maps by file
      path). Malformed source lines are replaced with
      a single-key placeholder object so line counts stay identical.
-  4. Captures ccusage expectations (both `daily` and `session`, --json
-     --offline) twice:
+  4. Captures ccusage expectations (`claude daily` and `claude session`,
+     --json --offline — the `claude` subcommand scopes multi-agent ccusage
+     v20+ to Claude Code logs only) twice:
        - fixture-scoped: against a temp fake projects/ tree containing the
          ORIGINAL (unsanitized) content of only the selected files, laid out
          under the SAME sanitized dir/file names as the committed fixtures.
@@ -380,7 +381,11 @@ def resolve_ccusage_version(meta_path, override):
 
 
 def run_ccusage(version, subcommand, config_dir):
-    cmd = ["npx", "-y", "ccusage@%s" % version, subcommand, "--json", "--offline"]
+    # ccusage >= v20 is multi-agent (codex, opencode, ...) and mixes every
+    # detected agent's usage into the bare `daily`/`session` commands; the
+    # `claude` subcommand scopes the report to Claude Code logs only
+    cmd = (["npx", "-y", "ccusage@%s" % version, "claude"] + subcommand.split()
+           + ["--json", "--offline"])
     env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
     out = subprocess.run(cmd, capture_output=True, text=True, env=env,
                          timeout=1800)
@@ -452,13 +457,15 @@ def capture_expectations(version, snap_root, project_dirs, expected_dir):
 def local_timezone():
     now = datetime.datetime.now().astimezone()
     name = None
-    tzfile = Path("/etc/timezone")
-    if tzfile.is_file():
-        name = tzfile.read_text(encoding="utf-8").strip()
-    elif Path("/etc/localtime").is_symlink():
+    # /etc/localtime is what Node/ICU (and hence ccusage date bucketing)
+    # actually follows; /etc/timezone can be stale (seen: Etc/UTC vs an
+    # /etc/localtime symlink to Europe/Istanbul)
+    if Path("/etc/localtime").is_symlink():
         target = os.readlink("/etc/localtime")
         if "zoneinfo/" in target:
             name = target.split("zoneinfo/")[-1]
+    if name is None and Path("/etc/timezone").is_file():
+        name = Path("/etc/timezone").read_text(encoding="utf-8").strip()
     return {
         "iana": name or os.environ.get("TZ"),
         "abbreviation": now.tzname(),
