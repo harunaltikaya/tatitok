@@ -1,0 +1,101 @@
+{
+ "timestamp": "2026-06-09T06:05:44.123Z",
+ "type": "response_item",
+ "payload": {
+  "type": "function_call",
+  "name": "shell",
+  "call_id": "call_AbCdEf0123456789VectorXx",
+  "arguments": "{\"command\":[\"bash\",\"-lc\",\"echo content here\"]}"
+ },
+ "outputRecord": {
+  "type": "function_call_output",
+  "call_id": "call_AbCdEf0123456789VectorXx",
+  "output": "tool result text that must never persist"
+ },
+ "agentMsg": {
+  "type": "agent_message",
+  "message": "assistant reply text",
+  "phase": "final"
+ },
+ "claudeShaped": {
+  "message": {
+   "id": "msg_01VectorFf",
+   "usage": {
+    "input_tokens": 5,
+    "output_tokens": 2
+   }
+  }
+ },
+ "execEnd": {
+  "command": [
+   "bash",
+   "-lc",
+   "grep secret ./notes.txt"
+  ],
+  "parsed_cmd": [
+   {
+    "type": "read",
+    "cmd": "grep",
+    "path": "notes.txt"
+   }
+  ],
+  "aggregated_output": "matched lines...",
+  "formatted_output": "matched lines...",
+  "exit_code": 0,
+  "duration": {
+   "secs": 1,
+   "nanos": 500
+  }
+ },
+ "reasoningRec": {
+  "summary": [
+   {
+    "type": "summary_text",
+    "text": "thought"
+   }
+  ],
+  "encrypted_content": "AAAA====",
+  "content": null
+ },
+ "meta": {
+  "user_instructions": "private AGENTS.md text",
+  "base_instructions": {
+   "text": "system prompt"
+  },
+  "git": {
+   "branch": "main",
+   "commit_hash": "0123456789abcdef0123456789abcdef01234567",
+   "repository_url": "ssh://example/own/repo.git"
+  }
+ },
+ "patch": {
+  "changes": {
+   "/home/user/Projects/x/a.go": {
+    "type": "update",
+    "unified_diff": "--- a\n+++ b"
+   }
+  }
+ },
+ "search": {
+  "query": "how to do the thing",
+  "url": "https://example.com/?q=thing"
+ },
+ "compactedMsg": {
+  "message": "summary of dropped turns",
+  "replacement_history": [
+   {
+    "role": "user",
+    "type": "message",
+    "content": [
+     {
+      "type": "input_text",
+      "text": "old text"
+     }
+    ]
+   }
+  ]
+ },
+ "ws": {
+  "call_id": "ws_Vector0123456789012345678901234567890123456789Xx"
+ }
+}

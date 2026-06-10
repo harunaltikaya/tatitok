@@ -1,0 +1,211 @@
+{
+  "harvest_date": "2026-06-10T21:32:15+00:00",
+  "source": "codex",
+  "machine_label": "gx10",
+  "platform": "Linux-6.17.0-1021-nvidia-aarch64-with-glibc2.39",
+  "codex_cli_versions_seen": [
+    "0.118.0",
+    "0.125.0",
+    "0.130.0"
+  ],
+  "log_roots": [
+    "~/.codex/sessions"
+  ],
+  "files": [
+    {
+      "source": "~/.codex/sessions/2026/04/02/project-981102",
+      "fixture": "sessions/2026/04/02/rollout-2026-04-02T21-30-54-638cd0bf-cec5-9f66-5033-acf76db8a962.jsonl",
+      "criteria": [
+        "oldest"
+      ],
+      "lines": 378,
+      "malformed_lines": 0,
+      "usage_messages": 52,
+      "models": [
+        "gpt-5.4"
+      ],
+      "first_timestamp": "2026-04-02T22:20:36.911Z",
+      "last_timestamp": "2026-04-02T22:51:42.936Z",
+      "source_bytes": 427814
+    },
+    {
+      "source": "~/.codex/sessions/2026/04/02/project-4a3a0e",
+      "fixture": "sessions/2026/04/02/rollout-2026-04-02T22-54-47-2f623a0c-9592-ecf0-14ed-a1445693304a.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 740,
+      "malformed_lines": 0,
+      "usage_messages": 109,
+      "models": [
+        "gpt-5.4"
+      ],
+      "first_timestamp": "2026-04-02T22:58:07.277Z",
+      "last_timestamp": "2026-04-02T23:50:31.499Z",
+      "source_bytes": 1199165
+    },
+    {
+      "source": "~/.codex/sessions/2026/04/30/project-c4a161",
+      "fixture": "sessions/2026/04/30/rollout-2026-04-30T14-55-29-32b1ca00-6451-3ea1-8916-53fb0f41df32.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 3146,
+      "malformed_lines": 0,
+      "usage_messages": 447,
+      "models": [
+        "gpt-5.5"
+      ],
+      "first_timestamp": "2026-04-30T14:55:49.144Z",
+      "last_timestamp": "2026-05-01T12:52:53.293Z",
+      "source_bytes": 12302710
+    },
+    {
+      "source": "~/.codex/sessions/2026/05/15/project-1db296",
+      "fixture": "sessions/2026/05/15/rollout-2026-05-15T14-18-31-405a68a5-c7e3-13a9-cb5e-0154ab5de2d9.jsonl",
+      "criteria": [
+        "short-session"
+      ],
+      "lines": 13,
+      "malformed_lines": 0,
+      "usage_messages": 1,
+      "models": [
+        "codex-auto-review"
+      ],
+      "first_timestamp": "2026-05-15T14:18:32.209Z",
+      "last_timestamp": "2026-05-15T14:18:34.037Z",
+      "source_bytes": 24173
+    },
+    {
+      "source": "~/.codex/sessions/2026/05/16/project-d01c6c",
+      "fixture": "sessions/2026/05/16/rollout-2026-05-16T07-35-14-0315c1c9-536a-9f49-d209-25f3071cf0cb.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 498,
+      "malformed_lines": 0,
+      "usage_messages": 86,
+      "models": [
+        "gpt-5.4"
+      ],
+      "first_timestamp": "2026-05-16T07:35:35.150Z",
+      "last_timestamp": "2026-05-16T07:59:25.307Z",
+      "source_bytes": 886792
+    },
+    {
+      "source": "~/.codex/sessions/2026/05/19/project-73de4b",
+      "fixture": "sessions/2026/05/19/rollout-2026-05-19T16-39-16-7191f010-aee5-f050-c2d2-567da93c7239.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 153,
+      "malformed_lines": 0,
+      "usage_messages": 29,
+      "models": [
+        "codex-auto-review"
+      ],
+      "first_timestamp": "2026-05-19T16:39:19.219Z",
+      "last_timestamp": "2026-05-19T17:40:40.881Z",
+      "source_bytes": 678293
+    },
+    {
+      "source": "~/.codex/sessions/2026/05/30/project-98c4cb",
+      "fixture": "sessions/2026/05/30/rollout-2026-05-30T11-03-41-52faca51-e63a-f6dd-f2b1-330feda62786.jsonl",
+      "criteria": [
+        "long-session",
+        "cache-heavy"
+      ],
+      "lines": 3939,
+      "malformed_lines": 0,
+      "usage_messages": 811,
+      "models": [
+        "gpt-5.5"
+      ],
+      "first_timestamp": "2026-05-30T11:05:43.582Z",
+      "last_timestamp": "2026-05-30T20:07:57.488Z",
+      "source_bytes": 6536890
+    },
+    {
+      "source": "~/.codex/sessions/2026/05/31/project-1f82db",
+      "fixture": "sessions/2026/05/31/rollout-2026-05-31T07-03-02-1e05d12b-6d15-43e1-6bdd-77cd560ec4cc.jsonl",
+      "criteria": [
+        "model-switch"
+      ],
+      "lines": 2893,
+      "malformed_lines": 0,
+      "usage_messages": 364,
+      "models": [
+        "gpt-5.4",
+        "gpt-5.5"
+      ],
+      "first_timestamp": "2026-05-31T07:04:43.657Z",
+      "last_timestamp": "2026-05-31T17:23:51.356Z",
+      "source_bytes": 4917163
+    },
+    {
+      "source": "~/.codex/sessions/2026/06/07/project-26b978",
+      "fixture": "sessions/2026/06/07/rollout-2026-06-07T10-00-51-20bf5eb9-eedd-796e-bae1-dc59f550731b.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 44,
+      "malformed_lines": 0,
+      "usage_messages": 7,
+      "models": [
+        "codex-auto-review"
+      ],
+      "first_timestamp": "2026-06-07T10:00:52.597Z",
+      "last_timestamp": "2026-06-07T10:01:58.237Z",
+      "source_bytes": 143063
+    },
+    {
+      "source": "~/.codex/sessions/2026/06/10/project-f04fd0",
+      "fixture": "sessions/2026/06/10/rollout-2026-06-10T22-29-14-62478c7f-ff9c-4c9e-525e-eb6439b1d1db.jsonl",
+      "criteria": [
+        "recent-full"
+      ],
+      "lines": 173,
+      "malformed_lines": 0,
+      "usage_messages": 18,
+      "models": [
+        "gpt-5.5"
+      ],
+      "first_timestamp": "2026-06-10T19:29:20.112Z",
+      "last_timestamp": "2026-06-10T19:32:32.487Z",
+      "source_bytes": 203914
+    },
+    {
+      "source": "~/.codex/sessions/2026/06/10/project-80b4c9",
+      "fixture": "sessions/2026/06/10/rollout-2026-06-10T23-25-20-c35beab5-0a54-6a36-e96e-4e7d5362ec3e.jsonl",
+      "criteria": [
+        "recent-full"
+      ],
+      "lines": 43,
+      "malformed_lines": 0,
+      "usage_messages": 7,
+      "models": [
+        "codex-auto-review"
+      ],
+      "first_timestamp": "2026-06-10T20:25:23.953Z",
+      "last_timestamp": "2026-06-10T20:26:10.733Z",
+      "source_bytes": 89711
+    },
+    {
+      "source": "~/.codex/sessions/2026/06/10/project-8fa1fe",
+      "fixture": "sessions/2026/06/10/rollout-2026-06-10T23-05-21-a0b63c0a-9efe-930b-1f51-75b049292563.jsonl",
+      "criteria": [
+        "newest",
+        "recent-full"
+      ],
+      "lines": 84,
+      "malformed_lines": 0,
+      "usage_messages": 15,
+      "models": [
+        "gpt-5.5"
+      ],
+      "first_timestamp": "2026-06-10T20:24:42.634Z",
+      "last_timestamp": "2026-06-10T20:26:12.380Z",
+      "source_bytes": 146045
+    }
+  ]
+}

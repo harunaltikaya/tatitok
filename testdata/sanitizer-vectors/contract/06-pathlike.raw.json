@@ -2,7 +2,7 @@
  "cwd": "/home/user/Projects/example",
  "longPath": "/home/user/Projects/example/sub/sub/sub/sub/sub/sub/sub/sub/sub/sub/sub/sub/sub/sub/sub/sub/file_name.go",
  "tilde": "~/notes/todo.md",
- "dotRel": "./scripts/run.sh",
+ "dotRel": "./scripts/zz_vector_tool.sh",
  "bare": "docs/architecture/overview.md",
  "spacey": "not / a path because it has spaces zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
 }

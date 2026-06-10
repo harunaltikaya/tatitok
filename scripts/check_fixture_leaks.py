@@ -80,7 +80,14 @@ from pathlib import Path
 UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-PREFIX_ID_RE = re.compile(r"\b(?:msg|req|toolu)_[A-Za-z0-9]{10,}\b")
+# prefixed-id shapes come from the shared sanitizer rule-spec (one source
+# of truth): every such id in a committed file must be a known pseudonym
+_RULES = json.loads(
+    (Path(__file__).resolve().parent.parent
+     / "internal" / "core" / "sanitize_rules.json").read_text(encoding="utf-8"))
+PREFIX_ID_RE = re.compile(
+    r"\b(?:%s)_[A-Za-z0-9]{10,}\b"
+    % "|".join(_RULES["id_shapes"]["prefix_id_prefixes"]))
 
 # Sanitizer contract vectors are SYNTHETIC by design (fabricated content is
 # explicitly allowed there — the sanitizer is a pure function). Raw vectors
@@ -143,12 +150,8 @@ def scan_map_free(repo, rel, findings):
 
 # --- sanitizer-output shape invariants (map-free; run on CI too) -------------
 
-# maps that are path-keyed BY SCHEMA — read from the shared sanitizer
-# rule-spec (one source of truth; no duplicated rule tables)
-_RULES_PATH = (Path(__file__).resolve().parent.parent
-               / "internal" / "core" / "sanitize_rules.json")
-PATH_KEYED_MAPS = set(json.loads(
-    _RULES_PATH.read_text(encoding="utf-8"))["harvest"]["path_keyed_maps"])
+# maps that are path-keyed BY SCHEMA — from the shared sanitizer rule-spec
+PATH_KEYED_MAPS = set(_RULES["harvest"]["path_keyed_maps"])
 
 P_TOKEN_RE = re.compile(r"p-[0-9a-f]{8}(?:\.[A-Za-z0-9]{1,5})?")
 PROJECT_TOKEN_RE = re.compile(r"project-[0-9a-f]{6}")
@@ -241,41 +244,60 @@ def committed_files(repo):
     return [Path(p) for p in out.stdout.splitlines() if p]
 
 
-def load_map(map_path, home, username):
-    m = json.loads(map_path.read_text(encoding="utf-8"))
-
+def load_maps(map_paths, home, username):
+    """Merge every per-source secret alias map (each fixture source root —
+    claude-code, codex, opencode — keeps its own PROJECT_MAP.local.json
+    with its own salt)."""
     globals_ = {}  # real string -> category; substring-matched everywhere
+    tokens = {}    # real token -> (category, compiled regex)
+    ids = {}       # merged real id -> pseudonym
+
     def g(value, cat):
         if isinstance(value, str) and len(value) >= 4:
             globals_.setdefault(value, cat)
 
-    g(m["salt"], "harvest-salt")
+    # Names the rule-spec declares STRUCTURAL (public tool/XDG dirs, date
+    # segments) can appear in the alias maps too, when the same name shows
+    # up after a project segment and gets aliased there. Their literal
+    # occurrences are public by spec; the SHAPE check still proves every
+    # post-project segment in committed fixtures is a sanitizer token.
+    structural = (set(_RULES["harvest"]["path_segment_allowlist"])
+                  | set(_RULES["harvest"]["owner_approved_segments"]))
+    structural_res = [re.compile(p) for p in
+                      _RULES["harvest"]["path_segment_allowlist_regexes"]]
+
+    def t(value, cat):
+        if not isinstance(value, str) or len(value) < 3:
+            return
+        if value in structural or any(rx.match(value) for rx in structural_res):
+            return
+        tokens.setdefault(value, (cat, token_re(value)))
+
     g(str(home), "home-path")
     g(str(home).replace("/", "-"), "encoded-home")
     if len(username) >= 4:
         g(username, "username")
-    for k in m.get("ids", {}):
-        g(k, "real-id")
-    for k in m.get("sources", {}):
-        g(k, "real-source-path")
 
-    tokens = {}  # real token -> (category, compiled regex)
-    def t(value, cat):
-        if isinstance(value, str) and len(value) >= 3:
-            tokens.setdefault(value, (cat, token_re(value)))
-
-    for k in m.get("projects", {}):
-        t(k, "real-project-slug")
-    for k in m.get("segments", {}):
-        t(k, "real-path-segment")
-    for k in m.get("keys", {}):
-        t(k, "real-path-key")
+    for map_path in map_paths:
+        m = json.loads(map_path.read_text(encoding="utf-8"))
+        g(m["salt"], "harvest-salt")
+        for k in m.get("ids", {}):
+            g(k, "real-id")
+        for k in m.get("sources", {}):
+            g(k, "real-source-path")
+        for k in m.get("projects", {}):
+            t(k, "real-project-slug")
+        for k in m.get("segments", {}):
+            t(k, "real-path-segment")
+        for k in m.get("keys", {}):
+            t(k, "real-path-key")
+        ids.update(m.get("ids", {}))
 
     # 8-hex prefixes of real UUIDs catch truncated doc mentions; skip any
     # that collide with a pseudonym's hex (astronomically unlikely)
-    pseudonyms = {v.lower() for v in m.get("ids", {}).values()}
+    pseudonyms = {v.lower() for v in ids.values()}
     prefixes = set()
-    for k in m.get("ids", {}):
+    for k in ids:
         if UUID_RE.fullmatch(k):
             p = k[:8].lower()
             if not any(p in ps for ps in pseudonyms):
@@ -309,8 +331,9 @@ def scan(repo, rel, globals_, tokens, prefixes, pseudonyms, public_tokens,
                 # id prefixes and UUIDs are still checked on these files.
                 continue
             for m in rx.finditer(line):
-                # segments/keys only leak in path context: the match must
-                # touch a '/' (slugs leak anywhere, even in prose)
+                # segment and key tokens only leak in path context: the
+                # match must touch a slash (slugs leak anywhere, even in
+                # prose)
                 if cat != "real-project-slug":
                     before = line[m.start() - 1] if m.start() > 0 else ""
                     after = line[m.end()] if m.end() < len(line) else ""
@@ -335,10 +358,10 @@ def scan(repo, rel, globals_, tokens, prefixes, pseudonyms, public_tokens,
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--map",
-                    default="testdata/fixtures/claude-code/"
-                            "PROJECT_MAP.local.json",
-                    help="path to the secret alias map (never committed)")
+    ap.add_argument("--maps-glob",
+                    default="testdata/fixtures/*/PROJECT_MAP.local.json",
+                    help="glob for the per-source secret alias maps "
+                         "(never committed)")
     ap.add_argument("--show-values", action="store_true",
                     help="print matched values in full (default: redacted)")
     args = ap.parse_args()
@@ -395,20 +418,26 @@ def main():
               "(id check global, no -full exemption)")
         return 0
 
-    map_path = Path(args.map)
-    if not map_path.is_file():
+    map_paths = sorted(repo.glob(args.maps_glob))
+    if not map_paths:
         return report(
             "structural checks passed, %d testdata files shape-checked, and "
             "map-independent content scans (secret patterns, /home/<not "
-            "user>, /Users/*, emails) ran across %d committed files; alias "
-            "map not found (%s) — ONLY map-dependent scans (real ids/"
-            "tokens/pseudonyms) SKIPPED (expected on CI; the map is a "
-            "local-only artifact)" % (len(shaped), len(files), map_path))
+            "user>, /Users/*, emails) ran across %d committed files; no "
+            "alias maps found (%s) — ONLY map-dependent scans (real ids/"
+            "tokens/pseudonyms) SKIPPED (expected on CI; the maps are "
+            "local-only artifacts)" % (len(shaped), len(files), args.maps_glob))
 
-    globals_, tokens, prefixes, pseudonyms = load_map(
-        map_path, Path.home(), Path.home().name)
+    globals_, tokens, prefixes, pseudonyms = load_maps(
+        map_paths, Path.home(), Path.home().name)
 
-    public_tokens = {repo.name.lower()}
+    # Public by construction: committed file paths/components, the repo
+    # name, and the harness/tool names this product exists to support —
+    # the docs cannot avoid writing "ccusage opencode" or naming
+    # testdata/fixtures/<harness>/ paths. Fixture .jsonl files still get
+    # NO exemption: these names must be aliased inside fixture logs.
+    public_tokens = {repo.name.lower(),
+                     "claude", "claude-code", "codex", "opencode", "ccusage"}
     for rel in files:
         public_tokens.add(str(rel).lower())
         public_tokens.update(part.lower() for part in rel.parts)

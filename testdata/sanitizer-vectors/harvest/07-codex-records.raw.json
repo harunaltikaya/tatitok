@@ -1,0 +1,57 @@
+{
+ "sessionMeta": {
+  "id": "019eaa57-d90d-7782-a46c-66b6815e86f6",
+  "timestamp": "2026-06-09T06:05:44.123Z",
+  "cwd": "/home/user/Projects/secretproj",
+  "cli_version": "0.99.0",
+  "originator": "codex_cli_rs",
+  "model_provider": "openai",
+  "git": {
+   "branch": "secret-feature",
+   "commit_hash": "0123456789abcdef0123456789abcdef01234567"
+  },
+  "user_instructions": "private instructions text"
+ },
+ "tokenCount": {
+  "type": "token_count",
+  "info": {
+   "total_token_usage": {
+    "input_tokens": 1000,
+    "cached_input_tokens": 800,
+    "output_tokens": 50,
+    "reasoning_output_tokens": 10,
+    "total_tokens": 1050
+   },
+   "last_token_usage": {
+    "input_tokens": 100,
+    "cached_input_tokens": 80,
+    "output_tokens": 5,
+    "reasoning_output_tokens": 1,
+    "total_tokens": 105
+   },
+   "model_context_window": 272000
+  },
+  "rate_limits": {
+   "limit_id": "codex-standard",
+   "plan_type": "plus",
+   "primary": {
+    "used_percent": 12.5,
+    "window_minutes": 300
+   }
+  }
+ },
+ "calls": {
+  "call_id": "call_AbCdEf0123456789VectorXx",
+  "again": "call_AbCdEf0123456789VectorXx",
+  "wsId": "ws_Vector0123456789012345678901234567890123456789Xx"
+ },
+ "turnContext": {
+  "cwd": "/home/user/Projects/secretproj",
+  "model": "gpt-5.4-codex",
+  "effort": "high",
+  "summary": "auto",
+  "turn_id": "019eaa58-1111-7222-8333-444455556666",
+  "timezone": "Europe/Istanbul",
+  "current_date": "2026-06-09"
+ }
+}

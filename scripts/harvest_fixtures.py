@@ -129,8 +129,20 @@ PREFIX_ID_RE = re.compile("^(%s)_(%s)$" % (
 
 # harvest-only tables (the DB sanitizer ignores these)
 PATH_KEYED_MAPS = set(RULES["harvest"]["path_keyed_maps"])
+GIT_BRANCH_KEYS = set(RULES["harvest"]["git_branch_keys"])
 GIT_BRANCH_ALLOWLIST = set(RULES["harvest"]["git_branch_allowlist"])
-PATH_SEGMENT_ALLOWLIST = set(RULES["harvest"]["path_segment_allowlist"])
+# structural names plus owner-approved exceptions (distinct spec
+# categories — see the spec's decision rule — identical sanitizer effect)
+PATH_SEGMENT_ALLOWLIST = (set(RULES["harvest"]["path_segment_allowlist"])
+                          | set(RULES["harvest"]["owner_approved_segments"]))
+PATH_SEGMENT_ALLOWLIST_RES = [
+    re.compile(p) for p in RULES["harvest"]["path_segment_allowlist_regexes"]]
+VERBATIM_VALUE_KEYS = set(RULES["harvest"]["verbatim_value_keys"])
+
+
+def is_structural_segment(seg):
+    return seg in PATH_SEGMENT_ALLOWLIST or any(
+        rx.match(seg) for rx in PATH_SEGMENT_ALLOWLIST_RES)
 
 VECTORS_DIR = REPO_ROOT / "testdata" / "sanitizer-vectors"
 
@@ -266,7 +278,7 @@ def alias_path_value(s):
     s = redact_home_text(s)
     out, project_seen = [], False
     for seg in s.split("/"):
-        if not project_seen and seg in PATH_SEGMENT_ALLOWLIST:
+        if not project_seen and is_structural_segment(seg):
             out.append(seg)
             continue
         if seg.startswith("-"):
@@ -356,6 +368,11 @@ def sanitize_value(node, key=None, harvest=True):
         return [sanitize_value(v, key, harvest) for v in node]
     if isinstance(node, str):
         if harvest:
+            if key in VERBATIM_VALUE_KEYS:
+                # closed-vocabulary metadata (IANA timezones) — slash-shaped
+                # but never project identity; aliasing would poison the map
+                # with public names like Europe/Istanbul
+                return node
             pid = pseudo_id(node)
             if pid is not None:
                 return pid
@@ -368,12 +385,13 @@ def sanitize_value(node, key=None, harvest=True):
                 # (gap found by harvest vector 02; redact_json already
                 # handled this case for the -full expectation files)
                 return alias_encoded_dirname(node)
-            if is_pathlike(node):
-                return alias_path_value(node)
-            if key == "gitBranch":
+            if key in GIT_BRANCH_KEYS:
                 if node in GIT_BRANCH_ALLOWLIST:
                     return node
-                return "branch-" + salted(node)[:6]
+                if not is_pathlike(node):
+                    return "branch-" + salted(node)[:6]
+            if is_pathlike(node):
+                return alias_path_value(node)
             s = redact_home_text(node)
             if key in SAFE_KEYS:
                 return s
@@ -398,14 +416,25 @@ def sanitize_record(obj):
     return sanitize_value(obj)
 
 
-# --- file scanning -----------------------------------------------------------
-
+# --- sources ------------------------------------------------------------------
+#
+# Each harvest source describes one agent's log store: discovery, per-line
+# stat scanning (for selection), the snapshot/fixture tree layout, and the
+# ccusage agent subcommand + env var used for expectations. The sanitizer
+# itself is shared — codex-specific CONTENT fields live in the rule-spec,
+# never here (milestone-2 Task 3 rule).
 
 class FileStat:
-    def __init__(self, path, project_dir):
+    """Stats for one source log file. snap_rel is the file's path inside
+    the snapshot/fixture trees with ORIGINAL names (e.g.
+    projects/<dir>/<file>.jsonl or sessions/YYYY/MM/DD/<file>.jsonl);
+    fixture naming is source-specific."""
+
+    def __init__(self, path, snap_rel, scan_line):
         self.path = path
         self.source = path  # original location (snapshot copies override this)
-        self.project_dir = project_dir
+        self.snap_rel = Path(snap_rel)
+        self.scan_line = scan_line
         self.mtime = path.stat().st_mtime
         self.size = path.stat().st_size
         self.lines = 0
@@ -429,32 +458,67 @@ class FileStat:
                 except json.JSONDecodeError:
                     self.malformed += 1
                     continue
-                if not isinstance(obj, dict):
-                    continue
-                ts = obj.get("timestamp")
-                if isinstance(ts, str):
-                    if self.first_ts is None:
-                        self.first_ts = ts
-                    self.last_ts = ts
-                ver = obj.get("version")
-                if isinstance(ver, str):
-                    self.versions.add(ver)
-                msg = obj.get("message")
-                if obj.get("type") == "assistant" and isinstance(msg, dict):
-                    usage = msg.get("usage")
-                    if isinstance(usage, dict):
-                        self.usage_msgs += 1
-                        model = msg.get("model")
-                        if isinstance(model, str):
-                            self.models.add(model)
-                        for k in ("cache_creation_input_tokens",
-                                  "cache_read_input_tokens"):
-                            v = usage.get(k)
-                            if isinstance(v, (int, float)):
-                                self.cache_tokens += int(v)
+                if isinstance(obj, dict):
+                    self.scan_line(self, obj)
 
 
-def discover_project_dirs(overrides):
+def scan_line_claude(st, obj):
+    ts = obj.get("timestamp")
+    if isinstance(ts, str):
+        if st.first_ts is None:
+            st.first_ts = ts
+        st.last_ts = ts
+    ver = obj.get("version")
+    if isinstance(ver, str):
+        st.versions.add(ver)
+    msg = obj.get("message")
+    if obj.get("type") == "assistant" and isinstance(msg, dict):
+        usage = msg.get("usage")
+        if isinstance(usage, dict):
+            st.usage_msgs += 1
+            model = msg.get("model")
+            if isinstance(model, str):
+                st.models.add(model)
+            for k in ("cache_creation_input_tokens",
+                      "cache_read_input_tokens"):
+                v = usage.get(k)
+                if isinstance(v, (int, float)):
+                    st.cache_tokens += int(v)
+
+
+def scan_line_codex(st, obj):
+    """Codex rollout records: top-level {timestamp, type, payload}. Usage
+    rides on event_msg token_count payloads (payload.info); the model on
+    turn_context; the CLI version on session_meta."""
+    ts = obj.get("timestamp")
+    if isinstance(ts, str):
+        if st.first_ts is None:
+            st.first_ts = ts
+        st.last_ts = ts
+    pl = obj.get("payload")
+    if not isinstance(pl, dict):
+        return
+    t = obj.get("type")
+    if t == "session_meta":
+        ver = pl.get("cli_version")
+        if isinstance(ver, str):
+            st.versions.add(ver)
+    elif t == "turn_context":
+        model = pl.get("model")
+        if isinstance(model, str):
+            st.models.add(model)
+    elif pl.get("type") == "token_count":
+        info = pl.get("info")
+        if isinstance(info, dict):
+            st.usage_msgs += 1
+            last = info.get("last_token_usage")
+            if isinstance(last, dict):
+                v = last.get("cached_input_tokens")
+                if isinstance(v, (int, float)):
+                    st.cache_tokens += int(v)
+
+
+def discover_claude(overrides):
     if overrides:
         candidates = [Path(p).expanduser() for p in overrides]
     else:
@@ -476,11 +540,38 @@ def discover_project_dirs(overrides):
     return found
 
 
-def scan_all(project_dirs):
+def discover_codex(overrides):
+    if overrides:
+        candidates = [Path(p).expanduser() for p in overrides]
+    else:
+        env = os.environ.get("CODEX_HOME")
+        base = Path(env).expanduser() if env else Path.home() / ".codex"
+        candidates = [base / "sessions"]
+    return [c for c in candidates if c.is_dir()]
+
+
+def scan_all_claude(roots):
     stats = []
-    for pd in project_dirs:
+    for pd in roots:
         for f in sorted(pd.glob("*/*.jsonl")):
-            st = FileStat(f, f.parent.name)
+            st = FileStat(f, Path("projects") / f.parent.name / f.name,
+                          scan_line_claude)
+            try:
+                st.scan()
+            except OSError as exc:
+                print("  ! skipping a session file: %s" % exc, file=sys.stderr)
+                continue
+            if st.lines > 0:
+                stats.append(st)
+    return stats
+
+
+def scan_all_codex(roots):
+    stats = []
+    for root in roots:
+        for f in sorted(root.rglob("*.jsonl")):
+            st = FileStat(f, Path("sessions") / f.relative_to(root),
+                          scan_line_codex)
             try:
                 st.scan()
             except OSError as exc:
@@ -538,19 +629,35 @@ def select(stats, target):
 # --- fixture writing ---------------------------------------------------------
 
 
-def fixture_name(stat):
+UUID_TAIL_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def fixture_rel_claude(stat):
     """Aliased project dir + pseudonymized session filename."""
-    proj = alias_encoded_dirname(stat.project_dir)
+    proj = alias_encoded_dirname(stat.snap_rel.parts[1])
     stem = stat.path.stem
     new_stem = pseudo_id(stem) or stem
-    return proj, new_stem + stat.path.suffix
+    return Path("projects") / proj / (new_stem + stat.path.suffix)
 
 
-def write_fixture(stat, out_root):
-    proj, fname = fixture_name(stat)
-    dest_dir = out_root / "projects" / proj
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / fname
+def fixture_rel_codex(stat):
+    """Same sessions/YYYY/MM/DD tree (ccusage codex needs it); the session
+    uuid embedded at the end of the rollout filename is pseudonymized with
+    the SAME map as the in-record ids, so file/record identity stays
+    consistent. The rollout timestamp prefix is preserved (timestamps are
+    never redacted)."""
+    stem = stat.path.stem
+    m = UUID_TAIL_RE.search(stem)
+    if m:
+        stem = stem[:m.start()] + pseudo_id(m.group(0))
+    return stat.snap_rel.parent / (stem + stat.path.suffix)
+
+
+def write_fixture(stat, out_root, rel):
+    dest = out_root / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
     written = 0
     with open(stat.path, "r", encoding="utf-8", errors="replace") as src, \
             open(dest, "w", encoding="utf-8") as out:
@@ -587,11 +694,10 @@ def snapshot_selected(selected, snap_root):
     """
     frozen = []
     for stat in selected:
-        d = snap_root / "projects" / stat.project_dir
-        d.mkdir(parents=True, exist_ok=True)
-        dest = d / stat.path.name
+        dest = snap_root / stat.snap_rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(stat.path, dest)
-        fresh = FileStat(dest, stat.project_dir)
+        fresh = FileStat(dest, stat.snap_rel, stat.scan_line)
         fresh.scan()
         fresh.criteria = stat.criteria
         fresh.source = stat.path
@@ -621,13 +727,15 @@ def resolve_ccusage_version(meta_path, override):
     return ver
 
 
-def run_ccusage(version, subcommand, config_dir):
+def run_ccusage(version, agent, subcommand, env_var, env_value):
     # ccusage >= v20 is multi-agent (codex, opencode, ...) and mixes every
     # detected agent's usage into the bare `daily`/`session` commands; the
-    # `claude` subcommand scopes the report to Claude Code logs only
-    cmd = (["npx", "-y", "ccusage@%s" % version, "claude"] + subcommand.split()
+    # agent subcommand (`claude`/`codex`) scopes the report to one log
+    # store, pointed at via the agent's env var.
+    cmd = (["npx", "-y", "ccusage@%s" % version, agent] + subcommand.split()
            + ["--json", "--offline"])
-    env = dict(os.environ, CLAUDE_CONFIG_DIR=str(config_dir))
+    env = dict(os.environ)
+    env[env_var] = str(env_value)
     out = subprocess.run(cmd, capture_output=True, text=True, env=env,
                          timeout=1800)
     if out.returncode != 0:
@@ -662,7 +770,36 @@ FULL_EXPECTATION_FILES = ("ccusage-daily-full.json",
                           "ccusage-session-full.json")
 
 
-def capture_expectations(version, fixture_root, snap_root, project_dirs,
+# Per-source harvest configuration. total_keys: the totals the
+# sanitized-vs-original self-check must match exactly (codex reports
+# reasoning/total token columns too — held to the same standard).
+SOURCES = {
+    "claude-code": {
+        "agent": "claude",
+        "env_var": "CLAUDE_CONFIG_DIR",
+        "discover": discover_claude,
+        "scan_all": scan_all_claude,
+        "fixture_rel": fixture_rel_claude,
+        "versions_key": "claude_code_versions_seen",
+        "total_keys": TOTAL_KEYS,
+        # ccusage env value covering the FULL history (all roots)
+        "full_env": lambda roots: ",".join(str(p.parent) for p in roots),
+    },
+    "codex": {
+        "agent": "codex",
+        "env_var": "CODEX_HOME",
+        "discover": discover_codex,
+        "scan_all": scan_all_codex,
+        "fixture_rel": fixture_rel_codex,
+        "versions_key": "codex_cli_versions_seen",
+        "total_keys": TOTAL_KEYS + ("reasoningOutputTokens", "totalTokens"),
+        # CODEX_HOME is the dir CONTAINING sessions/ (no list support)
+        "full_env": lambda roots: str(roots[0].parent),
+    },
+}
+
+
+def capture_expectations(src, version, fixture_root, snap_root, roots,
                          expected_dir):
     expected_dir.mkdir(parents=True, exist_ok=True)
     # fail BEFORE the expensive ccusage runs if the local-only -full pair
@@ -672,13 +809,14 @@ def capture_expectations(version, fixture_root, snap_root, project_dirs,
                            "full-history expectations keep real ids — "
                            "local-only by owner ruling")
     commands = {}
+    agent, env_var = src["agent"], src["env_var"]
 
     # fixture-scoped set (CI): captured from the SANITIZED tree itself, so
     # the committed expectations match the committed fixtures by construction
     fixture_daily = None
     for sub, fname in (("daily", "ccusage-daily.json"),
                        ("session", "ccusage-session.json")):
-        data, cmd = run_ccusage(version, sub, fixture_root)
+        data, cmd = run_ccusage(version, agent, sub, env_var, fixture_root)
         if sub == "daily":
             fixture_daily = data
         (expected_dir / fname).write_text(
@@ -686,18 +824,18 @@ def capture_expectations(version, fixture_root, snap_root, project_dirs,
             encoding="utf-8")
         commands[fname] = {
             "command": cmd,
-            "CLAUDE_CONFIG_DIR": "<the sanitized fixture tree>",
+            env_var: "<the sanitized fixture tree>",
             "scope": "fixture",
         }
         print("  wrote expected/%s" % fname)
 
     # self-check: ccusage on the frozen ORIGINAL snapshot must produce the
-    # exact same four token totals as on the sanitized tree — proves the
+    # exact same token totals as on the sanitized tree — proves the
     # sanitizer preserved all billing-relevant data (usage, ids for dedup,
     # timestamps)
-    orig_daily, _ = run_ccusage(version, "daily", snap_root)
-    got = {k: fixture_daily["totals"][k] for k in TOTAL_KEYS}
-    want = {k: orig_daily["totals"][k] for k in TOTAL_KEYS}
+    orig_daily, _ = run_ccusage(version, agent, "daily", env_var, snap_root)
+    got = {k: fixture_daily["totals"][k] for k in src["total_keys"]}
+    want = {k: orig_daily["totals"][k] for k in src["total_keys"]}
     if got != want:
         raise RuntimeError(
             "sanitized-tree ccusage totals diverge from original snapshot: "
@@ -709,9 +847,9 @@ def capture_expectations(version, fixture_root, snap_root, project_dirs,
     # it keeps real session/message ids; owner ruling: zero real identifiers
     # in the committed tree). `make parity-full` recaptures from live logs
     # at comparison time and never reads these files.
-    roots = ",".join(str(p.parent) for p in project_dirs)
+    full_env = src["full_env"](roots)
     for sub, fname in zip(("daily", "session"), FULL_EXPECTATION_FILES):
-        data, cmd = run_ccusage(version, sub, roots)
+        data, cmd = run_ccusage(version, agent, sub, env_var, full_env)
         dest = expected_dir / fname
         dest.write_text(
             json.dumps(redact_json(data), indent=2, ensure_ascii=False) + "\n",
@@ -721,7 +859,7 @@ def capture_expectations(version, fixture_root, snap_root, project_dirs,
                            "local-only by owner ruling")
         commands[fname] = {
             "command": cmd,
-            "CLAUDE_CONFIG_DIR": redact_home_text(roots),
+            env_var: redact_home_text(str(full_env)),
             "scope": "full-history (LOCAL-ONLY, gitignored)",
         }
         print("  wrote expected/%s (local-only, gitignored)" % fname)
@@ -927,9 +1065,13 @@ def main():
                     help="machine label (e.g. macbook, gx10); fixtures and "
                          "expectations go under <out>/<label>/ so harvests "
                          "from multiple machines don't overwrite each other")
+    ap.add_argument("--source", default="claude-code",
+                    choices=sorted(SOURCES),
+                    help="which agent's logs to harvest (default claude-code)")
     ap.add_argument("--config-dir", action="append", default=None,
-                    metavar="DIR/projects",
-                    help="explicit projects dir(s); overrides discovery")
+                    metavar="DIR",
+                    help="explicit log root dir(s) (claude-code: a projects "
+                         "dir; codex: a sessions dir); overrides discovery")
     ap.add_argument("--files", type=int, default=12,
                     help="target number of fixture files (8-15, default 12)")
     ap.add_argument("--ccusage-version", default=None,
@@ -969,17 +1111,17 @@ def main():
                        "the map contains the salt and real project names")
     load_or_create_map(map_path)
 
-    project_dirs = discover_project_dirs(args.config_dir)
-    if not project_dirs:
-        print("error: no Claude Code projects dir found "
-              "(checked $CLAUDE_CONFIG_DIR, ~/.claude, ~/.config/claude)",
-              file=sys.stderr)
+    src = SOURCES[args.source]
+    roots = src["discover"](args.config_dir)
+    if not roots:
+        print("error: no %s log roots found (set $%s to override)"
+              % (args.source, src["env_var"]), file=sys.stderr)
         return 1
-    print("project dirs: %s" % ", ".join(redact_home_text(str(p))
-                                         for p in project_dirs))
+    print("log roots: %s" % ", ".join(redact_home_text(str(p))
+                                      for p in roots))
 
     print("scanning session files ...")
-    stats = scan_all(project_dirs)
+    stats = src["scan_all"](roots)
     if not stats:
         print("error: no session JSONL files found", file=sys.stderr)
         return 1
@@ -998,7 +1140,7 @@ def main():
 
     manifest_files, sources = [], {}
     for stat in selected:
-        rel = write_fixture(stat, out_root)
+        rel = write_fixture(stat, out_root, src["fixture_rel"](stat))
         print("  %-72s %s" % (rel, ",".join(stat.criteria)))
         sources[str(stat.source)] = rel
         manifest_files.append({
@@ -1020,10 +1162,11 @@ def main():
     manifest = {
         "harvest_date": datetime.datetime.now(datetime.timezone.utc)
                         .isoformat(timespec="seconds"),
+        "source": args.source,
         "machine_label": args.label,
         "platform": platform.platform(),
-        "claude_code_versions_seen": sorted(versions),
-        "project_dirs": [redact_home_text(str(p)) for p in project_dirs],
+        src["versions_key"]: sorted(versions),
+        "log_roots": [redact_home_text(str(p)) for p in roots],
         "files": manifest_files,
     }
     (out_root / "MANIFEST.json").write_text(
@@ -1051,12 +1194,13 @@ def main():
     version = resolve_ccusage_version(meta_path, args.ccusage_version)
     t0 = time.time()
     try:
-        commands = capture_expectations(version, out_root, snap_root,
-                                        project_dirs, expected_dir)
+        commands = capture_expectations(src, version, out_root, snap_root,
+                                        roots, expected_dir)
     finally:
         snap_ctx.cleanup()
     meta = {
         "ccusage_version": version,
+        "source": args.source,
         "captured_at": datetime.datetime.now(datetime.timezone.utc)
                        .isoformat(timespec="seconds"),
         "timezone": local_timezone(),

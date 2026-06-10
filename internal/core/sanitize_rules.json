@@ -19,15 +19,23 @@
   ],
   "spec_version": 1,
 
-  "content_keys_doc": "values that are content by definition — always stripped to a placeholder, any length, any type (an entire tool_use input object becomes one placeholder). Includes short content-bearing fields found in real logs that slip under the max_free_len rule (aiTitle, lastPrompt, subject, description).",
+  "content_keys_doc": "values that are content by definition — always stripped to a placeholder, any length, any type (an entire tool_use input object becomes one placeholder). Includes short content-bearing fields found in real logs that slip under the max_free_len rule (aiTitle, lastPrompt, subject, description). The second group was added for Codex rollout records (M2 Task 3: tool args/outputs, exec command lines and outputs, patch diffs keyed by real paths, instruction blobs, reasoning ciphertext, web-search queries/urls, guardian rationale, error info).",
   "content_keys": [
     "text", "thinking", "summary", "input", "attachments", "toolUseResult",
     "signature", "prompt", "stdout", "stderr",
-    "aiTitle", "lastPrompt", "subject", "description"
+    "aiTitle", "lastPrompt", "subject", "description",
+
+    "arguments", "output", "result", "command", "parsed_cmd",
+    "aggregated_output", "formatted_output", "unified_diff", "changes",
+    "encrypted_content", "base_instructions", "user_instructions",
+    "developer_instructions", "instructions",
+    "text_elements", "images", "local_images", "last_agent_message",
+    "rationale", "memory_citation", "codex_error_info",
+    "query", "queries", "pattern", "url", "image_url", "repository_url"
   ],
 
-  "string_content_keys_doc": "keys whose STRING values are stripped but whose list/dict values keep their structure and are recursed into (the message.content block array).",
-  "string_content_keys": ["content"],
+  "string_content_keys_doc": "keys whose STRING values are stripped but whose list/dict values keep their structure and are recursed into. 'content': the message.content block array. 'message': Codex carries full message text as a string under this key (agent_message/user_message/error), while Claude Code's 'message' is the structural object holding usage — strip strings, recurse structures.",
+  "string_content_keys": ["content", "message"],
 
   "safe_keys_doc": "keys whose string values are known-safe metadata at any length (ids, timestamps, models, ...). The harvest sanitizer still pseudonymizes id-shaped and aliases path-shaped values regardless of this list.",
   "safe_keys": [
@@ -57,7 +65,7 @@
   "id_shapes": {
     "doc": "string shapes treated as opaque identifiers: kept verbatim by the DB sanitizer, pseudonymized shape-preservingly by the harvest sanitizer.",
     "uuid_regex": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-    "prefix_id_prefixes": ["msg", "req", "toolu"],
+    "prefix_id_prefixes": ["msg", "req", "toolu", "call", "ws"],
     "prefix_id_body_regex": "[A-Za-z0-9]+"
   },
 
@@ -67,13 +75,24 @@
     "doc": "tables used only by the harvest sanitizer's aliasing layer (committed-fixture publication); the DB sanitizer ignores this section.",
     "path_keyed_maps_doc": "maps whose keys are file paths BY SCHEMA: every key is tokenized to p-<8hex>[.ext] unconditionally — no path-likeness heuristics (extensionless keys like 'Makefile' must not slip through). The leak checker enforces the same set on committed fixtures.",
     "path_keyed_maps": ["readFileState", "trackedFileBackups"],
-    "git_branch_allowlist_doc": "gitBranch values kept verbatim; everything else becomes branch-<6hex>.",
+    "git_branch_keys_doc": "keys holding a git branch name (Claude Code: gitBranch; Codex session_meta git block: branch).",
+    "git_branch_keys": ["gitBranch", "branch"],
+    "git_branch_allowlist_doc": "git-branch values kept verbatim; everything else becomes branch-<6hex>.",
     "git_branch_allowlist": ["", "main", "master", "develop", "HEAD"],
-    "path_segment_allowlist_doc": "structural path segments carrying no project identity, kept verbatim BEFORE the project segment only; every segment after the project segment becomes a sanitizer token.",
+    "path_segment_allowlist_doc": "STRUCTURAL path segments carrying no project identity, kept verbatim BEFORE the project segment only; every segment after the project segment becomes a sanitizer token. The second group is well-known agent/tool/XDG dir names (OS- or tool-created, public software names) observed in real Codex logs (M2) — without them the alias map collides with the repo's own docs naming the same tools. Structural names need no owner ruling.",
     "path_segment_allowlist": [
       "", "~", "home", "user", "tmp", "var", "opt", "usr", "etc",
       "Projects", "projects", ".claude", ".config", "claude",
-      "memory", "plans", "todos", "sessions"
-    ]
+      "memory", "plans", "todos", "sessions",
+
+      ".codex", ".agents", ".local", "share", ".cache", ".bun",
+      "node_modules", "opencode", "Desktop", "Downloads", "Documents"
+    ],
+    "owner_approved_segments_doc": "OWNER-APPROVED EXCEPTIONS, distinct from structural names: owner-CREATED directory names default to aliasing and stay verbatim only after an explicit owner ruling reviewing that the name carries no project identity. NTFY: ruled harmless 2026-06-11 (ntfy push-notification tooling directory). Decision rule: structural (OS/tool-created) names go in path_segment_allowlist without a ruling; owner-created names go here ONLY with a recorded ruling.",
+    "owner_approved_segments": ["NTFY"],
+    "path_segment_allowlist_regexes_doc": "segment patterns that are structural wherever they appear: purely numeric segments are date-tree components (Codex stores sessions under sessions/YYYY/MM/DD), never project identity.",
+    "path_segment_allowlist_regexes": ["^[0-9]+$"],
+    "verbatim_value_keys_doc": "keys whose string values are closed-vocabulary metadata kept verbatim even when slash-shaped (IANA timezones look like paths and must not be aliased into fake project names).",
+    "verbatim_value_keys": ["timezone"]
   }
 }
