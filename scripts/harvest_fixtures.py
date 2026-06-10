@@ -51,7 +51,11 @@ What it does:
        - full-history: against the real config dir(s), post-processed with
          username/project redaction only (same alias map; ids untouched).
          Written to expected/ccusage-daily-full.json +
-         ccusage-session-full.json, used by `make parity-full`.
+         ccusage-session-full.json — LOCAL-ONLY point-in-time references,
+         gitignored and never committed (they keep real ids; owner ruling:
+         zero real identifiers in the committed tree). `make parity-full`
+         recaptures from live logs at comparison time instead of reading
+         these files.
      The ccusage version is resolved once, pinned in expected/META.json, and
      reused on every future run.
 
@@ -250,7 +254,7 @@ def alias_encoded_dirname(name):
 
 
 def is_pathlike(s):
-    # relative paths too ("Projects/<slug>/...", "tools/x.md" — seen in
+    # relative paths too ("Projects/<slug>/...", "docs/x.md" — seen in
     # displayPath and similar fields); whitespace-free slash strings are
     # treated as paths, which over-aliases the odd mime-type-ish value but
     # never leaks a project name
@@ -607,9 +611,19 @@ TOTAL_KEYS = ("inputTokens", "outputTokens",
               "cacheCreationTokens", "cacheReadTokens")
 
 
+FULL_EXPECTATION_FILES = ("ccusage-daily-full.json",
+                          "ccusage-session-full.json")
+
+
 def capture_expectations(version, fixture_root, snap_root, project_dirs,
                          expected_dir):
     expected_dir.mkdir(parents=True, exist_ok=True)
+    # fail BEFORE the expensive ccusage runs if the local-only -full pair
+    # could be committed (they keep real session/message ids)
+    for fname in FULL_EXPECTATION_FILES:
+        assert_unstageable(expected_dir / fname,
+                           "full-history expectations keep real ids — "
+                           "local-only by owner ruling")
     commands = {}
 
     # fixture-scoped set (CI): captured from the SANITIZED tree itself, so
@@ -644,21 +658,26 @@ def capture_expectations(version, fixture_root, snap_root, project_dirs,
             "data, DO NOT commit" % (got, want))
     print("  self-check OK: sanitized-tree totals == original-snapshot totals")
 
-    # full-history set (local parity): the real config roots, post-processed
-    # with username/project redaction only
+    # full-history set: LOCAL-ONLY point-in-time reference (gitignored —
+    # it keeps real session/message ids; owner ruling: zero real identifiers
+    # in the committed tree). `make parity-full` recaptures from live logs
+    # at comparison time and never reads these files.
     roots = ",".join(str(p.parent) for p in project_dirs)
-    for sub, fname in (("daily", "ccusage-daily-full.json"),
-                       ("session", "ccusage-session-full.json")):
+    for sub, fname in zip(("daily", "session"), FULL_EXPECTATION_FILES):
         data, cmd = run_ccusage(version, sub, roots)
-        (expected_dir / fname).write_text(
+        dest = expected_dir / fname
+        dest.write_text(
             json.dumps(redact_json(data), indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
+        assert_unstageable(dest,
+                           "full-history expectations keep real ids — "
+                           "local-only by owner ruling")
         commands[fname] = {
             "command": cmd,
             "CLAUDE_CONFIG_DIR": redact_home_text(roots),
-            "scope": "full-history",
+            "scope": "full-history (LOCAL-ONLY, gitignored)",
         }
-        print("  wrote expected/%s" % fname)
+        print("  wrote expected/%s (local-only, gitignored)" % fname)
     return commands
 
 
@@ -712,16 +731,26 @@ def write_map(map_path, sources):
     }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def assert_gitignored(map_path):
+def assert_unstageable(path, why):
+    """Owner ruling: local-only files (the secret map, the -full expectation
+    pair) must be impossible to commit. Two independent checks: the path must
+    be gitignored (check-ignore), and if it already exists on disk an explicit
+    `git add -n` must refuse to stage it."""
     if shutil.which("git") is None:
         return
-    r = subprocess.run(["git", "check-ignore", "-q", map_path.name],
-                       cwd=str(map_path.parent.resolve()))
+    cwd = str(path.parent.resolve())
+    r = subprocess.run(["git", "check-ignore", "-q", path.name], cwd=cwd)
     if r.returncode != 0:
         raise RuntimeError(
-            "%s is NOT gitignored — add '*.local.json' to .gitignore before "
-            "harvesting (the map contains the salt and real project names)"
-            % map_path)
+            "%s is NOT gitignored — fix .gitignore before harvesting (%s)"
+            % (path, why))
+    if path.is_file():
+        r = subprocess.run(["git", "add", "-n", "--", path.name],
+                           cwd=cwd, capture_output=True, text=True)
+        if r.returncode == 0:
+            raise RuntimeError(
+                "git add -n would stage %s despite the ignore rule — fix "
+                ".gitignore before harvesting (%s)" % (path, why))
 
 
 # --- main ---------------------------------------------------------------------
@@ -758,7 +787,8 @@ def main():
 
     map_path = Path(args.out) / "PROJECT_MAP.local.json"
     map_path.parent.mkdir(parents=True, exist_ok=True)
-    assert_gitignored(map_path)
+    assert_unstageable(map_path,
+                       "the map contains the salt and real project names")
     load_or_create_map(map_path)
 
     project_dirs = discover_project_dirs(args.config_dir)
@@ -855,9 +885,12 @@ def main():
         "machine_label": args.label,
         "commands": commands,
         "note": "ccusage-daily.json / ccusage-session.json are captured from "
-                "the sanitized fixture tree (CI parity set); the -full "
-                "variants cover the machine's complete history "
-                "(make parity-full).",
+                "the sanitized fixture tree (CI parity set). The -full "
+                "variants cover the machine's complete history but are "
+                "LOCAL-ONLY point-in-time references: gitignored, never "
+                "committed (they keep real ids). make parity-full recaptures "
+                "from live logs at comparison time and never reads a "
+                "committed -full file.",
     }
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
                          encoding="utf-8")

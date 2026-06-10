@@ -36,3 +36,10 @@ Thumbs.db
 # Must stay BELOW the fixtures re-include: later rules win, and the secret
 # map lives inside testdata/fixtures/.
 *.local.json
+
+# Full-history ccusage expectations keep REAL session/message ids — owner
+# ruling: zero real identifiers anywhere in the committed tree, no
+# exemptions. They stay on disk as local point-in-time references only;
+# `make parity-full` recaptures from live logs and never reads them.
+# Must also stay BELOW the fixtures re-include (later rules win).
+testdata/**/expected/*-full.json
