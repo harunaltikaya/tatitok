@@ -387,6 +387,24 @@ def resolve_ccusage_version(meta_path, override):
     return ver
 
 
+def redact_json(node):
+    """Redact home/encoded-home/username in every string of a JSON tree.
+
+    ccusage output echoes real project dir names (e.g. session rows'
+    "projectPath": "-home-<user>…"); redacting with the same rule as the
+    fixture tree keeps expectations consistent with fixture dir names.
+    `make parity-full` must apply the same redaction to locally-derived
+    project paths before comparing.
+    """
+    if isinstance(node, dict):
+        return {redact_home(k): redact_json(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [redact_json(v) for v in node]
+    if isinstance(node, str):
+        return redact_home(node)
+    return node
+
+
 def run_ccusage(version, subcommand, config_dir):
     # ccusage >= v20 is multi-agent (codex, opencode, ...) and mixes every
     # detected agent's usage into the bare `daily`/`session` commands; the
@@ -399,7 +417,7 @@ def run_ccusage(version, subcommand, config_dir):
     if out.returncode != 0:
         raise RuntimeError("%s failed (%d):\n%s"
                            % (" ".join(cmd), out.returncode, out.stderr[-2000:]))
-    return json.loads(out.stdout), cmd
+    return redact_json(json.loads(out.stdout)), cmd
 
 
 def snapshot_selected(selected, snap_root):
