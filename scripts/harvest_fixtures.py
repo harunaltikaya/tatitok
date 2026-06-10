@@ -160,7 +160,6 @@ UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 PREFIX_ID_RE = re.compile(r"^(msg|req|toolu)_([A-Za-z0-9]+)$")
-FILENAME_KEY_RE = re.compile(r"^[^\s/]+\.[A-Za-z0-9]{1,5}$")
 
 # structural path segments that carry no project identity
 PATH_SEGMENT_ALLOWLIST = {
@@ -251,7 +250,13 @@ def alias_encoded_dirname(name):
 
 
 def is_pathlike(s):
-    return s.startswith(("/", "~")) or (s.startswith(".") and "/" in s)
+    # relative paths too ("Projects/<slug>/...", "tools/x.md" — seen in
+    # displayPath and similar fields); whitespace-free slash strings are
+    # treated as paths, which over-aliases the odd mime-type-ish value but
+    # never leaks a project name
+    if s.startswith(("/", "~")) or (s.startswith(".") and "/" in s):
+        return True
+    return "/" in s and " " not in s and "\n" not in s and "\t" not in s
 
 
 def alias_path_value(s):
@@ -288,7 +293,9 @@ def sanitize_key(k):
     readFileState / trackedFileBackups maps are keyed by file path). Those
     are parser-skipped noise: replace the ENTIRE key with a stable token
     preserving only the extension."""
-    if "/" in k or k.startswith(("/", "~")) or FILENAME_KEY_RE.match(k):
+    is_filename = ("." in k and " " not in k
+                   and not k.replace(".", "").isdigit())  # ".gitignore" etc.
+    if "/" in k or k.startswith(("/", "~")) or is_filename:
         tok = KEY_TOKENS.get(k)
         if tok is None:
             _, ext = split_ext(k)
