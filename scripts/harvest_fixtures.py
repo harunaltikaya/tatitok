@@ -23,10 +23,12 @@ What it does:
      - project identity is aliased uniformly, NO exceptions: every
        project-identifying path segment becomes project-<6hex of
        sha256(salt+slug)>, in fixture dir names, cwd values, MANIFEST paths
-       and expected/*.json projectPath alike; path segments after the
-       project segment become d-<6hex>[.ext]; path-valued object KEYS
-       (readFileState / trackedFileBackups maps) are replaced whole with
-       p-<8hex>[.ext];
+       and expected/*.json projectPath alike; EVERY path segment after the
+       project segment becomes d-<6hex>[.ext] (the structural allowlist
+       applies only before the project segment); path-valued object KEYS
+       are replaced whole with p-<8hex>[.ext] — unconditionally for the
+       schema-defined path-keyed maps (readFileState, trackedFileBackups),
+       by path-likeness heuristic elsewhere;
      - identifiers (UUIDs, msg_*, req_*, toolu_*) are pseudonymized via
        salted hash with shape preserved — the same real id maps to the same
        fake id everywhere, so dedup and parentUuid chains survive; fixture
@@ -264,11 +266,18 @@ def is_pathlike(s):
 
 
 def alias_path_value(s):
-    """Alias a path-shaped string value segment by segment."""
+    """Alias a path-shaped string value segment by segment.
+
+    Owner ruling: EVERY segment after the project segment must be a
+    sanitizer token (d-XXXXXX[.ext], or a pseudonymized id for session
+    filenames). The structural allowlist therefore only applies BEFORE the
+    project segment; encoded cwd dirnames (incl. bare "-home-user" for
+    sessions run in $HOME) count as the project segment.
+    """
     s = redact_home_text(s)
     out, project_seen = [], False
     for seg in s.split("/"):
-        if seg in PATH_SEGMENT_ALLOWLIST or seg == "-home-user":
+        if not project_seen and seg in PATH_SEGMENT_ALLOWLIST:
             out.append(seg)
             continue
         if seg.startswith("-"):
@@ -292,20 +301,32 @@ def looks_safe_short(s):
     return len(s.encode("utf-8")) <= MAX_FREE_LEN
 
 
+# Maps that are path-keyed BY SCHEMA: every key is a file path, so every
+# key is tokenized unconditionally — no path-likeness heuristics (audit
+# caught extensionless keys like "Makefile" / "LICENSE" slipping through).
+PATH_KEYED_MAPS = {"readFileState", "trackedFileBackups"}
+
+
+def key_token(k):
+    """Replace an ENTIRE path-valued object key with a stable token,
+    preserving only the extension."""
+    tok = KEY_TOKENS.get(k)
+    if tok is None:
+        _, ext = split_ext(k)
+        tok = "p-" + salted(k)[:8] + ext
+        KEY_TOKENS[k] = tok
+    return tok
+
+
 def sanitize_key(k):
-    """Object keys in Claude Code records can be file paths (e.g. the
-    readFileState / trackedFileBackups maps are keyed by file path). Those
+    """Object keys in Claude Code records can be file paths (keys of maps
+    NOT in PATH_KEYED_MAPS, which are tokenized wholesale elsewhere). Those
     are parser-skipped noise: replace the ENTIRE key with a stable token
     preserving only the extension."""
     is_filename = ("." in k and " " not in k
                    and not k.replace(".", "").isdigit())  # ".gitignore" etc.
     if "/" in k or k.startswith(("/", "~")) or is_filename:
-        tok = KEY_TOKENS.get(k)
-        if tok is None:
-            _, ext = split_ext(k)
-            tok = "p-" + salted(k)[:8] + ext
-            KEY_TOKENS[k] = tok
-        return tok
+        return key_token(k)
     s = redact_home_text(k)
     if looks_safe_short(s):
         return s
@@ -325,6 +346,9 @@ def sanitize_value(node, key=None):
     if key == "content" and isinstance(node, str):
         return placeholder(node)
     if isinstance(node, dict):
+        if key in PATH_KEYED_MAPS:
+            return {key_token(k): sanitize_value(v, k)
+                    for k, v in node.items()}
         return {sanitize_key(k): sanitize_value(v, k) for k, v in node.items()}
     if isinstance(node, list):
         return [sanitize_value(v, key) for v in node]

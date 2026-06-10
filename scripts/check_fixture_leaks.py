@@ -38,10 +38,21 @@ STRUCTURAL checks (always run, even without the map): the local-only
 artifacts (-full expectation files under expected/, *.local.json secret
 maps) must never be stageable.
 
+SHAPE checks (always run, even without the map — they need no secrets):
+every committed testdata/ JSON/JSONL file is parsed and its sanitizer-output
+invariants verified:
+  - in every path-shaped string value, EVERY segment after the project
+    segment (a project-<6hex> alias or an encoded "-..." dirname, incl.
+    bare "-home-user") must be a sanitizer token: d-<6hex>[.ext],
+    p-<8hex>[.ext], project-<6hex>, a pseudonymized id, or another encoded
+    dirname — a literal segment there is a leak (audit class 1);
+  - in schema-defined path-keyed maps (readFileState, trackedFileBackups),
+    EVERY key must be a p-<8hex>[.ext] token (audit class 2).
+
 When the alias map is absent (CI checkout: the map is a gitignored local
-artifact), the checker still runs the structural checks and skips only the
-map-dependent content scans, stating so explicitly. On the owner's machine
-the map is expected to exist, so the full scan always runs there.
+artifact), the checker still runs the structural and shape checks and skips
+only the map-dependent content scans, stating so explicitly. On the owner's
+machine the map is expected to exist, so the full scan always runs there.
 
 Findings print as file:line + category with the matched value REDACTED
 (first 4 chars + length) so the checker's output can be shared safely;
@@ -66,6 +77,84 @@ PREFIX_ID_RE = re.compile(r"\b(?:msg|req|toolu)_[A-Za-z0-9]{10,}\b")
 
 # binary-ish files we never scan for text leaks
 SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".db", ".sqlite"}
+
+# --- sanitizer-output shape invariants (map-free; run on CI too) -------------
+
+# maps that are path-keyed BY SCHEMA — must mirror the harvester's
+# PATH_KEYED_MAPS set
+PATH_KEYED_MAPS = {"readFileState", "trackedFileBackups"}
+
+P_TOKEN_RE = re.compile(r"p-[0-9a-f]{8}(?:\.[A-Za-z0-9]{1,5})?")
+PROJECT_TOKEN_RE = re.compile(r"project-[0-9a-f]{6}")
+# what the sanitizer may emit AFTER the project segment: d-/p- tokens,
+# nested project aliases, pseudonymized ids (UUID or msg_/req_/toolu_,
+# optionally with a file extension), or another encoded "-..." dirname
+POST_PROJECT_SEGMENT_RE = re.compile(
+    r"(?:d-[0-9a-f]{6}|p-[0-9a-f]{8}|project-[0-9a-f]{6}"
+    r"|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"|(?:msg|req|toolu)_[A-Za-z0-9]+)"
+    r"(?:\.[A-Za-z0-9]{1,5})?")
+
+
+def is_pathlike(s):
+    """Mirror of the harvester's heuristic for path-shaped string values."""
+    if s.startswith(("/", "~")) or (s.startswith(".") and "/" in s):
+        return True
+    return "/" in s and " " not in s and "\n" not in s and "\t" not in s
+
+
+def check_sanitized_path(s, rel, lineno, findings):
+    project_seen = False
+    for seg in s.split("/"):
+        if project_seen:
+            if not POST_PROJECT_SEGMENT_RE.fullmatch(seg) \
+                    and not seg.startswith("-"):
+                findings.append((rel, lineno, "literal-post-project-segment",
+                                 "%s (in %s)" % (seg, s)))
+        elif PROJECT_TOKEN_RE.fullmatch(seg) or seg.startswith("-"):
+            project_seen = True
+
+
+def shape_walk(node, rel, lineno, findings, key=None):
+    if isinstance(node, dict):
+        if key in PATH_KEYED_MAPS:
+            for k in node:
+                if not P_TOKEN_RE.fullmatch(k):
+                    findings.append((rel, lineno, "non-token-path-map-key", k))
+        for k, v in node.items():
+            shape_walk(v, rel, lineno, findings, k)
+    elif isinstance(node, list):
+        for v in node:
+            shape_walk(v, rel, lineno, findings, key)
+    elif isinstance(node, str) and is_pathlike(node):
+        check_sanitized_path(node, rel, lineno, findings)
+
+
+def shape_scan(repo, rel, findings):
+    try:
+        text = (repo / rel).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        findings.append((str(rel), 0, "unreadable", str(exc)))
+        return
+    if rel.suffix == ".jsonl":
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                findings.append((str(rel), lineno, "unparseable-fixture-line",
+                                 line[:40]))
+                continue
+            shape_walk(obj, str(rel), lineno, findings)
+    else:
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError as exc:
+            findings.append((str(rel), 0, "unparseable-json", str(exc)))
+            return
+        shape_walk(obj, str(rel), 0, findings)
 
 
 def redact(value):
@@ -200,13 +289,38 @@ def main():
             print("FATAL: local-only secret map is stageable: %s" % s)
             return 1
 
+    # SHAPE: sanitizer-output invariants on every committed testdata/
+    # JSON/JSONL file. Map-free, so it runs on CI too.
+    findings = []
+    shaped = [rel for rel in files
+              if str(rel).startswith("testdata/")
+              and rel.suffix in (".json", ".jsonl")]
+    for rel in shaped:
+        shape_scan(repo, rel, findings)
+
+    def report(scope):
+        by_cat = {}
+        for rel, lineno, cat, value in findings:
+            by_cat[cat] = by_cat.get(cat, 0) + 1
+            shown = value if args.show_values else redact(value)
+            print("LEAK %-28s %s:%d  %s" % (cat, rel, lineno, shown))
+        print(scope)
+        if findings:
+            print("FINDINGS: %d total — %s" % (
+                len(findings),
+                ", ".join("%s=%d" % kv for kv in sorted(by_cat.items()))))
+            return 1
+        print("CLEAN: zero real identifiers in the committed tree "
+              "(id check global, no -full exemption)")
+        return 0
+
     map_path = Path(args.map)
     if not map_path.is_file():
-        print("structural checks passed on %d committed files; alias map "
-              "not found (%s) — map-dependent content scans SKIPPED "
-              "(expected on CI; the map is a local-only artifact)"
-              % (len(files), map_path))
-        return 0
+        return report(
+            "structural checks passed and %d testdata files shape-checked "
+            "across %d committed files; alias map not found (%s) — "
+            "map-dependent content scans SKIPPED (expected on CI; the map "
+            "is a local-only artifact)" % (len(shaped), len(files), map_path))
 
     globals_, tokens, prefixes, pseudonyms = load_map(
         map_path, Path.home(), Path.home().name)
@@ -216,31 +330,17 @@ def main():
         public_tokens.add(str(rel).lower())
         public_tokens.update(part.lower() for part in rel.parts)
 
-    findings = []
     for rel in files:
         scan(repo, rel, globals_, tokens, prefixes, pseudonyms,
              public_tokens, findings)
 
-    by_cat = {}
-    for rel, lineno, cat, value in findings:
-        by_cat[cat] = by_cat.get(cat, 0) + 1
-        shown = value if args.show_values else redact(value)
-        print("LEAK %-20s %s:%d  %s" % (cat, rel, lineno, shown))
-
-    print("scanned %d committed files: %d global literals, %d map tokens "
-          "(%d public-by-path exempt outside fixture logs), %d id prefixes, "
-          "%d known pseudonyms"
-          % (len(files), len(globals_), len(tokens),
-             len([t for t in tokens if t.lower() in public_tokens]),
-             len(prefixes), len(pseudonyms)))
-    if findings:
-        print("FINDINGS: %d total — %s" % (
-            len(findings),
-            ", ".join("%s=%d" % kv for kv in sorted(by_cat.items()))))
-        return 1
-    print("CLEAN: zero real identifiers in the committed tree "
-          "(id check global, no -full exemption)")
-    return 0
+    return report(
+        "scanned %d committed files (%d shape-checked): %d global literals, "
+        "%d map tokens (%d public-by-path exempt outside fixture logs), "
+        "%d id prefixes, %d known pseudonyms"
+        % (len(files), len(shaped), len(globals_), len(tokens),
+           len([t for t in tokens if t.lower() in public_tokens]),
+           len(prefixes), len(pseudonyms)))
 
 
 if __name__ == "__main__":
