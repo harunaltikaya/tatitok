@@ -1,0 +1,33 @@
+# --- Go ---
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# --- Node (frontend, later milestones) ---
+node_modules/
+.npm/
+*.tsbuildinfo
+
+# --- SQLite databases ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# --- Editor / OS junk ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# testdata/fixtures/** MUST be committed — never add ignore rules for it.
+# Re-include in case a broad pattern above ever matches inside fixtures:
+!testdata/fixtures/**
