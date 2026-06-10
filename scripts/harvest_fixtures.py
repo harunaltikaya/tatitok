@@ -708,8 +708,8 @@ def write_map(map_path, sources):
 def assert_gitignored(map_path):
     if shutil.which("git") is None:
         return
-    r = subprocess.run(["git", "check-ignore", "-q", str(map_path)],
-                       cwd=str(map_path.parent))
+    r = subprocess.run(["git", "check-ignore", "-q", map_path.name],
+                       cwd=str(map_path.parent.resolve()))
     if r.returncode != 0:
         raise RuntimeError(
             "%s is NOT gitignored — add '*.local.json' to .gitignore before "
