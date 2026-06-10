@@ -1,0 +1,65 @@
+{
+  "ccusage_version": "20.0.9",
+  "captured_at": "2026-06-10T15:39:09+00:00",
+  "timezone": {
+    "iana": "Europe/Istanbul",
+    "abbreviation": "+03",
+    "utc_offset": "+0300"
+  },
+  "machine_label": "gx10",
+  "commands": {
+    "ccusage-daily.json": {
+      "command": [
+        "npx",
+        "-y",
+        "ccusage@20.0.9",
+        "claude",
+        "daily",
+        "--json",
+        "--offline"
+      ],
+      "CLAUDE_CONFIG_DIR": "<the sanitized fixture tree>",
+      "scope": "fixture"
+    },
+    "ccusage-session.json": {
+      "command": [
+        "npx",
+        "-y",
+        "ccusage@20.0.9",
+        "claude",
+        "session",
+        "--json",
+        "--offline"
+      ],
+      "CLAUDE_CONFIG_DIR": "<the sanitized fixture tree>",
+      "scope": "fixture"
+    },
+    "ccusage-daily-full.json": {
+      "command": [
+        "npx",
+        "-y",
+        "ccusage@20.0.9",
+        "claude",
+        "daily",
+        "--json",
+        "--offline"
+      ],
+      "CLAUDE_CONFIG_DIR": "~/.claude",
+      "scope": "full-history (LOCAL-ONLY, gitignored)"
+    },
+    "ccusage-session-full.json": {
+      "command": [
+        "npx",
+        "-y",
+        "ccusage@20.0.9",
+        "claude",
+        "session",
+        "--json",
+        "--offline"
+      ],
+      "CLAUDE_CONFIG_DIR": "~/.claude",
+      "scope": "full-history (LOCAL-ONLY, gitignored)"
+    }
+  },
+  "note": "ccusage-daily.json / ccusage-session.json are captured from the sanitized fixture tree (CI parity set). The -full variants cover the machine's complete history but are LOCAL-ONLY point-in-time references: gitignored, never committed (they keep real ids). make parity-full recaptures from live logs at comparison time and never reads a committed -full file."
+}

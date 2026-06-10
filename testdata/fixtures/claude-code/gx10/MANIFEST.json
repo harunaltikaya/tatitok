@@ -1,0 +1,211 @@
+{
+  "harvest_date": "2026-06-10T15:39:07+00:00",
+  "machine_label": "gx10",
+  "platform": "Linux-6.17.0-1021-nvidia-aarch64-with-glibc2.39",
+  "claude_code_versions_seen": [
+    "2.1.168",
+    "2.1.170"
+  ],
+  "project_dirs": [
+    "~/.claude/projects"
+  ],
+  "files": [
+    {
+      "source": "~/.claude/projects/-home-user/b015c6d7-ec52-cf70-6052-79da4e5f9e7a.jsonl",
+      "fixture": "projects/-home-user/b015c6d7-ec52-cf70-6052-79da4e5f9e7a.jsonl",
+      "criteria": [
+        "long-session",
+        "cache-heavy",
+        "model-switch",
+        "oldest"
+      ],
+      "lines": 1598,
+      "malformed_lines": 0,
+      "usage_messages": 665,
+      "models": [
+        "<synthetic>",
+        "claude-opus-4-8"
+      ],
+      "first_timestamp": "2026-06-07T22:44:39.037Z",
+      "last_timestamp": "2026-06-08T11:59:02.333Z",
+      "source_bytes": 3254464
+    },
+    {
+      "source": "~/.claude/projects/-home-user/66a11639-d5f3-296a-35f0-85af1b8e0f97.jsonl",
+      "fixture": "projects/-home-user/66a11639-d5f3-296a-35f0-85af1b8e0f97.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 201,
+      "malformed_lines": 0,
+      "usage_messages": 82,
+      "models": [
+        "claude-opus-4-8"
+      ],
+      "first_timestamp": "2026-06-08T13:15:41.319Z",
+      "last_timestamp": "2026-06-08T13:57:24.548Z",
+      "source_bytes": 566817
+    },
+    {
+      "source": "~/.claude/projects/-home-user/46ba87a6-1a16-b6c3-b405-180f795a90e9.jsonl",
+      "fixture": "projects/-home-user/46ba87a6-1a16-b6c3-b405-180f795a90e9.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 53,
+      "malformed_lines": 0,
+      "usage_messages": 16,
+      "models": [
+        "claude-opus-4-8"
+      ],
+      "first_timestamp": "2026-06-08T21:11:08.039Z",
+      "last_timestamp": "2026-06-08T21:17:11.942Z",
+      "source_bytes": 152040
+    },
+    {
+      "source": "~/.claude/projects/-tmp-project-006f19/a8239541-aba2-e468-e61c-997bcff8db2b.jsonl",
+      "fixture": "projects/-tmp-project-006f19/a8239541-aba2-e468-e61c-997bcff8db2b.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 20,
+      "malformed_lines": 0,
+      "usage_messages": 7,
+      "models": [
+        "claude-sonnet-4-6"
+      ],
+      "first_timestamp": "2026-06-09T22:31:10.124Z",
+      "last_timestamp": "2026-06-09T22:31:24.442Z",
+      "source_bytes": 25455
+    },
+    {
+      "source": "~/.claude/projects/-tmp-project-006f19/6adda324-b7fb-ca07-ac22-62552083c85a.jsonl",
+      "fixture": "projects/-tmp-project-006f19/6adda324-b7fb-ca07-ac22-62552083c85a.jsonl",
+      "criteria": [
+        "short-session"
+      ],
+      "lines": 9,
+      "malformed_lines": 0,
+      "usage_messages": 1,
+      "models": [
+        "claude-sonnet-4-6"
+      ],
+      "first_timestamp": "2026-06-09T22:31:25.301Z",
+      "last_timestamp": "2026-06-09T22:31:28.789Z",
+      "source_bytes": 12079
+    },
+    {
+      "source": "~/.claude/projects/-tmp-project-9c805c/6328b2a4-bcfe-4e46-8344-ab3d3ec8d184.jsonl",
+      "fixture": "projects/-tmp-project-9c805c/6328b2a4-bcfe-4e46-8344-ab3d3ec8d184.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 13,
+      "malformed_lines": 0,
+      "usage_messages": 4,
+      "models": [
+        "claude-sonnet-4-6"
+      ],
+      "first_timestamp": "2026-06-09T22:53:31.131Z",
+      "last_timestamp": "2026-06-09T22:53:43.012Z",
+      "source_bytes": 18703
+    },
+    {
+      "source": "~/.claude/projects/-home-user/e6120c92-3ae3-c0e6-b364-1a2d60343389.jsonl",
+      "fixture": "projects/-home-user/e6120c92-3ae3-c0e6-b364-1a2d60343389.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 743,
+      "malformed_lines": 0,
+      "usage_messages": 276,
+      "models": [
+        "claude-fable-5"
+      ],
+      "first_timestamp": "2026-06-09T21:23:26.574Z",
+      "last_timestamp": "2026-06-09T22:59:44.247Z",
+      "source_bytes": 2247000
+    },
+    {
+      "source": "~/.claude/projects/-home-user-Projects-project-ab217a/4fd711f8-8081-de82-d6a9-05dd82d9b79b.jsonl",
+      "fixture": "projects/-home-user-Projects-project-ab217a/4fd711f8-8081-de82-d6a9-05dd82d9b79b.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 56,
+      "malformed_lines": 0,
+      "usage_messages": 23,
+      "models": [
+        "claude-sonnet-4-6"
+      ],
+      "first_timestamp": "2026-06-10T07:56:03.788Z",
+      "last_timestamp": "2026-06-10T07:59:59.779Z",
+      "source_bytes": 253787
+    },
+    {
+      "source": "~/.claude/projects/-home-user-Projects-project-be55dd/6e9b4137-7b3e-303d-a043-ddc7ff5e44bb.jsonl",
+      "fixture": "projects/-home-user-Projects-project-be55dd/6e9b4137-7b3e-303d-a043-ddc7ff5e44bb.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "lines": 83,
+      "malformed_lines": 0,
+      "usage_messages": 37,
+      "models": [
+        "claude-sonnet-4-6"
+      ],
+      "first_timestamp": "2026-06-10T08:29:58.059Z",
+      "last_timestamp": "2026-06-10T08:32:06.710Z",
+      "source_bytes": 448240
+    },
+    {
+      "source": "~/.claude/projects/-home-user-Projects-project-bce60f/6b3b971a-1a70-8da1-2a64-036eea938c82.jsonl",
+      "fixture": "projects/-home-user-Projects-project-bce60f/6b3b971a-1a70-8da1-2a64-036eea938c82.jsonl",
+      "criteria": [
+        "recent-full"
+      ],
+      "lines": 209,
+      "malformed_lines": 0,
+      "usage_messages": 98,
+      "models": [
+        "claude-fable-5"
+      ],
+      "first_timestamp": "2026-06-10T14:23:16.626Z",
+      "last_timestamp": "2026-06-10T14:47:34.713Z",
+      "source_bytes": 659531
+    },
+    {
+      "source": "~/.claude/projects/-home-user-Projects-project-bce60f/d2781ba9-ca47-de47-8bd8-ec0a03f6cf47.jsonl",
+      "fixture": "projects/-home-user-Projects-project-bce60f/d2781ba9-ca47-de47-8bd8-ec0a03f6cf47.jsonl",
+      "criteria": [
+        "recent-full"
+      ],
+      "lines": 97,
+      "malformed_lines": 0,
+      "usage_messages": 44,
+      "models": [
+        "claude-fable-5"
+      ],
+      "first_timestamp": "2026-06-10T14:49:32.631Z",
+      "last_timestamp": "2026-06-10T15:00:38.435Z",
+      "source_bytes": 197965
+    },
+    {
+      "source": "~/.claude/projects/-home-user-Projects-project-bce60f/8755964f-0d87-92a2-7ff3-cafad47bd092.jsonl",
+      "fixture": "projects/-home-user-Projects-project-bce60f/8755964f-0d87-92a2-7ff3-cafad47bd092.jsonl",
+      "criteria": [
+        "newest",
+        "recent-full"
+      ],
+      "lines": 145,
+      "malformed_lines": 0,
+      "usage_messages": 70,
+      "models": [
+        "claude-fable-5"
+      ],
+      "first_timestamp": "2026-06-10T15:29:16.701Z",
+      "last_timestamp": "2026-06-10T15:39:07.124Z",
+      "source_bytes": 413302
+    }
+  ]
+}
