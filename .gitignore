@@ -19,6 +19,9 @@ node_modules/
 *.sqlite-wal
 *.sqlite-shm
 
+# --- Secrets / local-only files (e.g. fixture PROJECT_MAP.local.json) ---
+*.local.json
+
 # --- Editor / OS junk ---
 .idea/
 .vscode/

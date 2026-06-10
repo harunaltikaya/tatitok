@@ -14,35 +14,53 @@ What it does:
      longest session, a short one, the most cache-heavy, one with mid-session
      model switches, the oldest, the newest, the 2-3 most recent, plus a
      time-spread fill. Every selected file is copied IN FULL (then sanitized).
-  3. Sanitizes every line: content-bearing fields (message text, thinking,
-     tool_use input, tool_result content, summaries, attachments, ...) are
-     replaced with "<stripped len=N sha256=FIRST12HEX>" placeholders; all
-     structure, ids, timestamps, models, usage objects and unknown fields are
-     preserved. $HOME in paths becomes "~", the path-encoded home form
-     ("-home-<user>") becomes "-home-user", and the bare username is redacted
-     in all kept strings AND object keys (some records key maps by file
-     path). Malformed source lines are replaced with
-     a single-key placeholder object so line counts stay identical.
+  3. Sanitizes every line:
+     - content-bearing fields (message text, thinking, tool_use input,
+       tool_result content, summaries, attachments, aiTitle, lastPrompt, ...)
+       become "<stripped len=N sha256=H>" placeholders where H is the first
+       12 hex chars of sha256(SALT + content) — salted so short strings can't
+       be guess-confirmed;
+     - project identity is aliased uniformly, NO exceptions: every
+       project-identifying path segment becomes project-<6hex of
+       sha256(salt+slug)>, in fixture dir names, cwd values, MANIFEST paths
+       and expected/*.json projectPath alike; path segments after the
+       project segment become d-<6hex>[.ext]; path-valued object KEYS
+       (readFileState / trackedFileBackups maps) are replaced whole with
+       p-<8hex>[.ext];
+     - identifiers (UUIDs, msg_*, req_*, toolu_*) are pseudonymized via
+       salted hash with shape preserved — the same real id maps to the same
+       fake id everywhere, so dedup and parentUuid chains survive; fixture
+       filenames follow the new session ids;
+     - $HOME -> "~", encoded home ("-home-<user>") -> "-home-user", bare
+       username redacted, in values and keys; timestamps, usage objects,
+       models, structure and unknown fields are preserved untouched;
+     - malformed source lines become a single-key placeholder object so line
+       counts stay identical.
+     The salt + all real->alias maps go to <out>/PROJECT_MAP.local.json
+     (gitignored; never committed, never printed).
   4. Captures ccusage expectations (`claude daily` and `claude session`,
      --json --offline — the `claude` subcommand scopes multi-agent ccusage
      v20+ to Claude Code logs only) twice:
-       - fixture-scoped: against a temp fake projects/ tree containing the
-         ORIGINAL (unsanitized) content of only the selected files, laid out
-         under the SAME sanitized dir/file names as the committed fixtures.
-         Written to expected/ccusage-daily.json + ccusage-session.json.
-         This is the set CI parity tests load.
-       - full-history: against the real config dir(s). Written to
-         expected/ccusage-daily-full.json + ccusage-session-full.json.
-         Used by `make parity-full` on the owner's machine.
+       - fixture-scoped: from the SANITIZED fixture tree itself, so the
+         committed expectations match the committed fixtures by
+         construction. Written to expected/ccusage-daily.json +
+         ccusage-session.json (the set CI parity tests load). As a
+         self-check, ccusage is also run on the frozen ORIGINAL snapshot
+         and the four token totals must match the sanitized-tree capture
+         exactly, proving sanitization preserved billing-relevant data.
+       - full-history: against the real config dir(s), post-processed with
+         username/project redaction only (same alias map; ids untouched).
+         Written to expected/ccusage-daily-full.json +
+         ccusage-session-full.json, used by `make parity-full`.
      The ccusage version is resolved once, pinned in expected/META.json, and
      reused on every future run.
 
-Placeholder format (the Go sanitizer in internal/core must match exactly):
+Placeholder format (the Go sanitizer in internal/core must match):
     <stripped len=N sha256=H>
-  where N is the UTF-8 byte length of the original string and H is the first
-  12 lowercase hex chars of sha256 of those bytes. Non-string content values
-  (e.g. tool_use input objects) are serialized with
-  json.dumps(v, separators=(",", ":"), ensure_ascii=False) first.
+  N = UTF-8 byte length of the original string; H = first 12 lowercase hex
+  chars of sha256(salt_utf8 + original_utf8). Non-string content values are
+  serialized with json.dumps(v, separators=(",", ":"), ensure_ascii=False)
+  first.
 """
 
 import argparse
@@ -51,6 +69,8 @@ import hashlib
 import json
 import os
 import platform
+import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -83,8 +103,9 @@ CONTENT_KEYS = {
     "description",
 }
 
-# Keys whose string values are known-safe metadata: never stripped (paths are
-# home-redacted). Everything else longer than MAX_FREE_LEN is stripped.
+# Keys whose string values are known-safe metadata. Id-shaped values are
+# pseudonymized and path-shaped values are aliased regardless of this list;
+# everything else longer than MAX_FREE_LEN is stripped.
 SAFE_KEYS = {
     "id",
     "uuid",
@@ -94,6 +115,8 @@ SAFE_KEYS = {
     "requestId",
     "request_id",
     "message_id",
+    "messageId",
+    "promptId",
     "timestamp",
     "type",
     "subtype",
@@ -111,6 +134,9 @@ SAFE_KEYS = {
     "stop_sequence",
     "service_tier",
     "slug",
+    "entrypoint",
+    "permissionMode",
+    "promptSource",
 }
 
 MAX_FREE_LEN = 80  # unknown string fields longer than this get stripped
@@ -122,16 +148,43 @@ HOME = str(Path.home())
 ENCODED_HOME = HOME.replace("/", "-")
 USERNAME = Path.home().name
 
+# secret per-harvest salt + alias maps; set/loaded in main() from
+# <out>/PROJECT_MAP.local.json so re-harvests produce stable names
+SALT = ""
+PROJECT_ALIASES = {}  # real project slug -> "project-XXXXXX"
+SEGMENT_ALIASES = {}  # real path segment -> "d-XXXXXX[.ext]"
+KEY_TOKENS = {}       # real path-valued object key -> "p-XXXXXXXX[.ext]"
+ID_MAP = {}           # real identifier -> pseudonymized identifier
+
+UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+PREFIX_ID_RE = re.compile(r"^(msg|req|toolu)_([A-Za-z0-9]+)$")
+FILENAME_KEY_RE = re.compile(r"^[^\s/]+\.[A-Za-z0-9]{1,5}$")
+
+# structural path segments that carry no project identity
+PATH_SEGMENT_ALLOWLIST = {
+    "", "~", "home", "user", "tmp", "var", "opt", "usr", "etc",
+    "Projects", "projects", ".claude", ".config", "claude",
+    "memory", "plans", "todos", "sessions",
+}
+
+GIT_BRANCH_ALLOWLIST = {"", "main", "master", "develop", "HEAD"}
+
+
+def salted(s):
+    return hashlib.sha256((SALT + s).encode("utf-8")).hexdigest()
+
 
 def placeholder(value):
     if not isinstance(value, str):
         value = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
     raw = value.encode("utf-8")
-    digest = hashlib.sha256(raw).hexdigest()[:12]
+    digest = hashlib.sha256(SALT.encode("utf-8") + raw).hexdigest()[:12]
     return "<stripped len=%d sha256=%s>" % (len(raw), digest)
 
 
-def redact_home(s):
+def redact_home_text(s):
     s = s.replace(HOME, "~")
     s = s.replace(ENCODED_HOME, "-home-user")
     # bare username belt-and-braces; skip very short usernames that would
@@ -141,19 +194,111 @@ def redact_home(s):
     return s
 
 
-def sanitize_key(k):
-    """Object keys in Claude Code records can be file paths (e.g. the
-    readFileState / file-backup maps are keyed by absolute path)."""
-    s = redact_home(k)
-    if looks_safe_short(s):
-        return s
-    if s.startswith(("/", "~", ".")) and "\n" not in s and len(s) <= 300:
-        return s
-    return placeholder(k)
+def split_ext(seg):
+    i = seg.rfind(".")
+    if 0 < i < len(seg) - 1 and len(seg) - i <= 6:
+        return seg[:i], seg[i:]
+    return seg, ""
+
+
+def alias_project(slug):
+    a = PROJECT_ALIASES.get(slug)
+    if a is None:
+        a = "project-" + salted(slug)[:6]
+        PROJECT_ALIASES[slug] = a
+    return a
+
+
+def alias_dirsegment(seg):
+    a = SEGMENT_ALIASES.get(seg)
+    if a is None:
+        _, ext = split_ext(seg)
+        a = "d-" + salted(seg)[:6] + ext
+        SEGMENT_ALIASES[seg] = a
+    return a
+
+
+def pseudo_id(value):
+    """Stable pseudonym for UUIDs and msg_/req_/toolu_ ids; None otherwise."""
+    cached = ID_MAP.get(value)
+    if cached is not None:
+        return cached
+    if UUID_RE.match(value):
+        d = salted(value)
+        out = "%s-%s-%s-%s-%s" % (d[0:8], d[8:12], d[12:16], d[16:20], d[20:32])
+    else:
+        m = PREFIX_ID_RE.match(value)
+        if m is None:
+            return None
+        prefix, body = m.groups()
+        d = salted(value)
+        while len(d) < len(body):
+            d += salted(d)
+        out = "%s_%s" % (prefix, d[:len(body)])
+    ID_MAP[value] = out
+    return out
+
+
+def alias_encoded_dirname(name):
+    """Alias '-home-user-Projects-<slug>'-style encoded cwd dir names."""
+    name = redact_home_text(name)
+    if name == "-home-user":
+        return name
+    for prefix in ("-home-user-Projects-", "-home-user-", "-tmp-"):
+        if name.startswith(prefix) and len(name) > len(prefix):
+            return prefix + alias_project(name[len(prefix):])
+    return "-" + alias_project(name.lstrip("-"))
+
+
+def is_pathlike(s):
+    return s.startswith(("/", "~")) or (s.startswith(".") and "/" in s)
+
+
+def alias_path_value(s):
+    """Alias a path-shaped string value segment by segment."""
+    s = redact_home_text(s)
+    out, project_seen = [], False
+    for seg in s.split("/"):
+        if seg in PATH_SEGMENT_ALLOWLIST or seg == "-home-user":
+            out.append(seg)
+            continue
+        if seg.startswith("-"):
+            out.append(alias_encoded_dirname(seg))
+            project_seen = True
+            continue
+        base, ext = split_ext(seg)
+        pid = pseudo_id(base)
+        if pid is not None:
+            out.append(pid + ext)
+            continue
+        if not project_seen:
+            out.append(alias_project(seg))
+            project_seen = True
+        else:
+            out.append(alias_dirsegment(seg))
+    return "/".join(out)
 
 
 def looks_safe_short(s):
     return len(s.encode("utf-8")) <= MAX_FREE_LEN
+
+
+def sanitize_key(k):
+    """Object keys in Claude Code records can be file paths (e.g. the
+    readFileState / trackedFileBackups maps are keyed by file path). Those
+    are parser-skipped noise: replace the ENTIRE key with a stable token
+    preserving only the extension."""
+    if "/" in k or k.startswith(("/", "~")) or FILENAME_KEY_RE.match(k):
+        tok = KEY_TOKENS.get(k)
+        if tok is None:
+            _, ext = split_ext(k)
+            tok = "p-" + salted(k)[:8] + ext
+            KEY_TOKENS[k] = tok
+        return tok
+    s = redact_home_text(k)
+    if looks_safe_short(s):
+        return s
+    return placeholder(k)
 
 
 def sanitize_value(node, key=None):
@@ -173,13 +318,19 @@ def sanitize_value(node, key=None):
     if isinstance(node, list):
         return [sanitize_value(v, key) for v in node]
     if isinstance(node, str):
+        pid = pseudo_id(node)
+        if pid is not None:
+            return pid
+        if is_pathlike(node):
+            return alias_path_value(node)
+        if key == "gitBranch":
+            if node in GIT_BRANCH_ALLOWLIST:
+                return node
+            return "branch-" + salted(node)[:6]
+        s = redact_home_text(node)
         if key in SAFE_KEYS:
-            return redact_home(node)
-        s = redact_home(node)
-        if looks_safe_short(s):
             return s
-        # long unknown string: keep only if it is clearly a path
-        if s.startswith(("/", "~")) and "\n" not in s and len(s) <= 300:
+        if looks_safe_short(s):
             return s
         return placeholder(node)
     return node
@@ -187,12 +338,6 @@ def sanitize_value(node, key=None):
 
 def sanitize_record(obj):
     return sanitize_value(obj)
-
-
-def sanitize_project_dirname(name):
-    if name.startswith(ENCODED_HOME):
-        return "-home-user" + name[len(ENCODED_HOME):]
-    return name
 
 
 # --- file scanning -----------------------------------------------------------
@@ -281,7 +426,7 @@ def scan_all(project_dirs):
             try:
                 st.scan()
             except OSError as exc:
-                print("  ! skipping %s: %s" % (f, exc), file=sys.stderr)
+                print("  ! skipping a session file: %s" % exc, file=sys.stderr)
                 continue
             if st.lines > 0:
                 stats.append(st)
@@ -335,11 +480,19 @@ def select(stats, target):
 # --- fixture writing ---------------------------------------------------------
 
 
+def fixture_name(stat):
+    """Aliased project dir + pseudonymized session filename."""
+    proj = alias_encoded_dirname(stat.project_dir)
+    stem = stat.path.stem
+    new_stem = pseudo_id(stem) or stem
+    return proj, new_stem + stat.path.suffix
+
+
 def write_fixture(stat, out_root):
-    proj = sanitize_project_dirname(stat.project_dir)
+    proj, fname = fixture_name(stat)
     dest_dir = out_root / "projects" / proj
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / stat.path.name
+    dest = dest_dir / fname
     written = 0
     with open(stat.path, "r", encoding="utf-8", errors="replace") as src, \
             open(dest, "w", encoding="utf-8") as out:
@@ -360,9 +513,32 @@ def write_fixture(stat, out_root):
             written += 1
     rel = dest.relative_to(out_root)
     if written != stat.lines:
-        raise RuntimeError("line count drifted for %s: %d -> %d"
-                           % (stat.path, stat.lines, written))
+        raise RuntimeError("line count drifted: %d -> %d (%s)"
+                           % (stat.lines, written, rel))
     return str(rel)
+
+
+def snapshot_selected(selected, snap_root):
+    """Copy each selected file ONCE into a temp tree and rescan.
+
+    Claude Code appends to live session logs while we run; sanitizing and
+    expectation-verifying from the same frozen snapshot is the only way to
+    keep everything consistent. The snapshot keeps ORIGINAL names/content
+    (it is temp-only, never committed) — it exists to verify that ccusage
+    totals on originals == totals on the sanitized tree.
+    """
+    frozen = []
+    for stat in selected:
+        d = snap_root / "projects" / stat.project_dir
+        d.mkdir(parents=True, exist_ok=True)
+        dest = d / stat.path.name
+        shutil.copyfile(stat.path, dest)
+        fresh = FileStat(dest, stat.project_dir)
+        fresh.scan()
+        fresh.criteria = stat.criteria
+        fresh.source = stat.path
+        frozen.append(fresh)
+    return frozen
 
 
 # --- ccusage expectations ----------------------------------------------------
@@ -387,92 +563,92 @@ def resolve_ccusage_version(meta_path, override):
     return ver
 
 
-def redact_json(node):
-    """Redact home/encoded-home/username in every string of a JSON tree.
-
-    ccusage output echoes real project dir names (e.g. session rows'
-    "projectPath": "-home-<user>…"); redacting with the same rule as the
-    fixture tree keeps expectations consistent with fixture dir names.
-    `make parity-full` must apply the same redaction to locally-derived
-    project paths before comparing.
-    """
-    if isinstance(node, dict):
-        return {redact_home(k): redact_json(v) for k, v in node.items()}
-    if isinstance(node, list):
-        return [redact_json(v) for v in node]
-    if isinstance(node, str):
-        return redact_home(node)
-    return node
-
-
 def run_ccusage(version, subcommand, config_dir):
     # ccusage >= v20 is multi-agent (codex, opencode, ...) and mixes every
     # detected agent's usage into the bare `daily`/`session` commands; the
     # `claude` subcommand scopes the report to Claude Code logs only
     cmd = (["npx", "-y", "ccusage@%s" % version, "claude"] + subcommand.split()
            + ["--json", "--offline"])
-    env = dict(os.environ, CLAUDE_CONFIG_DIR=config_dir)
+    env = dict(os.environ, CLAUDE_CONFIG_DIR=str(config_dir))
     out = subprocess.run(cmd, capture_output=True, text=True, env=env,
                          timeout=1800)
     if out.returncode != 0:
         raise RuntimeError("%s failed (%d):\n%s"
                            % (" ".join(cmd), out.returncode, out.stderr[-2000:]))
-    return redact_json(json.loads(out.stdout)), cmd
+    return json.loads(out.stdout), cmd
 
 
-def snapshot_selected(selected, snap_root):
-    """Copy each selected file ONCE into a temp fake config tree and rescan.
-
-    Claude Code appends to live session logs while we run; sanitizing and
-    expectation-capturing from the same frozen snapshot is the only way to
-    keep the committed fixtures and the fixture-scoped ccusage expectations
-    consistent with each other. Returns fresh FileStats pointing at the
-    snapshot copies (criteria and original source path carried over).
-    """
-    frozen = []
-    for stat in selected:
-        d = snap_root / "projects" / sanitize_project_dirname(stat.project_dir)
-        d.mkdir(parents=True, exist_ok=True)
-        dest = d / stat.path.name
-        shutil.copyfile(stat.path, dest)
-        fresh = FileStat(dest, stat.project_dir)
-        fresh.scan()
-        fresh.criteria = stat.criteria
-        fresh.source = stat.path
-        frozen.append(fresh)
-    return frozen
+def redact_json(node):
+    """Username/project redaction for the full-history expectation files:
+    redact home/username in every string and apply the SAME project alias
+    map to encoded project dir names (e.g. session rows' projectPath).
+    Identifiers and timestamps are left untouched in the -full set."""
+    if isinstance(node, dict):
+        return {redact_home_text(k): redact_json(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [redact_json(v) for v in node]
+    if isinstance(node, str):
+        if node.startswith("-"):
+            return alias_encoded_dirname(node)
+        if is_pathlike(node):
+            return alias_path_value(node)
+        return redact_home_text(node)
+    return node
 
 
-def capture_expectations(version, snap_root, project_dirs, expected_dir):
+TOTAL_KEYS = ("inputTokens", "outputTokens",
+              "cacheCreationTokens", "cacheReadTokens")
+
+
+def capture_expectations(version, fixture_root, snap_root, project_dirs,
+                         expected_dir):
     expected_dir.mkdir(parents=True, exist_ok=True)
     commands = {}
 
-    # fixture-scoped set (CI): the frozen snapshot tree is already laid out
-    # as a fake config root (projects/<sanitized-dir>/<session>.jsonl)
+    # fixture-scoped set (CI): captured from the SANITIZED tree itself, so
+    # the committed expectations match the committed fixtures by construction
+    fixture_daily = None
     for sub, fname in (("daily", "ccusage-daily.json"),
                        ("session", "ccusage-session.json")):
-        data, cmd = run_ccusage(version, sub, str(snap_root))
+        data, cmd = run_ccusage(version, sub, fixture_root)
+        if sub == "daily":
+            fixture_daily = data
         (expected_dir / fname).write_text(
             json.dumps(data, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
         commands[fname] = {
             "command": cmd,
-            "CLAUDE_CONFIG_DIR": "<frozen fixture snapshot tree>",
+            "CLAUDE_CONFIG_DIR": "<the sanitized fixture tree>",
             "scope": "fixture",
         }
         print("  wrote expected/%s" % fname)
 
-    # full-history set (local parity): the real config roots
+    # self-check: ccusage on the frozen ORIGINAL snapshot must produce the
+    # exact same four token totals as on the sanitized tree — proves the
+    # sanitizer preserved all billing-relevant data (usage, ids for dedup,
+    # timestamps)
+    orig_daily, _ = run_ccusage(version, "daily", snap_root)
+    got = {k: fixture_daily["totals"][k] for k in TOTAL_KEYS}
+    want = {k: orig_daily["totals"][k] for k in TOTAL_KEYS}
+    if got != want:
+        raise RuntimeError(
+            "sanitized-tree ccusage totals diverge from original snapshot: "
+            "sanitized=%r original=%r — sanitizer broke billing-relevant "
+            "data, DO NOT commit" % (got, want))
+    print("  self-check OK: sanitized-tree totals == original-snapshot totals")
+
+    # full-history set (local parity): the real config roots, post-processed
+    # with username/project redaction only
     roots = ",".join(str(p.parent) for p in project_dirs)
     for sub, fname in (("daily", "ccusage-daily-full.json"),
                        ("session", "ccusage-session-full.json")):
         data, cmd = run_ccusage(version, sub, roots)
         (expected_dir / fname).write_text(
-            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+            json.dumps(redact_json(data), indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8")
         commands[fname] = {
             "command": cmd,
-            "CLAUDE_CONFIG_DIR": redact_home(roots),
+            "CLAUDE_CONFIG_DIR": redact_home_text(roots),
             "scope": "full-history",
         }
         print("  wrote expected/%s" % fname)
@@ -496,6 +672,49 @@ def local_timezone():
         "abbreviation": now.tzname(),
         "utc_offset": now.strftime("%z"),
     }
+
+
+# --- secret map file ----------------------------------------------------------
+
+
+def load_or_create_map(map_path):
+    global SALT
+    if map_path.is_file():
+        data = json.loads(map_path.read_text(encoding="utf-8"))
+        SALT = data["salt"]
+        PROJECT_ALIASES.update(data.get("projects", {}))
+        SEGMENT_ALIASES.update(data.get("segments", {}))
+        KEY_TOKENS.update(data.get("keys", {}))
+        ID_MAP.update(data.get("ids", {}))
+        print("loaded existing salt + alias maps from %s" % map_path.name)
+    else:
+        SALT = secrets.token_hex(16)
+        print("generated new harvest salt (kept only in %s)" % map_path.name)
+
+
+def write_map(map_path, sources):
+    map_path.write_text(json.dumps({
+        "_warning": "SECRET — real project/id mapping + salt. Gitignored; "
+                    "never commit, never share.",
+        "salt": SALT,
+        "projects": PROJECT_ALIASES,
+        "segments": SEGMENT_ALIASES,
+        "keys": KEY_TOKENS,
+        "ids": ID_MAP,
+        "sources": sources,
+    }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def assert_gitignored(map_path):
+    if shutil.which("git") is None:
+        return
+    r = subprocess.run(["git", "check-ignore", "-q", str(map_path)],
+                       cwd=str(map_path.parent))
+    if r.returncode != 0:
+        raise RuntimeError(
+            "%s is NOT gitignored — add '*.local.json' to .gitignore before "
+            "harvesting (the map contains the salt and real project names)"
+            % map_path)
 
 
 # --- main ---------------------------------------------------------------------
@@ -530,13 +749,18 @@ def main():
         out_root = out_root / args.label
     expected_dir = out_root / "expected"
 
+    map_path = Path(args.out) / "PROJECT_MAP.local.json"
+    map_path.parent.mkdir(parents=True, exist_ok=True)
+    assert_gitignored(map_path)
+    load_or_create_map(map_path)
+
     project_dirs = discover_project_dirs(args.config_dir)
     if not project_dirs:
         print("error: no Claude Code projects dir found "
               "(checked $CLAUDE_CONFIG_DIR, ~/.claude, ~/.config/claude)",
               file=sys.stderr)
         return 1
-    print("project dirs: %s" % ", ".join(redact_home(str(p))
+    print("project dirs: %s" % ", ".join(redact_home_text(str(p))
                                          for p in project_dirs))
 
     print("scanning session files ...")
@@ -554,15 +778,16 @@ def main():
     snap_ctx = tempfile.TemporaryDirectory(prefix="tatitok-harvest-snap-")
     snap_root = Path(snap_ctx.name)
     # freeze the selected files: live session logs grow while we run, and the
-    # fixtures + fixture-scoped expectations must come from identical bytes
+    # fixtures + expectation self-check must come from identical bytes
     selected = snapshot_selected(selected, snap_root)
 
-    manifest_files = []
+    manifest_files, sources = [], {}
     for stat in selected:
         rel = write_fixture(stat, out_root)
-        print("  %-60s %s" % (rel, ",".join(stat.criteria)))
+        print("  %-72s %s" % (rel, ",".join(stat.criteria)))
+        sources[str(stat.source)] = rel
         manifest_files.append({
-            "source": redact_home(str(stat.source)),
+            "source": alias_path_value(str(stat.source)),
             "fixture": rel,
             "criteria": stat.criteria,
             "lines": stat.lines,
@@ -583,13 +808,16 @@ def main():
         "machine_label": args.label,
         "platform": platform.platform(),
         "claude_code_versions_seen": sorted(versions),
-        "project_dirs": [redact_home(str(p)) for p in project_dirs],
+        "project_dirs": [redact_home_text(str(p)) for p in project_dirs],
         "files": manifest_files,
     }
     (out_root / "MANIFEST.json").write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8")
     print("wrote MANIFEST.json")
+
+    write_map(map_path, sources)
+    print("wrote %s (SECRET, gitignored)" % map_path.name)
 
     if args.no_expectations:
         print("skipping ccusage expectations (--no-expectations)")
@@ -608,8 +836,8 @@ def main():
     version = resolve_ccusage_version(meta_path, args.ccusage_version)
     t0 = time.time()
     try:
-        commands = capture_expectations(version, snap_root, project_dirs,
-                                        expected_dir)
+        commands = capture_expectations(version, out_root, snap_root,
+                                        project_dirs, expected_dir)
     finally:
         snap_ctx.cleanup()
     meta = {
@@ -619,9 +847,10 @@ def main():
         "timezone": local_timezone(),
         "machine_label": args.label,
         "commands": commands,
-        "note": "ccusage-daily.json / ccusage-session.json are scoped to the "
-                "harvested fixture files (CI parity set); the -full variants "
-                "cover the machine's complete history (make parity-full).",
+        "note": "ccusage-daily.json / ccusage-session.json are captured from "
+                "the sanitized fixture tree (CI parity set); the -full "
+                "variants cover the machine's complete history "
+                "(make parity-full).",
     }
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
                          encoding="utf-8")
