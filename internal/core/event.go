@@ -1,0 +1,98 @@
+// Package core defines the unified usage-event model shared by every
+// adapter and the store: the Event struct (PRD §9.1 subset for M1), the
+// accuracy classes (PRD §9.4), and the deterministic event ID.
+package core
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+// Accuracy classifies how a token figure was obtained (PRD §9.4).
+// It is assigned per event at ingest by the adapter and is immutable (AS-1).
+type Accuracy string
+
+const (
+	// AccuracyExact: token figures reported by the serving provider, read
+	// verbatim from an authoritative record. We perform no counting.
+	AccuracyExact Accuracy = "exact"
+	// AccuracyDerived: computed deterministically from exact data via a
+	// documented rule (interpretation, but no tokenization).
+	AccuracyDerived Accuracy = "derived"
+	// AccuracyEstimated: reconstructed via local tokenization + calibrated
+	// overhead constants; always carries a confidence percentage.
+	AccuracyEstimated Accuracy = "estimated"
+)
+
+// Valid reports whether a is one of the three defined classes.
+func (a Accuracy) Valid() bool {
+	switch a {
+	case AccuracyExact, AccuracyDerived, AccuracyEstimated:
+		return true
+	}
+	return false
+}
+
+// SourceKind values (PRD §9.1). M1 only ingests harness logs.
+const (
+	SourceKindHarnessLog = "harness_log"
+)
+
+// Event is one LLM interaction (message/request), normalized across
+// sources. Subset of PRD §9.1 needed for M1; later milestones add cost,
+// confidence and latency fields.
+type Event struct {
+	// ID is the deterministic idempotency key — see EventID / FallbackID.
+	ID string `json:"id"`
+	// TS is the event time (message time, not ingest time), always UTC.
+	TS time.Time `json:"ts"`
+	// Machine is the hostname/alias of the collecting machine.
+	Machine    string `json:"machine"`
+	SourceKind string `json:"source_kind"`
+	Harness    string `json:"harness,omitempty"`
+	Provider   string `json:"provider"`
+	// Model is the raw model id exactly as reported by the source.
+	Model string `json:"model"`
+	// ModelFamily mirrors Model until the mapping-table milestone —
+	// unknown models pass through raw, never guessed.
+	ModelFamily string `json:"model_family"`
+	Project     string `json:"project,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	RequestID   string `json:"request_id,omitempty"`
+
+	TokensInput      int64 `json:"tokens_input"`
+	TokensOutput     int64 `json:"tokens_output"`
+	TokensCacheWrite int64 `json:"tokens_cache_write"`
+	TokensCacheRead  int64 `json:"tokens_cache_read"`
+	// TokensReasoning is nil when the source does not report
+	// thinking/reasoning tokens separately (Claude Code does not).
+	TokensReasoning *int64 `json:"tokens_reasoning,omitempty"`
+
+	Accuracy Accuracy `json:"accuracy"`
+	// Meta holds source-specific extras (cwd, branch, client version,
+	// per-TTL cache detail, …).
+	Meta map[string]any `json:"meta,omitempty"`
+	// Raw is the SANITIZED source record: original structure with every
+	// content field replaced by <stripped len=N sha256=…> placeholders.
+	// Prompt or response text must never end up here.
+	Raw json.RawMessage `json:"raw,omitempty"`
+}
+
+// Validate checks the invariants every adapter must uphold before an
+// event reaches the store.
+func (e *Event) Validate() error {
+	if e.ID == "" {
+		return fmt.Errorf("event has empty id")
+	}
+	if e.TS.IsZero() {
+		return fmt.Errorf("event %s has zero timestamp", e.ID)
+	}
+	if e.TS.Location() != time.UTC {
+		return fmt.Errorf("event %s timestamp not UTC", e.ID)
+	}
+	if !e.Accuracy.Valid() {
+		return fmt.Errorf("event %s has invalid accuracy %q", e.ID, e.Accuracy)
+	}
+	return nil
+}
