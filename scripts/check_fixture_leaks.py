@@ -75,6 +75,10 @@ UUID_RE = re.compile(
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 PREFIX_ID_RE = re.compile(r"\b(?:msg|req|toolu)_[A-Za-z0-9]{10,}\b")
 
+# Go module manifests: public registry paths only — exempt from the
+# aliased-segment token scan (still scanned for global literals/ids)
+MODULE_MANIFESTS = {"go.mod", "go.sum"}
+
 # binary-ish files we never scan for text leaks
 SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".db", ".sqlite"}
 
@@ -236,6 +240,12 @@ def scan(repo, rel, globals_, tokens, prefixes, pseudonyms, public_tokens,
         for lit, (cat, rx) in tokens.items():
             if not is_fixture_log and lit.lower() in public_tokens:
                 continue  # names a committed path: public by construction
+            if rel.name in MODULE_MANIFESTS:
+                # go.mod/go.sum hold public registry module paths;
+                # common words there collide with aliased segments but
+                # cannot leak the owner's filesystem. Global literals,
+                # id prefixes and UUIDs are still checked on these files.
+                continue
             for m in rx.finditer(line):
                 # segments/keys only leak in path context: the match must
                 # touch a '/' (slugs leak anywhere, even in prose)

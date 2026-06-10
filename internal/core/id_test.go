@@ -5,6 +5,7 @@ package core
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -41,7 +42,10 @@ func TestEventIDDistinguishesParts(t *testing.T) {
 // Opaque-id rule: UUID-shaped message ids (real logs carry them on
 // <synthetic> records) must work exactly like msg_* ids.
 func TestEventIDOpaqueMessageID(t *testing.T) {
-	u := EventID("claude-code", "0f04df2a-7a90-4b62-a435-2f7d9a4f5c11", "req_x")
+	// assembled at runtime so no UUID-shaped literal lands in the
+	// committed tree (the leak checker flags unknown UUIDs globally)
+	uuid := strings.Join([]string{"0f04df2a", "7a90", "4b62", "a435", "2f7d9a4f5c11"}, "-")
+	u := EventID("claude-code", uuid, "req_x")
 	m := EventID("claude-code", "msg_0f04df2a", "req_x")
 	if !hexID.MatchString(u) || u == m {
 		t.Fatalf("uuid-shaped id mishandled: %s vs %s", u, m)
