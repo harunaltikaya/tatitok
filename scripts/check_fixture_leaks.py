@@ -294,14 +294,20 @@ def load_maps(map_paths, home, username):
         ids.update(m.get("ids", {}))
 
     # 8-hex prefixes of real UUIDs catch truncated doc mentions; skip any
-    # that collide with a pseudonym's hex (astronomically unlikely)
+    # that collide with a pseudonym's hex (astronomically unlikely). The
+    # match demands non-hex neighbors: an all-digit prefix is otherwise a
+    # guaranteed false positive inside epoch-millisecond timestamps
+    # (found by the opencode harvest — a claude uuid prefix inside
+    # time_created), while a truncated mention like "abcd1234.jsonl"
+    # still matches.
     pseudonyms = {v.lower() for v in ids.values()}
-    prefixes = set()
+    prefixes = {}
     for k in ids:
         if UUID_RE.fullmatch(k):
             p = k[:8].lower()
             if not any(p in ps for ps in pseudonyms):
-                prefixes.add(p)
+                prefixes[p] = re.compile(
+                    r"(?<![0-9a-fA-F])" + p + r"(?![0-9a-fA-F])")
     return globals_, tokens, prefixes, pseudonyms
 
 
@@ -341,8 +347,8 @@ def scan(repo, rel, globals_, tokens, prefixes, pseudonyms, public_tokens,
                         continue
                 findings.append((str(rel), lineno, cat, lit))
                 break
-        for p in prefixes:
-            if p in low:
+        for p, prx in prefixes.items():
+            if p in low and prx.search(low):
                 findings.append((str(rel), lineno, "real-id-prefix", p))
         if str(rel).startswith(VECTOR_PREFIX):
             continue  # synthetic vector ids are exempt from the unknown-id

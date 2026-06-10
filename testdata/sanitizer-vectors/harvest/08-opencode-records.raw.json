@@ -1,0 +1,33 @@
+{
+ "id": "msg_VectorAa00000000000000000",
+ "session_id": "ses_VectorBb00000000000000000",
+ "time_created": 1765400000000,
+ "data": {
+  "role": "assistant",
+  "modelID": "qwen3-coder",
+  "providerID": "vllm-local",
+  "mode": "build",
+  "agent": "build",
+  "parentID": "msg_VectorCc00000000000000000",
+  "tokens": {
+   "input": 10,
+   "output": 2,
+   "reasoning": 0,
+   "cache": {
+    "read": 0,
+    "write": 0
+   }
+  },
+  "path": {
+   "cwd": "/home/user/Projects/secretproj",
+   "root": "/home/user/Projects/secretproj"
+  },
+  "error": {
+   "name": "APIError",
+   "data": {
+    "message": "free text",
+    "responseBody": "raw"
+   }
+  }
+ }
+}

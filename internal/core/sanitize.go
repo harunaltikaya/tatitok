@@ -172,7 +172,16 @@ func sanitizeValue(node any, key string) any {
 		return s
 	}
 	if contentKeys[key] {
-		return Placeholder(node)
+		switch node.(type) {
+		case json.Number, bool, nil:
+			// numbers/booleans/null cannot carry content; generic key
+			// names collide across formats (opencode tokens.input is a
+			// NUMBER under claude-code's tool-input key name) — see the
+			// spec's content_keys_doc
+			return node
+		default:
+			return Placeholder(node)
+		}
 	}
 	// string-content keys ("content") strip a string, but a list/dict (the
 	// message.content block array) keeps its structure and is recursed into.

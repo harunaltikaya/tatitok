@@ -1,0 +1,52 @@
+{
+ "id": "msg_VectorAa00000000000000000",
+ "session_id": "ses_VectorBb00000000000000000",
+ "data": {
+  "role": "assistant",
+  "modelID": "qwen3-coder",
+  "providerID": "vllm",
+  "parentID": "msg_VectorCc00000000000000000",
+  "time": {
+   "created": 1765400000000,
+   "completed": 1765400001000
+  },
+  "tokens": {
+   "input": 1200,
+   "output": 50,
+   "reasoning": 7,
+   "cache": {
+    "read": 900,
+    "write": 0
+   },
+   "total": 2150
+  },
+  "path": {
+   "cwd": "/home/user/Projects/example",
+   "root": "/home/user/Projects/example"
+  },
+  "error": {
+   "name": "APIError",
+   "data": {
+    "message": "upstream error text with user fragments",
+    "responseBody": "{\"error\":\"raw provider body\"}",
+    "responseHeaders": {
+     "date": "Wed, 11 Jun 2026 00:00:00 GMT",
+     "x-trace": "abc"
+    },
+    "statusCode": 500
+   }
+  },
+  "system": [
+   "system prompt text"
+  ],
+  "summary": {
+   "diffs": [
+    {
+     "file": "src/a.go",
+     "patch": "--- a\n+++ b",
+     "additions": 1
+    }
+   ]
+  }
+ }
+}

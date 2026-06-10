@@ -1,0 +1,233 @@
+{
+  "harvest_date": "2026-06-10T22:58:51+00:00",
+  "source": "opencode",
+  "machine_label": "gx10",
+  "platform": "Linux-6.17.0-1021-nvidia-aarch64-with-glibc2.39",
+  "source_format": "sqlite message table (opencode.db); fixtures are sanitized per-session row JSONL + schema.sql, the db is reconstructed from them",
+  "log_roots": [
+    "~/.local/share/opencode"
+  ],
+  "sessions": [
+    {
+      "session": "ses_cf10e8e5705415543e3e6cad9a",
+      "fixture": "messages/ses_cf10e8e5705415543e3e6cad9a.jsonl",
+      "criteria": [
+        "short-session"
+      ],
+      "messages": 2,
+      "malformed_data": 0,
+      "usage_messages": 1,
+      "models": [
+        "gpt-5-nano"
+      ],
+      "providers": [
+        "opencode"
+      ],
+      "first_timestamp": "2026-05-02T13:42:28.865+00:00",
+      "last_timestamp": "2026-05-02T13:42:28.869+00:00"
+    },
+    {
+      "session": "ses_9899298ab0d4fffb9bcf67a991",
+      "fixture": "messages/ses_9899298ab0d4fffb9bcf67a991.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "messages": 6,
+      "malformed_data": 0,
+      "usage_messages": 5,
+      "models": [
+        "gpt-5-nano"
+      ],
+      "providers": [
+        "opencode"
+      ],
+      "first_timestamp": "2026-05-02T13:42:18.963+00:00",
+      "last_timestamp": "2026-05-02T13:43:20.299+00:00"
+    },
+    {
+      "session": "ses_f3c80ac70865d2d1e5fd6c5252",
+      "fixture": "messages/ses_f3c80ac70865d2d1e5fd6c5252.jsonl",
+      "criteria": [
+        "oldest"
+      ],
+      "messages": 78,
+      "malformed_data": 0,
+      "usage_messages": 67,
+      "models": [
+        "deepseek-v4-pro"
+      ],
+      "providers": [
+        "deepseek"
+      ],
+      "first_timestamp": "2026-05-02T13:41:09.468+00:00",
+      "last_timestamp": "2026-05-02T15:01:32.831+00:00"
+    },
+    {
+      "session": "ses_b82fe3f366b6f4cc806b4c48fd",
+      "fixture": "messages/ses_b82fe3f366b6f4cc806b4c48fd.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "messages": 52,
+      "malformed_data": 0,
+      "usage_messages": 44,
+      "models": [
+        "deepseek-v4-pro"
+      ],
+      "providers": [
+        "deepseek"
+      ],
+      "first_timestamp": "2026-05-06T11:18:44.329+00:00",
+      "last_timestamp": "2026-05-06T11:43:24.775+00:00"
+    },
+    {
+      "session": "ses_1824d53316b7c76532582b2519",
+      "fixture": "messages/ses_1824d53316b7c76532582b2519.jsonl",
+      "criteria": [
+        "model-switch"
+      ],
+      "messages": 133,
+      "malformed_data": 0,
+      "usage_messages": 112,
+      "models": [
+        "deepseek-v4-pro",
+        "qwen3.6-27b"
+      ],
+      "providers": [
+        "deepseek",
+        "vllm"
+      ],
+      "first_timestamp": "2026-05-06T14:10:29.055+00:00",
+      "last_timestamp": "2026-05-06T17:59:15.711+00:00"
+    },
+    {
+      "session": "ses_2cb2fb1a39bd7fd4f07ec967fd",
+      "fixture": "messages/ses_2cb2fb1a39bd7fd4f07ec967fd.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "messages": 21,
+      "malformed_data": 0,
+      "usage_messages": 17,
+      "models": [
+        "deepseek-v4-pro"
+      ],
+      "providers": [
+        "deepseek"
+      ],
+      "first_timestamp": "2026-05-16T10:15:56.880+00:00",
+      "last_timestamp": "2026-05-16T10:19:35.299+00:00"
+    },
+    {
+      "session": "ses_6770403ad98c8ed3971d95307c",
+      "fixture": "messages/ses_6770403ad98c8ed3971d95307c.jsonl",
+      "criteria": [
+        "cache-heavy"
+      ],
+      "messages": 181,
+      "malformed_data": 0,
+      "usage_messages": 164,
+      "models": [
+        "deepseek-v4-flash"
+      ],
+      "providers": [
+        "deepseek"
+      ],
+      "first_timestamp": "2026-06-07T10:14:47.551+00:00",
+      "last_timestamp": "2026-06-07T14:27:48.408+00:00"
+    },
+    {
+      "session": "ses_8af8af31cb152eac64e9c09aa8",
+      "fixture": "messages/ses_8af8af31cb152eac64e9c09aa8.jsonl",
+      "criteria": [
+        "fill-spread"
+      ],
+      "messages": 5,
+      "malformed_data": 0,
+      "usage_messages": 4,
+      "models": [
+        "gx10"
+      ],
+      "providers": [
+        "vllm-delegate"
+      ],
+      "first_timestamp": "2026-06-08T00:19:26.764+00:00",
+      "last_timestamp": "2026-06-08T00:19:47.496+00:00"
+    },
+    {
+      "session": "ses_6cbe3d88bb7e0e20393af10052",
+      "fixture": "messages/ses_6cbe3d88bb7e0e20393af10052.jsonl",
+      "criteria": [
+        "long-session"
+      ],
+      "messages": 321,
+      "malformed_data": 0,
+      "usage_messages": 311,
+      "models": [
+        "qwen3.6-35b-nvfp4-tecnigmaai"
+      ],
+      "providers": [
+        "vllm-tecnigmaai-nvfp4"
+      ],
+      "first_timestamp": "2026-06-09T19:52:19.666+00:00",
+      "last_timestamp": "2026-06-10T13:37:06.765+00:00"
+    },
+    {
+      "session": "ses_a412297a5755428938f4446ef6",
+      "fixture": "messages/ses_a412297a5755428938f4446ef6.jsonl",
+      "criteria": [
+        "recent-full"
+      ],
+      "messages": 2,
+      "malformed_data": 0,
+      "usage_messages": 1,
+      "models": [
+        "qwen3.6-35b-a3b"
+      ],
+      "providers": [
+        "vllm-35b"
+      ],
+      "first_timestamp": "2026-06-10T21:20:01.285+00:00",
+      "last_timestamp": "2026-06-10T21:20:01.291+00:00"
+    },
+    {
+      "session": "ses_483ad722dc53e235f4dfe65715",
+      "fixture": "messages/ses_483ad722dc53e235f4dfe65715.jsonl",
+      "criteria": [
+        "recent-full"
+      ],
+      "messages": 103,
+      "malformed_data": 0,
+      "usage_messages": 100,
+      "models": [
+        "qwen3.6-35b-nvfp4-tecnigmaai"
+      ],
+      "providers": [
+        "vllm-tecnigmaai-nvfp4"
+      ],
+      "first_timestamp": "2026-06-10T21:20:32.254+00:00",
+      "last_timestamp": "2026-06-10T22:07:46.212+00:00"
+    },
+    {
+      "session": "ses_8fd58da66808eac77de707c3d1",
+      "fixture": "messages/ses_8fd58da66808eac77de707c3d1.jsonl",
+      "criteria": [
+        "newest",
+        "recent-full"
+      ],
+      "messages": 25,
+      "malformed_data": 0,
+      "usage_messages": 22,
+      "models": [
+        "deepseek-v4-flash-free",
+        "qwen3.6-35b-nvfp4-tecnigmaai"
+      ],
+      "providers": [
+        "opencode",
+        "vllm-tecnigmaai-nvfp4"
+      ],
+      "first_timestamp": "2026-06-10T22:43:30.534+00:00",
+      "last_timestamp": "2026-06-10T22:48:23.325+00:00"
+    }
+  ]
+}

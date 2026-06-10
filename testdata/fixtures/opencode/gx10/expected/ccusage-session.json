@@ -1,0 +1,134 @@
+{
+  "sessions": [
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 8784384,
+      "inputTokens": 1215772,
+      "modelsUsed": [
+        "qwen3.6-27b",
+        "deepseek-v4-pro"
+      ],
+      "outputTokens": 43540,
+      "sessionId": "ses_1824d53316b7c76532582b2519",
+      "totalCost": 1.9858185,
+      "totalTokens": 10063609
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 431360,
+      "inputTokens": 129756,
+      "modelsUsed": [
+        "deepseek-v4-pro"
+      ],
+      "outputTokens": 4114,
+      "sessionId": "ses_2cb2fb1a39bd7fd4f07ec967fd",
+      "totalCost": 0.30491876,
+      "totalTokens": 565885
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 0,
+      "inputTokens": 7014591,
+      "modelsUsed": [
+        "qwen3.6-35b-nvfp4-tecnigmaai"
+      ],
+      "outputTokens": 32584,
+      "sessionId": "ses_483ad722dc53e235f4dfe65715",
+      "totalCost": 0.0,
+      "totalTokens": 7047175
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 27921280,
+      "inputTokens": 231642,
+      "modelsUsed": [
+        "deepseek-v4-flash"
+      ],
+      "outputTokens": 32237,
+      "sessionId": "ses_6770403ad98c8ed3971d95307c",
+      "totalCost": 0.128858464,
+      "totalTokens": 28218097
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 0,
+      "inputTokens": 25201124,
+      "modelsUsed": [
+        "qwen3.6-35b-nvfp4-tecnigmaai"
+      ],
+      "outputTokens": 69836,
+      "sessionId": "ses_6cbe3d88bb7e0e20393af10052",
+      "totalCost": 0.0,
+      "totalTokens": 25270960
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 0,
+      "inputTokens": 43142,
+      "modelsUsed": [
+        "gx10"
+      ],
+      "outputTokens": 1820,
+      "sessionId": "ses_8af8af31cb152eac64e9c09aa8",
+      "totalCost": 0.0,
+      "totalTokens": 44962
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 359808,
+      "inputTokens": 265036,
+      "modelsUsed": [
+        "qwen3.6-35b-nvfp4-tecnigmaai",
+        "deepseek-v4-flash-free"
+      ],
+      "outputTokens": 6705,
+      "sessionId": "ses_8fd58da66808eac77de707c3d1",
+      "totalCost": 0.0,
+      "totalTokens": 633304
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 100992,
+      "inputTokens": 26501,
+      "modelsUsed": [
+        "gpt-5-nano"
+      ],
+      "outputTokens": 5096,
+      "sessionId": "ses_9899298ab0d4fffb9bcf67a991",
+      "totalCost": 0.007938810000000001,
+      "totalTokens": 142765
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 3551616,
+      "inputTokens": 96112,
+      "modelsUsed": [
+        "deepseek-v4-pro"
+      ],
+      "outputTokens": 16259,
+      "sessionId": "ses_b82fe3f366b6f4cc806b4c48fd",
+      "totalCost": 0.80035128,
+      "totalTokens": 3681674
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 10650752,
+      "inputTokens": 197317,
+      "modelsUsed": [
+        "deepseek-v4-pro"
+      ],
+      "outputTokens": 37217,
+      "sessionId": "ses_f3c80ac70865d2d1e5fd6c5252",
+      "totalCost": 2.056909100000001,
+      "totalTokens": 10896695
+    }
+  ],
+  "totals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 51800192,
+    "inputTokens": 34420993,
+    "outputTokens": 249408,
+    "totalCost": 5.284794914000001,
+    "totalTokens": 86565126
+  }
+}

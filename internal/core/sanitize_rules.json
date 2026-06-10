@@ -19,7 +19,7 @@
   ],
   "spec_version": 1,
 
-  "content_keys_doc": "values that are content by definition — always stripped to a placeholder, any length, any type (an entire tool_use input object becomes one placeholder). Includes short content-bearing fields found in real logs that slip under the max_free_len rule (aiTitle, lastPrompt, subject, description). The second group was added for Codex rollout records (M2 Task 3: tool args/outputs, exec command lines and outputs, patch diffs keyed by real paths, instruction blobs, reasoning ciphertext, web-search queries/urls, guardian rationale, error info).",
+  "content_keys_doc": "values that are content by definition — always stripped to a placeholder, any length: strings, objects and arrays (an entire tool_use input object becomes one placeholder). NUMBERS, BOOLEANS and NULL pass through content keys verbatim — they cannot carry prompt/response text, and generic key names collide across formats (OpenCode's tokens.input/tokens.output are numbers under the same names as Claude Code's tool input and Codex's tool output; stripping them broke ccusage totals — caught by the opencode harvest self-check, M2 Task 4). Includes short content-bearing fields found in real logs that slip under the max_free_len rule (aiTitle, lastPrompt, subject, description). The second group was added for Codex rollout records (M2 Task 3: tool args/outputs, exec command lines and outputs, patch diffs keyed by real paths, instruction blobs, reasoning ciphertext, web-search queries/urls, guardian rationale, error info). The third group was added for OpenCode message rows (M2 Task 4: provider error response bodies/headers, diff patches, system prompts).",
   "content_keys": [
     "text", "thinking", "summary", "input", "attachments", "toolUseResult",
     "signature", "prompt", "stdout", "stderr",
@@ -31,7 +31,9 @@
     "developer_instructions", "instructions",
     "text_elements", "images", "local_images", "last_agent_message",
     "rationale", "memory_citation", "codex_error_info",
-    "query", "queries", "pattern", "url", "image_url", "repository_url"
+    "query", "queries", "pattern", "url", "image_url", "repository_url",
+
+    "responseBody", "responseHeaders", "patch", "system"
   ],
 
   "string_content_keys_doc": "keys whose STRING values are stripped but whose list/dict values keep their structure and are recursed into. 'content': the message.content block array. 'message': Codex carries full message text as a string under this key (agent_message/user_message/error), while Claude Code's 'message' is the structural object holding usage — strip strings, recurse structures.",
@@ -65,7 +67,7 @@
   "id_shapes": {
     "doc": "string shapes treated as opaque identifiers: kept verbatim by the DB sanitizer, pseudonymized shape-preservingly by the harvest sanitizer.",
     "uuid_regex": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-    "prefix_id_prefixes": ["msg", "req", "toolu", "call", "ws"],
+    "prefix_id_prefixes": ["msg", "req", "toolu", "call", "ws", "ses"],
     "prefix_id_body_regex": "[A-Za-z0-9]+"
   },
 
@@ -90,6 +92,8 @@
     ],
     "owner_approved_segments_doc": "OWNER-APPROVED EXCEPTIONS, distinct from structural names: owner-CREATED directory names default to aliasing and stay verbatim only after an explicit owner ruling reviewing that the name carries no project identity. NTFY: ruled harmless 2026-06-11 (ntfy push-notification tooling directory). Decision rule: structural (OS/tool-created) names go in path_segment_allowlist without a ruling; owner-created names go here ONLY with a recorded ruling.",
     "owner_approved_segments": ["NTFY"],
+    "owner_approved_values_doc": "owner rulings on VALUES kept verbatim (these pass the sanitizer via the short-string/safe-key rules; the entry records the explicit review, same category as owner_approved_segments). 2026-06-11: all OpenCode provider/model identifiers — vllm-* including vllm-tecnigmaai-nvfp4 — reviewed as vLLM serving-recipe names, not personal identity.",
+    "owner_approved_values": ["vllm-*"],
     "path_segment_allowlist_regexes_doc": "segment patterns that are structural wherever they appear: purely numeric segments are date-tree components (Codex stores sessions under sessions/YYYY/MM/DD), never project identity.",
     "path_segment_allowlist_regexes": ["^[0-9]+$"],
     "verbatim_value_keys_doc": "keys whose string values are closed-vocabulary metadata kept verbatim even when slash-shaped (IANA timezones look like paths and must not be aliased into fake project names).",

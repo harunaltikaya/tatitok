@@ -27,5 +27,9 @@
  "aiTitle": "Fix build",
  "lastPrompt": "run make",
  "subject": "todo item",
- "description": "short but content-bearing"
+ "description": "short but content-bearing",
+ "command": 7,
+ "result": true,
+ "query": null,
+ "output": 12345
 }

@@ -1,0 +1,111 @@
+{
+  "daily": [
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 10751744,
+      "date": "2026-05-02",
+      "inputTokens": 223818,
+      "modelsUsed": [
+        "deepseek-v4-pro",
+        "gpt-5-nano"
+      ],
+      "outputTokens": 42313,
+      "totalCost": 2.0648479100000006,
+      "totalTokens": 11039460
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 12336000,
+      "date": "2026-05-06",
+      "inputTokens": 1311884,
+      "modelsUsed": [
+        "deepseek-v4-pro",
+        "qwen3.6-27b"
+      ],
+      "outputTokens": 59799,
+      "totalCost": 2.78616978,
+      "totalTokens": 13745283
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 431360,
+      "date": "2026-05-16",
+      "inputTokens": 129756,
+      "modelsUsed": [
+        "deepseek-v4-pro"
+      ],
+      "outputTokens": 4114,
+      "totalCost": 0.30491876,
+      "totalTokens": 565885
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 27921280,
+      "date": "2026-06-07",
+      "inputTokens": 231642,
+      "modelsUsed": [
+        "deepseek-v4-flash"
+      ],
+      "outputTokens": 32237,
+      "totalCost": 0.128858464,
+      "totalTokens": 28218097
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 0,
+      "date": "2026-06-08",
+      "inputTokens": 43142,
+      "modelsUsed": [
+        "gx10"
+      ],
+      "outputTokens": 1820,
+      "totalCost": 0.0,
+      "totalTokens": 44962
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 0,
+      "date": "2026-06-09",
+      "inputTokens": 1552086,
+      "modelsUsed": [
+        "qwen3.6-35b-nvfp4-tecnigmaai"
+      ],
+      "outputTokens": 10544,
+      "totalCost": 0.0,
+      "totalTokens": 1562630
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 0,
+      "date": "2026-06-10",
+      "inputTokens": 23649038,
+      "modelsUsed": [
+        "qwen3.6-35b-nvfp4-tecnigmaai"
+      ],
+      "outputTokens": 59292,
+      "totalCost": 0.0,
+      "totalTokens": 23708330
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 359808,
+      "date": "2026-06-11",
+      "inputTokens": 7279627,
+      "modelsUsed": [
+        "qwen3.6-35b-nvfp4-tecnigmaai",
+        "deepseek-v4-flash-free"
+      ],
+      "outputTokens": 39289,
+      "totalCost": 0.0,
+      "totalTokens": 7680479
+    }
+  ],
+  "totals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 51800192,
+    "inputTokens": 34420993,
+    "outputTokens": 249408,
+    "totalCost": 5.284794914000001,
+    "totalTokens": 86565126
+  }
+}

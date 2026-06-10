@@ -85,6 +85,7 @@ import platform
 import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -352,6 +353,11 @@ def sanitize_value(node, key=None, harvest=True):
     if isinstance(node, str) and PLACEHOLDER_RE.match(node):
         return node
     if key in CONTENT_KEYS:
+        # numbers/booleans/null cannot carry content; generic key names
+        # collide across formats (opencode tokens.input is a NUMBER under
+        # claude-code's tool-input key name) — see the spec doc
+        if node is None or isinstance(node, (bool, int, float)):
+            return node
         return placeholder(node)
     if key in STRING_CONTENT_KEYS and isinstance(node, str):
         return placeholder(node)
@@ -550,6 +556,20 @@ def discover_codex(overrides):
     return [c for c in candidates if c.is_dir()]
 
 
+def discover_opencode(overrides):
+    """OpenCode stores per-message JSON rows in a SQLite db (current
+    format — the old storage/ directory-of-JSON layout is gone):
+    $XDG_DATA_HOME/opencode/opencode.db. Overrides are dirs containing
+    opencode.db."""
+    if overrides:
+        candidates = [Path(p).expanduser() for p in overrides]
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME")
+        base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
+        candidates = [base / "opencode"]
+    return [c for c in candidates if (c / "opencode.db").is_file()]
+
+
 def scan_all_claude(roots):
     stats = []
     for pd in roots:
@@ -727,15 +747,16 @@ def resolve_ccusage_version(meta_path, override):
     return ver
 
 
-def run_ccusage(version, agent, subcommand, env_var, env_value):
+def run_ccusage(version, agent, subcommand, env_overrides):
     # ccusage >= v20 is multi-agent (codex, opencode, ...) and mixes every
     # detected agent's usage into the bare `daily`/`session` commands; the
-    # agent subcommand (`claude`/`codex`) scopes the report to one log
-    # store, pointed at via the agent's env var.
+    # agent subcommand scopes the report to one log store, pointed at via
+    # the source's env overrides (a dict — opencode discovery is
+    # HOME-anchored and needs more than one variable).
     cmd = (["npx", "-y", "ccusage@%s" % version, agent] + subcommand.split()
            + ["--json", "--offline"])
     env = dict(os.environ)
-    env[env_var] = str(env_value)
+    env.update({k: str(v) for k, v in env_overrides.items()})
     out = subprocess.run(cmd, capture_output=True, text=True, env=env,
                          timeout=1800)
     if out.returncode != 0:
@@ -770,6 +791,242 @@ FULL_EXPECTATION_FILES = ("ccusage-daily-full.json",
                           "ccusage-session-full.json")
 
 
+# --- opencode (sqlite-backed source) -------------------------------------------
+
+
+class SessionStat:
+    """Per-session stats over opencode message rows — quacks like FileStat
+    for select(): lines/usage_msgs/models/cache_tokens/first_ts/last_ts/
+    mtime/criteria/path."""
+
+    def __init__(self, session_id):
+        self.session_id = session_id
+        self.path = session_id  # unique selection key
+        self.lines = 0          # message rows
+        self.malformed = 0
+        self.usage_msgs = 0
+        self.models = set()
+        self.providers = set()
+        self.cache_tokens = 0
+        self.first_ts = None
+        self.last_ts = None
+        self.mtime = 0
+        self.criteria = []
+
+
+def epoch_ms_iso(ms):
+    return datetime.datetime.fromtimestamp(
+        ms / 1000.0, datetime.timezone.utc).isoformat(timespec="milliseconds")
+
+
+def build_opencode_db(home_dir, ddl, rows):
+    """Construct an opencode.db an unmodified ccusage can read, at the
+    HOME-anchored location ccusage discovers
+    (<home>/.local/share/opencode/opencode.db — XDG_DATA_HOME is ignored;
+    verified by strace + empty-store probes). ONLY the message table:
+    empirically sufficient for daily AND session reports under proper
+    isolation. rows: (id, session_id, time_created, time_updated,
+    data_json_str)."""
+    d = Path(home_dir) / ".local" / "share" / "opencode"
+    d.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(d / "opencode.db")
+    con.execute(ddl)
+    con.executemany("INSERT INTO message VALUES (?,?,?,?,?)", rows)
+    con.commit()
+    con.close()
+
+
+def harvest_opencode(args, src, out_root, expected_dir, map_path):
+    """The opencode pipeline: the unit of selection is a SESSION (rows of
+    the message table grouped by session_id), the committed fixture is a
+    per-session JSONL of sanitized rows plus the message-table DDL — no
+    binary in git; the db ccusage and the adapter read is CONSTRUCTED from
+    that text (here for expectation capture, in Go tests at test time)."""
+    roots = discover_opencode(args.config_dir)
+    if not roots:
+        print("error: no opencode data dir found (set $XDG_DATA_HOME or "
+              "--config-dir)", file=sys.stderr)
+        return 1
+    db_path = roots[0] / "opencode.db"
+    print("log roots: %s" % redact_home_text(str(db_path)))
+
+    con = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
+    ddl = con.execute(
+        "SELECT sql FROM sqlite_master WHERE name='message'").fetchone()[0]
+    # freeze NOW: one consistent read of every row (the live db grows
+    # while we run; fixtures + self-check must describe identical rows)
+    all_rows = con.execute(
+        "SELECT id, session_id, time_created, time_updated, data "
+        "FROM message ORDER BY time_created, id").fetchall()
+    con.close()
+
+    stats = {}
+    for rid, sid, tc, tu, data in all_rows:
+        st = stats.get(sid)
+        if st is None:
+            st = stats[sid] = SessionStat(sid)
+        st.lines += 1
+        st.mtime = max(st.mtime, tu / 1000.0)
+        iso = epoch_ms_iso(tc)
+        if st.first_ts is None or iso < st.first_ts:
+            st.first_ts = iso
+        if st.last_ts is None or iso > st.last_ts:
+            st.last_ts = iso
+        try:
+            obj = json.loads(data)
+        except json.JSONDecodeError:
+            st.malformed += 1
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("role") == "assistant":
+            tokens = obj.get("tokens")
+            if isinstance(tokens, dict):
+                st.usage_msgs += 1
+                model = obj.get("modelID")
+                if isinstance(model, str):
+                    st.models.add(model)
+                prov = obj.get("providerID")
+                if isinstance(prov, str):
+                    st.providers.add(prov)
+                cache = tokens.get("cache")
+                if isinstance(cache, dict):
+                    for k in ("read", "write"):
+                        v = cache.get(k)
+                        if isinstance(v, (int, float)):
+                            st.cache_tokens += int(v)
+
+    if not stats:
+        print("error: no message rows found", file=sys.stderr)
+        return 1
+    print("scanning sessions ...")
+    print("  %d sessions, %d with usage messages"
+          % (len(stats), sum(1 for s in stats.values() if s.usage_msgs)))
+
+    selected = select(list(stats.values()), args.files)
+    sel_ids = {s.session_id for s in selected}
+    print("selected %d fixture sessions:" % len(selected))
+
+    out_root.mkdir(parents=True, exist_ok=True)
+    (out_root / "schema.sql").write_text(
+        "-- message-table DDL captured verbatim from the live opencode.db\n"
+        "-- (public drizzle-generated structure; the ONLY table ccusage\n"
+        "-- opencode needs — verified empirically). Go tests reconstruct\n"
+        "-- the fixture db from this DDL + messages/*.jsonl.\n"
+        + ddl + ";\n", encoding="utf-8")
+
+    manifest_sessions, sources = [], {}
+    fixture_rows = []  # sanitized, for the expectation-capture db
+    for st in selected:
+        sid_alias = pseudo_id(st.session_id) or st.session_id
+        rel = Path("messages") / (sid_alias + ".jsonl")
+        dest = out_root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        written = 0
+        with open(dest, "w", encoding="utf-8") as out:
+            for rid, sid, tc, tu, data in all_rows:
+                if sid != st.session_id:
+                    continue
+                try:
+                    obj = json.loads(data)
+                    sanitized = sanitize_record(obj)
+                except json.JSONDecodeError:
+                    sanitized = {"_tatitok_malformed_source_data":
+                                 placeholder(data)}
+                data_str = json.dumps(sanitized, separators=(",", ":"),
+                                      ensure_ascii=False)
+                row = {
+                    "id": pseudo_id(rid) or rid,
+                    "session_id": pseudo_id(sid) or sid,
+                    "time_created": tc,
+                    "time_updated": tu,
+                    "data": json.loads(data_str),
+                }
+                out.write(json.dumps(row, separators=(",", ":"),
+                                     ensure_ascii=False) + "\n")
+                fixture_rows.append((row["id"], row["session_id"],
+                                     tc, tu, data_str))
+                written += 1
+        if written != st.lines:
+            raise RuntimeError("row count drifted: %d -> %d (%s)"
+                               % (st.lines, written, rel))
+        print("  %-60s %s" % (rel, ",".join(st.criteria)))
+        sources[st.session_id] = str(rel)
+        manifest_sessions.append({
+            "session": pseudo_id(st.session_id) or st.session_id,
+            "fixture": str(rel),
+            "criteria": st.criteria,
+            "messages": st.lines,
+            "malformed_data": st.malformed,
+            "usage_messages": st.usage_msgs,
+            "models": sorted(st.models),
+            "providers": sorted(st.providers),
+            "first_timestamp": st.first_ts,
+            "last_timestamp": st.last_ts,
+        })
+
+    manifest = {
+        "harvest_date": datetime.datetime.now(datetime.timezone.utc)
+                        .isoformat(timespec="seconds"),
+        "source": args.source,
+        "machine_label": args.label,
+        "platform": platform.platform(),
+        "source_format": "sqlite message table (opencode.db); fixtures are "
+                         "sanitized per-session row JSONL + schema.sql, the "
+                         "db is reconstructed from them",
+        "log_roots": [redact_home_text(str(p)) for p in roots],
+        "sessions": manifest_sessions,
+    }
+    (out_root / "MANIFEST.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8")
+    print("wrote MANIFEST.json")
+
+    write_map(map_path, sources)
+    print("wrote %s (SECRET, gitignored)" % map_path.name)
+
+    if args.no_expectations:
+        print("skipping ccusage expectations (--no-expectations)")
+        return 0
+    if shutil.which("npx") is None or shutil.which("npm") is None:
+        print("error: npx/npm not found", file=sys.stderr)
+        return 1
+
+    print("capturing ccusage expectations ...")
+    meta_path = expected_dir / "META.json"
+    version = resolve_ccusage_version(meta_path, args.ccusage_version)
+    t0 = time.time()
+    with tempfile.TemporaryDirectory(prefix="tatitok-oc-fix-") as fix_xdg, \
+            tempfile.TemporaryDirectory(prefix="tatitok-oc-snap-") as snap_xdg:
+        # fixture db from the SANITIZED rows; snapshot db from the frozen
+        # ORIGINAL rows of the same sessions
+        build_opencode_db(fix_xdg, ddl, fixture_rows)
+        build_opencode_db(snap_xdg, ddl,
+                          [r for r in all_rows if r[1] in sel_ids])
+        commands = capture_expectations(src, version, fix_xdg, snap_xdg,
+                                        roots, expected_dir)
+    meta = {
+        "ccusage_version": version,
+        "source": args.source,
+        "captured_at": datetime.datetime.now(datetime.timezone.utc)
+                       .isoformat(timespec="seconds"),
+        "timezone": local_timezone(),
+        "machine_label": args.label,
+        "commands": commands,
+        "note": "fixture expectations captured from a db RECONSTRUCTED from "
+                "the committed sanitized rows (messages/*.jsonl + "
+                "schema.sql) — no binary fixture exists. The -full variants "
+                "are LOCAL-ONLY and gitignored; make parity-full-opencode "
+                "recaptures from the live db at comparison time.",
+    }
+    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n",
+                         encoding="utf-8")
+    print("wrote expected/META.json (ccusage %s, %.0fs)"
+          % (version, time.time() - t0))
+    print("done — review the fixtures for leaked content, then commit.")
+    return 0
+
+
 # Per-source harvest configuration. total_keys: the totals the
 # sanitized-vs-original self-check must match exactly (codex reports
 # reasoning/total token columns too — held to the same standard).
@@ -782,6 +1039,8 @@ SOURCES = {
         "fixture_rel": fixture_rel_claude,
         "versions_key": "claude_code_versions_seen",
         "total_keys": TOTAL_KEYS,
+        # ccusage env overrides for a capture target
+        "capture_env": lambda v: {"CLAUDE_CONFIG_DIR": str(v)},
         # ccusage env value covering the FULL history (all roots)
         "full_env": lambda roots: ",".join(str(p.parent) for p in roots),
     },
@@ -793,8 +1052,29 @@ SOURCES = {
         "fixture_rel": fixture_rel_codex,
         "versions_key": "codex_cli_versions_seen",
         "total_keys": TOTAL_KEYS + ("reasoningOutputTokens", "totalTokens"),
+        "capture_env": lambda v: {"CODEX_HOME": str(v)},
         # CODEX_HOME is the dir CONTAINING sessions/ (no list support)
         "full_env": lambda roots: str(roots[0].parent),
+    },
+    "opencode": {
+        "agent": "opencode",
+        "env_var": "HOME",
+        "custom_harvest": harvest_opencode,  # sqlite-backed pipeline
+        "total_keys": TOTAL_KEYS + ("totalTokens",),
+        # ccusage opencode discovery is HOME-anchored
+        # ($HOME/.local/share/opencode/opencode.db; XDG_DATA_HOME is
+        # IGNORED — verified by strace + empty-store probes). Override
+        # HOME to the capture target (db at
+        # <target>/.local/share/opencode/opencode.db); pin the npm cache
+        # so npx still finds the pinned ccusage; set XDG_DATA_HOME
+        # consistently in case a future ccusage becomes XDG-aware.
+        "capture_env": lambda v: {
+            "HOME": str(v),
+            "XDG_DATA_HOME": str(Path(v) / ".local" / "share"),
+            "npm_config_cache": str(Path.home() / ".npm"),
+        },
+        # full history = the real home (live db)
+        "full_env": lambda roots: str(roots[0].parents[2]),
     },
 }
 
@@ -816,7 +1096,8 @@ def capture_expectations(src, version, fixture_root, snap_root, roots,
     fixture_daily = None
     for sub, fname in (("daily", "ccusage-daily.json"),
                        ("session", "ccusage-session.json")):
-        data, cmd = run_ccusage(version, agent, sub, env_var, fixture_root)
+        data, cmd = run_ccusage(version, agent, sub,
+                                src["capture_env"](fixture_root))
         if sub == "daily":
             fixture_daily = data
         (expected_dir / fname).write_text(
@@ -833,7 +1114,8 @@ def capture_expectations(src, version, fixture_root, snap_root, roots,
     # exact same token totals as on the sanitized tree — proves the
     # sanitizer preserved all billing-relevant data (usage, ids for dedup,
     # timestamps)
-    orig_daily, _ = run_ccusage(version, agent, "daily", env_var, snap_root)
+    orig_daily, _ = run_ccusage(version, agent, "daily",
+                                src["capture_env"](snap_root))
     got = {k: fixture_daily["totals"][k] for k in src["total_keys"]}
     want = {k: orig_daily["totals"][k] for k in src["total_keys"]}
     if got != want:
@@ -849,7 +1131,8 @@ def capture_expectations(src, version, fixture_root, snap_root, roots,
     # at comparison time and never reads these files.
     full_env = src["full_env"](roots)
     for sub, fname in zip(("daily", "session"), FULL_EXPECTATION_FILES):
-        data, cmd = run_ccusage(version, agent, sub, env_var, full_env)
+        data, cmd = run_ccusage(version, agent, sub,
+                                src["capture_env"](full_env))
         dest = expected_dir / fname
         dest.write_text(
             json.dumps(redact_json(data), indent=2, ensure_ascii=False) + "\n",
@@ -1112,6 +1395,10 @@ def main():
     load_or_create_map(map_path)
 
     src = SOURCES[args.source]
+    if "custom_harvest" in src:
+        return src["custom_harvest"](args, src, out_root, expected_dir,
+                                     map_path)
+
     roots = src["discover"](args.config_dir)
     if not roots:
         print("error: no %s log roots found (set $%s to override)"
