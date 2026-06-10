@@ -17,13 +17,14 @@ import (
 	"github.com/harunaltikaya/tatitok/internal/adapters"
 	"github.com/harunaltikaya/tatitok/internal/adapters/claudecode"
 	"github.com/harunaltikaya/tatitok/internal/adapters/codex"
+	"github.com/harunaltikaya/tatitok/internal/adapters/opencode"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
 const usageText = `tatitok — local-first AI token usage tracker
 
 Usage:
-  tatitok ingest --backfill [--db PATH] [--source claude-code|codex]
+  tatitok ingest --backfill [--db PATH] [--source claude-code|codex|opencode]
   tatitok stats  --daily|--session [--json] [--db PATH] [--timezone TZ]
   tatitok doctor --scan-content [--db PATH] [LITERAL...]
   tatitok doctor --provenance [--db PATH] [--json]
@@ -112,8 +113,10 @@ func adapterFor(name string) (adapters.Adapter, error) {
 		return claudecode.Adapter{}, nil
 	case "codex":
 		return codex.Adapter{}, nil
+	case "opencode":
+		return opencode.Adapter{}, nil
 	default:
-		return nil, fmt.Errorf("unknown --source %q (supported: claude-code, codex)", name)
+		return nil, fmt.Errorf("unknown --source %q (supported: claude-code, codex, opencode)", name)
 	}
 }
 

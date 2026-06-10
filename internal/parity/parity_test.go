@@ -12,6 +12,7 @@ import (
 	"github.com/harunaltikaya/tatitok/internal/adapters"
 	"github.com/harunaltikaya/tatitok/internal/adapters/claudecode"
 	"github.com/harunaltikaya/tatitok/internal/adapters/codex"
+	"github.com/harunaltikaya/tatitok/internal/adapters/opencode"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
@@ -20,15 +21,43 @@ const fixtureRoot = "../../testdata/fixtures/claude-code"
 // paritySet describes one harness's fixture layout for the CI gate.
 type paritySet struct {
 	harness string
-	// fixtures live under <fixtureBase>/<machine>/<rootSub>
+	// fixtures live under <fixtureBase>/<machine>/
 	fixtureBase string
-	rootSub     string
 	adapter     adapters.Adapter
+	// root returns the Source.Root for one machine fixture dir. The
+	// opencode set reconstructs its database from the committed text
+	// fixtures into a temp dir first.
+	root func(t *testing.T, machineDir string) string
+}
+
+func subdirRoot(sub string) func(*testing.T, string) string {
+	return func(t *testing.T, machineDir string) string {
+		t.Helper()
+		root, err := filepath.Abs(filepath.Join(machineDir, sub))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return root
+	}
+}
+
+func opencodeRoot(t *testing.T, machineDir string) string {
+	t.Helper()
+	dir, err := filepath.Abs(machineDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "opencode")
+	if _, err := opencode.BuildFixtureDB(dir, filepath.Join(root, "opencode.db")); err != nil {
+		t.Fatalf("reconstruct fixture db: %v", err)
+	}
+	return root
 }
 
 var paritySets = []paritySet{
-	{"claude-code", "../../testdata/fixtures/claude-code", "projects", claudecode.Adapter{}},
-	{"codex", "../../testdata/fixtures/codex", "sessions", codex.Adapter{}},
+	{"claude-code", "../../testdata/fixtures/claude-code", claudecode.Adapter{}, subdirRoot("projects")},
+	{"codex", "../../testdata/fixtures/codex", codex.Adapter{}, subdirRoot("sessions")},
+	{"opencode", "../../testdata/fixtures/opencode", opencode.Adapter{}, opencodeRoot},
 }
 
 func ingestIntoWith(t *testing.T, a adapters.Adapter, srcs []adapters.Source) *store.Store {
@@ -81,12 +110,9 @@ func TestCCUsageDailyParity(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				root, err := filepath.Abs(filepath.Join(machineDir, set.rootSub))
-				if err != nil {
-					t.Fatal(err)
-				}
 				s := ingestIntoWith(t, set.adapter, []adapters.Source{{
-					Harness: set.harness, Root: root, Machine: filepath.Base(machineDir),
+					Harness: set.harness, Root: set.root(t, machineDir),
+					Machine: filepath.Base(machineDir),
 				}})
 				got, err := s.Daily(context.Background(), tz)
 				if err != nil {
@@ -214,5 +240,63 @@ func TestParityFullCodex(t *testing.T) {
 			meta.CCUsageVersion, diff)
 	}
 	t.Logf("full-history codex parity holds across %d days (ccusage %s)",
+		len(want.Daily), meta.CCUsageVersion)
+}
+
+// TestParityFullOpencode is the owner-run gate against the full live
+// opencode store (`make parity-full-opencode`). Same recapture
+// discipline: pinned ccusage version from the opencode fixture META, live
+// `ccusage opencode daily` at comparison time (its discovery is
+// HOME-anchored, which under the unmodified environment is exactly the
+// live store the adapter detects).
+func TestParityFullOpencode(t *testing.T) {
+	if os.Getenv("TATITOK_PARITY_FULL_OPENCODE") != "1" {
+		t.Skip("owner-run full parity: make parity-full-opencode (needs the live opencode.db + npx)")
+	}
+	meta, err := LoadMeta(filepath.Join("../../testdata/fixtures/opencode", "gx10", "expected", "META.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srcs, err := opencode.Adapter{}.Detect(adapters.Probe{
+		Getenv: os.Getenv, HomeDir: home, Machine: "parity-full",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(srcs) == 0 {
+		t.Fatal("no live opencode message store found")
+	}
+	for _, s := range srcs {
+		t.Logf("live root: %s", s.Root)
+	}
+
+	// Recapture from the live store, never from a stored -full file.
+	cmd := exec.Command("npx", "-y", "ccusage@"+meta.CCUsageVersion,
+		"opencode", "daily", "--json", "--offline")
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ccusage recapture failed: %v", err)
+	}
+	want, err := ParseDailyJSON(out)
+	if err != nil {
+		t.Fatalf("ccusage output: %v", err)
+	}
+
+	s := ingestIntoWith(t, opencode.Adapter{}, srcs)
+	got, err := s.Daily(context.Background(), time.Local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := CompareDaily(got, want); diff != "" {
+		t.Fatalf("full-history opencode token parity broken vs ccusage %s:\n%s",
+			meta.CCUsageVersion, diff)
+	}
+	t.Logf("full-history opencode parity holds across %d days (ccusage %s)",
 		len(want.Daily), meta.CCUsageVersion)
 }

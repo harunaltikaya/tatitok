@@ -1,0 +1,341 @@
+package opencode
+
+// All parsing tests run against the committed, owner-harvested fixture
+// set (hard rule 1: no fabricated log lines). The fixture database is
+// reconstructed at test time from the committed sanitized text (see
+// fixturedb.go); numeric expectations are measured properties of the set.
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/harunaltikaya/tatitok/internal/adapters"
+	"github.com/harunaltikaya/tatitok/internal/core"
+	"github.com/harunaltikaya/tatitok/internal/store"
+)
+
+const fixtureBase = "../../../testdata/fixtures/opencode/gx10"
+
+// Measured from the committed gx10 fixture set: 929 message rows, 848
+// assistant messages with a tokens object, of which 14 are zero-token
+// aborted turns ccusage skips → 834 billable. Message ids are the table
+// PK — every event unique.
+const (
+	wantRows    = 929
+	wantEmitted = 834
+	wantUnique  = 834
+)
+
+// fixtureSource reconstructs the fixture db under a temp dir and returns
+// a Source rooted at it.
+func fixtureSource(t *testing.T) adapters.Source {
+	t.Helper()
+	dir, err := filepath.Abs(fixtureBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("fixture dir missing (harvest + commit first): %v", err)
+	}
+	root := filepath.Join(t.TempDir(), "opencode")
+	n, err := BuildFixtureDB(dir, filepath.Join(root, "opencode.db"))
+	if err != nil {
+		t.Fatalf("reconstruct fixture db: %v", err)
+	}
+	if n != wantRows {
+		t.Fatalf("reconstructed %d rows, want %d", n, wantRows)
+	}
+	return adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}
+}
+
+// collectSink mirrors the other adapters' test sink: collects everything
+// and fails the test on contract-v2 sequencing violations.
+type collectSink struct {
+	t       *testing.T
+	events  []core.Event
+	byFile  map[string][]core.Event
+	results []adapters.FileResult
+	done    map[string]bool
+	open    string
+}
+
+func newCollectSink(t *testing.T) *collectSink {
+	return &collectSink{t: t,
+		byFile: map[string][]core.Event{}, done: map[string]bool{}}
+}
+
+func (c *collectSink) EmitBatch(path string, events []core.Event) error {
+	c.t.Helper()
+	if len(events) == 0 || len(events) > adapters.BatchSize {
+		c.t.Fatalf("batch of %d events for %s (BatchSize %d)",
+			len(events), path, adapters.BatchSize)
+	}
+	if c.done[path] {
+		c.t.Fatalf("batch for %s after its FileDone", path)
+	}
+	if c.open != "" && c.open != path {
+		c.t.Fatalf("batch for %s while %s is still open", path, c.open)
+	}
+	c.open = path
+	c.events = append(c.events, events...)
+	c.byFile[path] = append(c.byFile[path], events...)
+	return nil
+}
+
+func (c *collectSink) FileDone(res adapters.FileResult) error {
+	c.t.Helper()
+	if c.done[res.Path] {
+		c.t.Fatalf("second FileDone for %s", res.Path)
+	}
+	if c.open != "" && c.open != res.Path {
+		c.t.Fatalf("FileDone for %s while %s is still open", res.Path, c.open)
+	}
+	if got := len(c.byFile[res.Path]); res.ReadError == "" && got != res.Events {
+		c.t.Fatalf("%s: FileDone.Events=%d but %d events emitted",
+			res.Path, res.Events, got)
+	}
+	c.done[res.Path] = true
+	c.open = ""
+	c.results = append(c.results, res)
+	return nil
+}
+
+func backfillAll(t *testing.T) *collectSink {
+	t.Helper()
+	sink := newCollectSink(t)
+	if err := (Adapter{}).Backfill(context.Background(), fixtureSource(t), sink); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if sink.open != "" {
+		t.Fatalf("backfill returned with %s still open", sink.open)
+	}
+	return sink
+}
+
+func TestDetect(t *testing.T) {
+	probe := func(env map[string]string, home string) adapters.Probe {
+		return adapters.Probe{
+			Getenv:  func(k string) string { return env[k] },
+			HomeDir: home,
+			Machine: "gx10",
+		}
+	}
+	mkdb := func(t *testing.T, dir string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "opencode.db"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("xdg override wins", func(t *testing.T) {
+		xdg := t.TempDir()
+		mkdb(t, filepath.Join(xdg, "opencode"))
+		srcs, err := (Adapter{}).Detect(probe(map[string]string{"XDG_DATA_HOME": xdg}, "/nonexistent"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []adapters.Source{{Harness: harnessName,
+			Root: filepath.Join(xdg, "opencode"), Machine: "gx10"}}
+		if !reflect.DeepEqual(srcs, want) {
+			t.Fatalf("got %+v, want %+v", srcs, want)
+		}
+	})
+
+	t.Run("default home", func(t *testing.T) {
+		home := t.TempDir()
+		mkdb(t, filepath.Join(home, ".local", "share", "opencode"))
+		srcs, err := (Adapter{}).Detect(probe(nil, home))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(srcs) != 1 || srcs[0].Root != filepath.Join(home, ".local", "share", "opencode") {
+			t.Fatalf("got %+v", srcs)
+		}
+	})
+
+	t.Run("nothing found", func(t *testing.T) {
+		srcs, err := (Adapter{}).Detect(probe(nil, t.TempDir()))
+		if err != nil || len(srcs) != 0 {
+			t.Fatalf("got %+v, %v", srcs, err)
+		}
+	})
+}
+
+func TestBackfillFixtures(t *testing.T) {
+	sink := backfillAll(t)
+
+	ids := map[string]bool{}
+	for _, e := range sink.events {
+		ids[e.ID] = true
+	}
+	if len(sink.events) != wantEmitted {
+		t.Errorf("emitted %d billable events, want %d", len(sink.events), wantEmitted)
+	}
+	if len(ids) != wantUnique {
+		t.Errorf("got %d unique ids, want %d", len(ids), wantUnique)
+	}
+
+	for i := range sink.events {
+		e := &sink.events[i]
+		if err := e.Validate(); err != nil {
+			t.Fatalf("invalid event: %v", err)
+		}
+		if e.Accuracy != core.AccuracyExact {
+			t.Fatalf("event %s accuracy %q, want exact", e.ID, e.Accuracy)
+		}
+		if e.Harness != harnessName || e.Machine != "gx10" {
+			t.Fatalf("bad identity fields: %+v", e)
+		}
+		// provider+model are explicit on every opencode usage record and
+		// pass through verbatim (local vLLM providers included)
+		if e.Provider == "" || e.Model == "" {
+			t.Fatalf("missing provider/model on %s (provider=%q model=%q)",
+				e.ID, e.Provider, e.Model)
+		}
+		if e.SessionID == "" || len(e.Raw) == 0 {
+			t.Fatalf("missing session/raw on %s", e.ID)
+		}
+		if e.TokensReasoning == nil {
+			t.Fatalf("missing reasoning tokens on %s", e.ID)
+		}
+		sum := e.TokensInput + e.TokensOutput + *e.TokensReasoning +
+			e.TokensCacheRead + e.TokensCacheWrite
+		if sum == 0 {
+			t.Fatalf("zero-token event emitted (ccusage skips those): %s", e.ID)
+		}
+	}
+
+	if len(sink.results) != 1 {
+		t.Fatalf("want 1 source result (the db), got %d", len(sink.results))
+	}
+	res := sink.results[0]
+	if res.LineCount != wantRows {
+		t.Errorf("scanned %d rows, want %d", res.LineCount, wantRows)
+	}
+	if res.ParseErrors != 0 || res.ReadError != "" {
+		t.Fatalf("fixture db reported unhealthy: %+v", res)
+	}
+	if res.Events != wantEmitted {
+		t.Errorf("FileResult.Events = %d, want %d", res.Events, wantEmitted)
+	}
+}
+
+// Hard rule 5: re-ingesting the same store twice must yield identical DB
+// contents.
+func TestReingestIdempotent(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+	src := fixtureSource(t)
+
+	ingest := func() adapters.IngestSummary {
+		t.Helper()
+		sum, err := adapters.IngestBackfill(ctx, s, Adapter{},
+			[]adapters.Source{src})
+		if err != nil {
+			t.Fatalf("ingest: %v", err)
+		}
+		return sum
+	}
+
+	first := ingest()
+	if first.Inserted != wantUnique || first.Emitted != wantEmitted {
+		t.Fatalf("first ingest inserted %d emitted %d, want %d/%d",
+			first.Inserted, first.Emitted, wantUnique, wantEmitted)
+	}
+	if first.ParseErrors != 0 {
+		t.Fatalf("parse errors on fixtures: %d", first.ParseErrors)
+	}
+	daily1, err := s.Daily(ctx, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if again := ingest(); again.Inserted != 0 {
+		t.Fatalf("re-ingest inserted %d new rows, want 0", again.Inserted)
+	}
+	daily2, err := s.Daily(ctx, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(daily1, daily2) {
+		t.Fatal("daily stats changed after re-ingest")
+	}
+	total, err := s.CountEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != wantUnique {
+		t.Fatalf("row count %d after re-ingest, want %d", total, wantUnique)
+	}
+}
+
+// goldenCeremony is the mandatory procedure for changing the frozen
+// golden file; it is printed wherever someone could be tempted to skip it.
+const goldenCeremony = `regenerating expected/events.json requires the full ceremony:
+  1. bump opencode.AdapterVersion (format handling changed by definition)
+  2. TATITOK_UPDATE_GOLDEN=1 TATITOK_CONFIRM_PARITY=1 go test ./internal/adapters/opencode -run TestGoldenEvents
+  3. re-run the fixture parity gate: go test ./internal/parity (must stay EXACT)
+  4. owner re-runs 'make parity-full-opencode' against the live db before the commit counts as verified
+commit the golden diff together with the AdapterVersion bump and note the parity re-verification in the message`
+
+// Golden test: fixtures in → exact expected normalized events out.
+// expected/events.json was generated from the first verified-parity run
+// and is FROZEN: a missing file fails the test, and regeneration demands
+// an explicit two-flag confirmation of the ceremony above.
+func TestGoldenEvents(t *testing.T) {
+	golden, err := filepath.Abs(filepath.Join(fixtureBase, "expected", "events.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sink := backfillAll(t)
+	var normalized []core.Event
+	seen := map[string]bool{}
+	for _, e := range sink.events {
+		if seen[e.ID] {
+			continue
+		}
+		seen[e.ID] = true
+		normalized = append(normalized, e)
+	}
+	got, err := json.MarshalIndent(normalized, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = append(got, '\n')
+
+	if os.Getenv("TATITOK_UPDATE_GOLDEN") == "1" {
+		if os.Getenv("TATITOK_CONFIRM_PARITY") != "1" {
+			t.Fatalf("TATITOK_UPDATE_GOLDEN=1 refused without TATITOK_CONFIRM_PARITY=1\n%s",
+				goldenCeremony)
+		}
+		if err := os.WriteFile(golden, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("wrote %s (%d events)\n%s", golden, len(normalized), goldenCeremony)
+		return
+	}
+
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		// A missing golden file FAILS — skipping would let the whole
+		// normalization contract go unchecked while looking green.
+		t.Fatalf("frozen golden file unreadable: %v\n%s", err, goldenCeremony)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("normalized events diverge from frozen golden file %s\n%s",
+			golden, goldenCeremony)
+	}
+}

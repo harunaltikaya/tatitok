@@ -4,7 +4,7 @@ DIST      := dist
 
 export CGO_ENABLED := 0
 
-.PHONY: test leakcheck lint build build-all parity-full parity-full-codex clean
+.PHONY: test leakcheck lint build build-all parity-full parity-full-codex parity-full-opencode clean
 
 test: leakcheck
 	go test ./...
@@ -39,3 +39,6 @@ parity-full:
 
 parity-full-codex:
 	TATITOK_PARITY_FULL_CODEX=1 go test -v -run TestParityFullCodex ./internal/parity
+
+parity-full-opencode:
+	TATITOK_PARITY_FULL_OPENCODE=1 go test -v -run TestParityFullOpencode ./internal/parity
