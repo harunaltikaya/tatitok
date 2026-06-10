@@ -6,6 +6,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -80,7 +81,10 @@ type Event struct {
 }
 
 // Validate checks the invariants every adapter must uphold before an
-// event reaches the store.
+// event reaches the store. The store calls it on every insert, so it is
+// the enforcement boundary for hard rule 6: an event whose Raw still
+// carries content-bearing text (non-placeholder strings under content
+// keys, or over-long free text) must never be persisted.
 func (e *Event) Validate() error {
 	if e.ID == "" {
 		return fmt.Errorf("event has empty id")
@@ -93,6 +97,16 @@ func (e *Event) Validate() error {
 	}
 	if !e.Accuracy.Valid() {
 		return fmt.Errorf("event %s has invalid accuracy %q", e.ID, e.Accuracy)
+	}
+	if len(e.Raw) > 0 {
+		findings, err := CheckRawSanitized(e.Raw)
+		if err != nil {
+			return fmt.Errorf("event %s raw: %w", e.ID, err)
+		}
+		if len(findings) > 0 {
+			return fmt.Errorf("event %s raw violates sanitizer invariants: %s",
+				e.ID, strings.Join(findings, "; "))
+		}
 	}
 	return nil
 }

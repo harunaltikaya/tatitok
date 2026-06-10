@@ -1,6 +1,8 @@
 package core
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,5 +55,32 @@ func TestEventValidate(t *testing.T) {
 		if err := e.Validate(); err == nil {
 			t.Errorf("%s: expected validation error", name)
 		}
+	}
+}
+
+// Hard rule 6 enforcement: Validate is the boundary every event crosses
+// on insert, so a Raw that still carries content must be an error there.
+func TestEventValidateRejectsUnsanitizedRaw(t *testing.T) {
+	long := strings.Repeat("x", maxFreeLen+1)
+	bad := map[string]json.RawMessage{
+		"content key holds text": json.RawMessage(
+			`{"message":{"content":"the actual user prompt text"}}`),
+		"long free text":   json.RawMessage(`{"surprise":"` + long + `"}`),
+		"raw not json":     json.RawMessage(`{"truncated":`),
+		"text under input": json.RawMessage(`{"input":"rm -rf the secret"}`),
+	}
+	for name, raw := range bad {
+		e := validEvent()
+		e.Raw = raw
+		if err := e.Validate(); err == nil {
+			t.Errorf("%s: expected validation error", name)
+		}
+	}
+
+	ok := validEvent()
+	ok.Raw = json.RawMessage(
+		`{"message":{"content":"<stripped len=27 sha256=0123456789ab>"},"type":"assistant"}`)
+	if err := ok.Validate(); err != nil {
+		t.Errorf("sanitized raw rejected: %v", err)
 	}
 }

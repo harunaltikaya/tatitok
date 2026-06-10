@@ -89,6 +89,25 @@ func TestInsertBatchRejectsInvalid(t *testing.T) {
 	}
 }
 
+// Hard rule 6 at the store boundary: an event whose Raw still carries
+// content-bearing text must never reach the DB.
+func TestInsertBatchRejectsUnsanitizedRaw(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	bad := event("m1", "r1", "model-a", "s1", time.Now().UTC(), TokenSums{})
+	bad.Raw = []byte(`{"message":{"content":"verbatim user prompt text"}}`)
+	if _, err := s.InsertBatch(ctx, []core.Event{bad}, testSource(1)); err == nil {
+		t.Fatal("expected sanitizer-invariant error")
+	}
+	n, err := s.CountEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("unsanitized event persisted: %d rows", n)
+	}
+}
+
 // Day bucketing happens in the query timezone, not UTC: 22:30Z on June 9 is
 // already June 10 in Europe/Istanbul (+03).
 func TestDailyTimezoneBucketing(t *testing.T) {
