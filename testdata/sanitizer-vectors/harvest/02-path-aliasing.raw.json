@@ -1,0 +1,9 @@
+{
+ "cwd": "/home/user/Projects/secretproj",
+ "deep": "/home/user/Projects/secretproj/internal/server/main.go",
+ "encoded": "-home-user-Projects-secretproj",
+ "sessionPath": "/home/user/.claude/projects/-home-user-Projects-secretproj/33333333-4444-4555-8666-777777777777.jsonl",
+ "displayPath": "Projects/secretproj/docs/design.md",
+ "homeOnly": "-home-user",
+ "tmpProj": "-tmp-scratchproj"
+}

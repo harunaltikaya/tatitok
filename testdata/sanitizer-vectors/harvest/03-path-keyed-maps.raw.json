@@ -1,0 +1,21 @@
+{
+ "readFileState": {
+  "/home/user/Projects/secretproj/cmd/main.go": {
+   "timestamp": "2026-06-01T00:00:00Z"
+  },
+  "Makefile": {
+   "seen": true
+  },
+  "LICENSE": {
+   "seen": true
+  },
+  ".gitignore": {
+   "seen": false
+  }
+ },
+ "trackedFileBackups": {
+  "internal/store/store.go": {
+   "backupFileName": "backup-1.go"
+  }
+ }
+}

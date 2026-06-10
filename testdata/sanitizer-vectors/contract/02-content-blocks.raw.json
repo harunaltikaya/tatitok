@@ -1,0 +1,41 @@
+{
+ "message": {
+  "role": "assistant",
+  "content": [
+   {
+    "type": "text",
+    "text": "hello there"
+   },
+   {
+    "type": "thinking",
+    "thinking": "hmm let me think",
+    "signature": "XyZsig"
+   },
+   {
+    "type": "tool_use",
+    "id": "toolu_01VectorAa",
+    "name": "Bash",
+    "input": {
+     "command": "ls -la"
+    }
+   },
+   {
+    "type": "tool_result",
+    "tool_use_id": "toolu_01VectorAa",
+    "content": "file listing output"
+   }
+  ]
+ },
+ "extra": {
+  "content": "a plain string under the content key"
+ },
+ "listy": {
+  "content": [
+   "bare string in content array",
+   {
+    "type": "text",
+    "text": "x"
+   }
+  ]
+ }
+}

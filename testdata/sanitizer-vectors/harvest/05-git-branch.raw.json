@@ -1,0 +1,11 @@
+{
+ "a": {
+  "gitBranch": "main"
+ },
+ "b": {
+  "gitBranch": "secret-feature-branch"
+ },
+ "c": {
+  "gitBranch": "feature/topic-x"
+ }
+}

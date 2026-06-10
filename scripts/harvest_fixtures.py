@@ -6,6 +6,13 @@ Runs on the OWNER's machine (never CI). Python 3.9+, stdlib only.
 Usage:
     python scripts/harvest_fixtures.py --out testdata/fixtures/claude-code
     python scripts/harvest_fixtures.py --out testdata/fixtures/claude-code --label gx10
+    python scripts/harvest_fixtures.py --check-vectors   # sanitizer contract test
+    python scripts/harvest_fixtures.py --update-vectors  # regenerate expected vectors
+
+The sanitization rule tables come from internal/core/sanitize_rules.json —
+the ONE machine-readable spec shared with the Go DB sanitizer. The harvest
+flow self-tests against testdata/sanitizer-vectors/ before touching real
+logs.
 
 What it does:
   1. Discovers Claude Code project dirs ($CLAUDE_CONFIG_DIR/projects if set,
@@ -61,12 +68,12 @@ What it does:
      The ccusage version is resolved once, pinned in expected/META.json, and
      reused on every future run.
 
-Placeholder format (the Go sanitizer in internal/core must match):
+Placeholder format (spec: internal/core/sanitize_rules.json "placeholder"):
     <stripped len=N sha256=H>
   N = UTF-8 byte length of the original string; H = first 12 lowercase hex
   chars of sha256(salt_utf8 + original_utf8). Non-string content values are
-  serialized with json.dumps(v, separators=(",", ":"), ensure_ascii=False)
-  first.
+  first serialized to canonical JSON (sorted keys, compact separators,
+  raw UTF-8) so the hash matches the Go sanitizer byte-for-byte.
 """
 
 import argparse
@@ -84,75 +91,67 @@ import tempfile
 import time
 from pathlib import Path
 
-# --- sanitization rules -----------------------------------------------------
+# --- sanitization rules (loaded from the shared machine-readable spec) -------
+#
+# The content rules live in ONE spec consumed by both this script and the
+# Go DB sanitizer (internal/core/sanitize.go embeds the same file). This
+# script must never carry its own copy of a rule table; harvest-only
+# behaviors (id pseudonymization, path aliasing, salting) use the spec's
+# "harvest" section. Contract vectors in testdata/sanitizer-vectors/ hold
+# the two implementations byte-equal (--check-vectors; the harvest flow
+# self-tests against them before touching real logs).
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+RULES_PATH = REPO_ROOT / "internal" / "core" / "sanitize_rules.json"
+RULES = json.loads(RULES_PATH.read_text(encoding="utf-8"))
+if RULES["spec_version"] != 1:
+    raise SystemExit("unsupported sanitize_rules.json spec_version %r"
+                     % RULES["spec_version"])
 
 # Keys whose values are content by definition: always stripped, any length.
-# "content" is special-cased: recursed into when it is a list/dict (the
-# message.content array structure is preserved), stripped when it is a string.
-CONTENT_KEYS = {
-    "text",
-    "thinking",
-    "summary",
-    "input",
-    "attachments",
-    "toolUseResult",
-    "signature",  # thinking-block crypto signature: long, content-adjacent
-    "prompt",
-    "stdout",
-    "stderr",
-    # short content-bearing fields found in real logs that slip under the
-    # 80-char conservative rule: AI-generated session titles, the user's
-    # last prompt, task-reminder subjects/descriptions
-    "aiTitle",
-    "lastPrompt",
-    "subject",
-    "description",
-}
-
+CONTENT_KEYS = set(RULES["content_keys"])
+# Keys ("content") whose STRING values are stripped but whose list/dict
+# values keep their structure and are recursed into.
+STRING_CONTENT_KEYS = set(RULES["string_content_keys"])
 # Keys whose string values are known-safe metadata. Id-shaped values are
 # pseudonymized and path-shaped values are aliased regardless of this list;
 # everything else longer than MAX_FREE_LEN is stripped.
-SAFE_KEYS = {
-    "id",
-    "uuid",
-    "parentUuid",
-    "leafUuid",
-    "sessionId",
-    "requestId",
-    "request_id",
-    "message_id",
-    "messageId",
-    "promptId",
-    "timestamp",
-    "type",
-    "subtype",
-    "role",
-    "model",
-    "version",
-    "cwd",
-    "gitBranch",
-    "userType",
-    "name",
-    "tool_use_id",
-    "toolUseID",
-    "stop_reason",
-    "stopReason",
-    "stop_sequence",
-    "service_tier",
-    "slug",
-    "entrypoint",
-    "permissionMode",
-    "promptSource",
-}
+SAFE_KEYS = set(RULES["safe_keys"])
+MAX_FREE_LEN = RULES["max_free_len"]  # UTF-8 bytes
 
-MAX_FREE_LEN = 80  # unknown string fields longer than this get stripped
+PLACEHOLDER_RE = re.compile(RULES["placeholder"]["regex"])
+HASH_HEX_CHARS = RULES["placeholder"]["hash_hex_chars"]
 
-HOME = str(Path.home())
-# project dir names encode the cwd with "/" -> "-", so $HOME appears as e.g.
-# "-home-alice" or "-Users-alice" at the start of the dir name; that encoded
-# form also shows up INSIDE path strings and object keys in the logs
-ENCODED_HOME = HOME.replace("/", "-")
-USERNAME = Path.home().name
+UUID_RE = re.compile(RULES["id_shapes"]["uuid_regex"])
+PREFIX_ID_RE = re.compile("^(%s)_(%s)$" % (
+    "|".join(RULES["id_shapes"]["prefix_id_prefixes"]),
+    RULES["id_shapes"]["prefix_id_body_regex"]))
+
+# harvest-only tables (the DB sanitizer ignores these)
+PATH_KEYED_MAPS = set(RULES["harvest"]["path_keyed_maps"])
+GIT_BRANCH_ALLOWLIST = set(RULES["harvest"]["git_branch_allowlist"])
+PATH_SEGMENT_ALLOWLIST = set(RULES["harvest"]["path_segment_allowlist"])
+
+VECTORS_DIR = REPO_ROOT / "testdata" / "sanitizer-vectors"
+
+HOME = ""
+ENCODED_HOME = ""
+USERNAME = ""
+
+
+def set_identity(home):
+    """Set the home-redaction identity. Real harvests use the actual home
+    dir; the vector self-test pins /home/user so committed vectors are
+    machine-independent. Project dir names encode the cwd with "/" -> "-",
+    so $HOME appears as e.g. "-home-alice" at the start of the dir name;
+    that encoded form also shows up INSIDE path strings and object keys."""
+    global HOME, ENCODED_HOME, USERNAME
+    HOME = home
+    ENCODED_HOME = home.replace("/", "-")
+    USERNAME = Path(home).name
+
+
+set_identity(str(Path.home()))
 
 # secret per-harvest salt + alias maps; set/loaded in main() from
 # <out>/PROJECT_MAP.local.json so re-harvests produce stable names
@@ -162,20 +161,6 @@ SEGMENT_ALIASES = {}  # real path segment -> "d-XXXXXX[.ext]"
 KEY_TOKENS = {}       # real path-valued object key -> "p-XXXXXXXX[.ext]"
 ID_MAP = {}           # real identifier -> pseudonymized identifier
 
-UUID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-PREFIX_ID_RE = re.compile(r"^(msg|req|toolu)_([A-Za-z0-9]+)$")
-
-# structural path segments that carry no project identity
-PATH_SEGMENT_ALLOWLIST = {
-    "", "~", "home", "user", "tmp", "var", "opt", "usr", "etc",
-    "Projects", "projects", ".claude", ".config", "claude",
-    "memory", "plans", "todos", "sessions",
-}
-
-GIT_BRANCH_ALLOWLIST = {"", "main", "master", "develop", "HEAD"}
-
 
 def salted(s):
     return hashlib.sha256((SALT + s).encode("utf-8")).hexdigest()
@@ -183,9 +168,13 @@ def salted(s):
 
 def placeholder(value):
     if not isinstance(value, str):
-        value = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+        # canonical JSON per the spec's nonstring_encoding: sorted keys,
+        # compact, raw UTF-8 — must hash byte-identically to the Go side
+        value = json.dumps(value, separators=(",", ":"),
+                           ensure_ascii=False, sort_keys=True)
     raw = value.encode("utf-8")
-    digest = hashlib.sha256(SALT.encode("utf-8") + raw).hexdigest()[:12]
+    digest = hashlib.sha256(
+        SALT.encode("utf-8") + raw).hexdigest()[:HASH_HEX_CHARS]
     return "<stripped len=%d sha256=%s>" % (len(raw), digest)
 
 
@@ -301,10 +290,9 @@ def looks_safe_short(s):
     return len(s.encode("utf-8")) <= MAX_FREE_LEN
 
 
-# Maps that are path-keyed BY SCHEMA: every key is a file path, so every
-# key is tokenized unconditionally — no path-likeness heuristics (audit
-# caught extensionless keys like "Makefile" / "LICENSE" slipping through).
-PATH_KEYED_MAPS = {"readFileState", "trackedFileBackups"}
+# PATH_KEYED_MAPS (spec): maps that are path-keyed BY SCHEMA — every key
+# is tokenized unconditionally, no path-likeness heuristics (audit caught
+# extensionless keys like "Makefile" / "LICENSE" slipping through).
 
 
 def key_token(k):
@@ -333,42 +321,77 @@ def sanitize_key(k):
     return placeholder(k)
 
 
-def sanitize_value(node, key=None):
+def sanitize_value(node, key=None, harvest=True):
     """Recursively sanitize a decoded JSON value. Returns the sanitized value.
 
-    Content keys are stripped whole regardless of value type (an entire
-    tool_use input object becomes one placeholder). "content" is special:
-    a string is stripped, but a list/dict (the message.content block array)
-    keeps its structure and is recursed into.
+    The CONTENT rules (placeholder passthrough, content keys stripped whole
+    regardless of value type, string-content keys like "content" stripped
+    only when strings, safe keys / id shapes / path shapes / short strings
+    kept, the rest placeholdered) are the shared spec semantics — identical
+    to the Go DB sanitizer and held byte-equal by the contract vectors.
+
+    harvest=True layers the publication-only behaviors on top: id
+    pseudonymization, path/segment/key aliasing, gitBranch aliasing and
+    home redaction. harvest=False ("contract mode") is the pure shared
+    semantics, used by --check-vectors to compare against Go.
     """
+    # Already-stripped markers stay verbatim, even under content keys —
+    # the sanitizer is idempotent and fixture placeholders survive.
+    if isinstance(node, str) and PLACEHOLDER_RE.match(node):
+        return node
     if key in CONTENT_KEYS:
         return placeholder(node)
-    if key == "content" and isinstance(node, str):
+    if key in STRING_CONTENT_KEYS and isinstance(node, str):
         return placeholder(node)
     if isinstance(node, dict):
-        if key in PATH_KEYED_MAPS:
-            return {key_token(k): sanitize_value(v, k)
+        if harvest and key in PATH_KEYED_MAPS:
+            return {key_token(k): sanitize_value(v, k, harvest)
                     for k, v in node.items()}
-        return {sanitize_key(k): sanitize_value(v, k) for k, v in node.items()}
+        if harvest:
+            return {sanitize_key(k): sanitize_value(v, k, harvest)
+                    for k, v in node.items()}
+        # contract mode keeps object keys verbatim (the DB is local-first)
+        return {k: sanitize_value(v, k, harvest) for k, v in node.items()}
     if isinstance(node, list):
-        return [sanitize_value(v, key) for v in node]
+        return [sanitize_value(v, key, harvest) for v in node]
     if isinstance(node, str):
-        pid = pseudo_id(node)
-        if pid is not None:
-            return pid
-        if is_pathlike(node):
-            return alias_path_value(node)
-        if key == "gitBranch":
-            if node in GIT_BRANCH_ALLOWLIST:
-                return node
-            return "branch-" + salted(node)[:6]
-        s = redact_home_text(node)
-        if key in SAFE_KEYS:
-            return s
-        if looks_safe_short(s):
-            return s
+        if harvest:
+            pid = pseudo_id(node)
+            if pid is not None:
+                return pid
+            redacted = redact_home_text(node)
+            if redacted == "-home-user" or \
+                    redacted.startswith(("-home-user-", "-tmp-")):
+                # a bare encoded cwd dirname as a VALUE (no slashes, so the
+                # pathlike branch never sees it) carries project identity —
+                # alias it like the dir name it is, not like free text
+                # (gap found by harvest vector 02; redact_json already
+                # handled this case for the -full expectation files)
+                return alias_encoded_dirname(node)
+            if is_pathlike(node):
+                return alias_path_value(node)
+            if key == "gitBranch":
+                if node in GIT_BRANCH_ALLOWLIST:
+                    return node
+                return "branch-" + salted(node)[:6]
+            s = redact_home_text(node)
+            if key in SAFE_KEYS:
+                return s
+            if looks_safe_short(s):
+                return s
+            return placeholder(node)
+        # contract mode mirrors Go: ids and paths pass through verbatim
+        if (key in SAFE_KEYS or pseudo_id_shape(node) or is_pathlike(node)
+                or looks_safe_short(node)):
+            return node
         return placeholder(node)
     return node
+
+
+def pseudo_id_shape(value):
+    """True when value is id-shaped (UUID or msg_/req_/toolu_) — contract
+    mode keeps these verbatim, mirroring the Go sanitizer."""
+    return bool(UUID_RE.match(value) or PREFIX_ID_RE.match(value))
 
 
 def sanitize_record(obj):
@@ -777,6 +800,112 @@ def assert_unstageable(path, why):
                 ".gitignore before harvesting (%s)" % (path, why))
 
 
+# --- sanitizer contract vectors ------------------------------------------------
+
+
+def canonical_json(node):
+    """Serialize exactly like Go's json.Marshal (the contract-vector
+    encoding): sorted object keys, compact separators, raw UTF-8 — except
+    the HTML characters and U+2028/U+2029, which Go escapes inside JSON
+    strings (a global replace is safe: those characters can only occur
+    inside string literals in serialized JSON)."""
+    s = json.dumps(node, separators=(",", ":"), ensure_ascii=False,
+                   sort_keys=True)
+    return (s.replace("&", "\\u0026").replace("<", "\\u003c")
+             .replace(">", "\\u003e")
+             .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+def check_vectors(update=False):
+    """Verify (or with update=True regenerate) the sanitizer vectors in
+    testdata/sanitizer-vectors/. Returns (failures, checked_count).
+
+    contract/ vectors run the pure shared semantics (harvest=False, empty
+    salt) and must match their *.expected.json byte-for-byte; the Go test
+    (internal/core/sanitize_vectors_test.go) asserts the same files, which
+    holds the two implementations byte-equal. harvest/ vectors run the full
+    harvest sanitizer with the committed pinned salt, the /home/user
+    identity and fresh alias maps per vector, freezing the publication
+    rules (pseudonymization, aliasing, path-keyed maps).
+
+    The vectors are SYNTHETIC by design (explicitly allowed: the sanitizer
+    is a pure function) — never harvested from real logs."""
+    global SALT
+    failures = []
+    checked = 0
+
+    def run_dir(subdir, fn):
+        nonlocal checked
+        raws = sorted((VECTORS_DIR / subdir).glob("*.raw.json"))
+        if not raws:
+            failures.append("%s/: no *.raw.json vectors found" % subdir)
+        for raw_path in raws:
+            exp_path = raw_path.with_name(
+                raw_path.name[:-len(".raw.json")] + ".expected.json")
+            try:
+                node = json.loads(raw_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                failures.append("%s: unparseable raw vector: %s"
+                                % (raw_path.name, exc))
+                continue
+            got = fn(node) + "\n"
+            checked += 1
+            if update:
+                exp_path.write_text(got, encoding="utf-8")
+                continue
+            if not exp_path.is_file():
+                failures.append("%s: missing expected file %s"
+                                % (raw_path.name, exp_path.name))
+                continue
+            if got != exp_path.read_text(encoding="utf-8"):
+                failures.append(
+                    "%s: sanitizer output diverges from committed %s — the "
+                    "implementation no longer matches the frozen rule "
+                    "behavior" % (raw_path.name, exp_path.name))
+
+    saved_salt = SALT
+    try:
+        SALT = ""  # contract mode is unsalted, like the DB sanitizer
+        run_dir("contract", lambda node: canonical_json(
+            sanitize_value(node, None, harvest=False)))
+
+        salt_file = VECTORS_DIR / "harvest" / "SALT"
+        if not salt_file.is_file():
+            failures.append("harvest/SALT missing — the pinned vector salt "
+                            "must be committed for deterministic outputs")
+        else:
+            SALT = salt_file.read_text(encoding="utf-8").strip()
+            set_identity("/home/user")  # machine-independent vectors
+
+            def harvest_fn(node):
+                for d in (PROJECT_ALIASES, SEGMENT_ALIASES,
+                          KEY_TOKENS, ID_MAP):
+                    d.clear()
+                return json.dumps(sanitize_value(node, None, harvest=True),
+                                  separators=(",", ":"), ensure_ascii=False)
+
+            run_dir("harvest", harvest_fn)
+    finally:
+        SALT = saved_salt
+        set_identity(str(Path.home()))
+        for d in (PROJECT_ALIASES, SEGMENT_ALIASES, KEY_TOKENS, ID_MAP):
+            d.clear()
+    return failures, checked
+
+
+def self_test_or_die():
+    """The harvest flow refuses to touch real logs unless the sanitizer
+    passes every committed vector."""
+    failures, checked = check_vectors(update=False)
+    if failures:
+        for f in failures:
+            print("VECTOR FAIL: %s" % f, file=sys.stderr)
+        print("error: sanitizer self-test failed (%d vectors) — fix the "
+              "sanitizer/spec before harvesting" % checked, file=sys.stderr)
+        sys.exit(1)
+    print("sanitizer self-test OK: %d vectors byte-identical" % checked)
+
+
 # --- main ---------------------------------------------------------------------
 
 
@@ -784,8 +913,16 @@ def main():
     ap = argparse.ArgumentParser(
         description="Harvest sanitized Claude Code fixtures + ccusage "
                     "expectations (owner's machine only).")
-    ap.add_argument("--out", required=True,
-                    help="output root, e.g. testdata/fixtures/claude-code")
+    ap.add_argument("--out",
+                    help="output root, e.g. testdata/fixtures/claude-code "
+                         "(required unless --check-vectors/--update-vectors)")
+    ap.add_argument("--check-vectors", action="store_true",
+                    help="run the sanitizer contract vectors and exit "
+                         "(no log access; safe anywhere)")
+    ap.add_argument("--update-vectors", action="store_true",
+                    help="REGENERATE the expected vector outputs from the "
+                         "current sanitizer, then exit — review the diff "
+                         "deliberately before committing")
     ap.add_argument("--label", default=None,
                     help="machine label (e.g. macbook, gx10); fixtures and "
                          "expectations go under <out>/<label>/ so harvests "
@@ -801,8 +938,25 @@ def main():
                     help="skip the ccusage expectation capture (fixtures only)")
     args = ap.parse_args()
 
+    if args.check_vectors or args.update_vectors:
+        failures, checked = check_vectors(update=args.update_vectors)
+        if failures:
+            for f in failures:
+                print("VECTOR FAIL: %s" % f, file=sys.stderr)
+            return 1
+        print("sanitizer vectors %s: %d vectors OK"
+              % ("regenerated" if args.update_vectors else "verified",
+                 checked))
+        return 0
+
+    if not args.out:
+        ap.error("--out is required when harvesting")
     if not 8 <= args.files <= 15:
         ap.error("--files must be between 8 and 15")
+
+    # hard gate: the sanitizer must pass every committed vector before the
+    # script is allowed anywhere near real logs
+    self_test_or_die()
 
     out_root = Path(args.out)
     if args.label:

@@ -1,0 +1,8 @@
+{
+ "customId": "12345678-1234-4321-8765-123456789abc",
+ "ref": "msg_01VectorAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+ "tool": "toolu_01VectorBb",
+ "request": "req_01VectorCc",
+ "notAnId": "msg 01 with spaces is not id-shaped but short enough to keep",
+ "almostId": "msg_01-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+}

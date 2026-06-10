@@ -34,7 +34,7 @@ func checkSanitizedValue(node any, key string, findings *[]string) {
 		if IsPlaceholder(v) {
 			return
 		}
-		if contentKeys[key] || key == "content" {
+		if contentKeys[key] || stringContentKeys[key] {
 			*findings = append(*findings,
 				fmt.Sprintf("content key %q holds non-placeholder text (len=%d)", key, len(v)))
 			return

@@ -1,0 +1,7 @@
+{
+ "short": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+ "exactlyEighty": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+ "overEighty": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+ "multibyte": "宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇宇",
+ "htmlShort": "a < b && c > d"
+}

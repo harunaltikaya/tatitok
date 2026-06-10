@@ -1,0 +1,31 @@
+{
+ "text": "the user typed something here",
+ "thinking": "private chain of thought",
+ "summary": "session summary line",
+ "input": {
+  "command": "make build",
+  "redirect": "a > b & c < d",
+  "args": [
+   "-v",
+   2
+  ]
+ },
+ "attachments": [
+  {
+   "name": "notes.txt",
+   "size": 120
+  }
+ ],
+ "toolUseResult": {
+  "stdout": "ok",
+  "exit": 0
+ },
+ "signature": "AbC123xyzSignatureBlob",
+ "prompt": "fix the failing test",
+ "stdout": "build succeeded",
+ "stderr": "warning: deprecated flag",
+ "aiTitle": "Fix build",
+ "lastPrompt": "run make",
+ "subject": "todo item",
+ "description": "short but content-bearing"
+}

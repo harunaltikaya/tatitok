@@ -1,0 +1,8 @@
+{
+ "text": "<stripped len=42 sha256=0123456789ab>",
+ "note": "<stripped len=7 sha256=abcdef012345>",
+ "content": "<stripped len=100 sha256=fedcba987654>",
+ "nested": {
+  "input": "<stripped len=5 sha256=00112233aabb>"
+ }
+}

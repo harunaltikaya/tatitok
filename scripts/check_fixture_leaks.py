@@ -82,6 +82,14 @@ UUID_RE = re.compile(
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 PREFIX_ID_RE = re.compile(r"\b(?:msg|req|toolu)_[A-Za-z0-9]{10,}\b")
 
+# Sanitizer contract vectors are SYNTHETIC by design (fabricated content is
+# explicitly allowed there — the sanitizer is a pure function). Raw vectors
+# deliberately violate sanitizer-output shape (they are pre-sanitization
+# inputs) and use made-up ids, so this directory is exempt from the SHAPE
+# checks and the unknown-id heuristics ONLY. Everything else still runs on
+# it: global real-id/salt/home literals, map tokens, secrets, emails.
+VECTOR_PREFIX = "testdata/sanitizer-vectors/"
+
 # Go module manifests: public registry paths only — exempt from the
 # aliased-segment token scan (still scanned for global literals/ids)
 MODULE_MANIFESTS = {"go.mod", "go.sum"}
@@ -135,9 +143,12 @@ def scan_map_free(repo, rel, findings):
 
 # --- sanitizer-output shape invariants (map-free; run on CI too) -------------
 
-# maps that are path-keyed BY SCHEMA — must mirror the harvester's
-# PATH_KEYED_MAPS set
-PATH_KEYED_MAPS = {"readFileState", "trackedFileBackups"}
+# maps that are path-keyed BY SCHEMA — read from the shared sanitizer
+# rule-spec (one source of truth; no duplicated rule tables)
+_RULES_PATH = (Path(__file__).resolve().parent.parent
+               / "internal" / "core" / "sanitize_rules.json")
+PATH_KEYED_MAPS = set(json.loads(
+    _RULES_PATH.read_text(encoding="utf-8"))["harvest"]["path_keyed_maps"])
 
 P_TOKEN_RE = re.compile(r"p-[0-9a-f]{8}(?:\.[A-Za-z0-9]{1,5})?")
 PROJECT_TOKEN_RE = re.compile(r"project-[0-9a-f]{6}")
@@ -310,6 +321,9 @@ def scan(repo, rel, globals_, tokens, prefixes, pseudonyms, public_tokens,
         for p in prefixes:
             if p in low:
                 findings.append((str(rel), lineno, "real-id-prefix", p))
+        if str(rel).startswith(VECTOR_PREFIX):
+            continue  # synthetic vector ids are exempt from the unknown-id
+            # heuristics only; all literal/token/secret scans above ran
         for match in UUID_RE.findall(line):
             if match.lower() not in pseudonyms:
                 findings.append((str(rel), lineno, "unknown-uuid", match))
@@ -355,6 +369,7 @@ def main():
     findings = []
     shaped = [rel for rel in files
               if str(rel).startswith("testdata/")
+              and not str(rel).startswith(VECTOR_PREFIX)
               and rel.suffix in (".json", ".jsonl")]
     for rel in shaped:
         shape_scan(repo, rel, findings)
