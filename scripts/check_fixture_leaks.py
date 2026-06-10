@@ -49,9 +49,16 @@ invariants verified:
   - in schema-defined path-keyed maps (readFileState, trackedFileBackups),
     EVERY key must be a p-<8hex>[.ext] token (audit class 2).
 
+MAP-INDEPENDENT content scans (every file, run in BOTH modes — they need
+no secrets): credential patterns (private-key blocks, AWS/GitHub/
+Anthropic/OpenAI/Slack tokens, JWTs), real home paths (/home/<anything
+except the sanitizer's "user" alias>, /Users/<anything> — macOS homes are
+never legitimate here), and email addresses.
+
 When the alias map is absent (CI checkout: the map is a gitignored local
-artifact), the checker still runs the structural and shape checks and skips
-only the map-dependent content scans, stating so explicitly. On the owner's
+artifact), the checker still runs the structural, shape and
+map-independent content checks and skips ONLY the map-dependent scans
+(real ids/tokens/pseudonym sets), stating so explicitly. On the owner's
 machine the map is expected to exist, so the full scan always runs there.
 
 Findings print as file:line + category with the matched value REDACTED
@@ -81,6 +88,50 @@ MODULE_MANIFESTS = {"go.mod", "go.sum"}
 
 # binary-ish files we never scan for text leaks
 SKIP_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".db", ".sqlite"}
+
+# --- map-independent content scans (map-free; run on CI too) -----------------
+
+# Credential shapes that are leaks no matter whose they are. Each literal
+# regex is written so it cannot match its own source text here.
+SECRET_PATTERNS = [
+    ("private-key-block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("aws-access-key-id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+    ("anthropic-api-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{8,}\b")),
+    ("openai-api-key", re.compile(r"\bsk-[A-Za-z0-9]{24,}\b")),
+    ("slack-token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+    ("jwt", re.compile(
+        r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\b")),
+]
+# The sanitizer aliases the owner's home to /home/user; any other /home/*
+# is a real username, and /Users/* (macOS) is never aliased at all.
+HOME_PATH_RE = re.compile(r"/home/(?!user(?![A-Za-z0-9._+-]))[A-Za-z0-9._+-]+")
+MACOS_HOME_RE = re.compile(r"/Users/[A-Za-z0-9._+-]+")
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+
+
+def scan_map_free(repo, rel, findings):
+    """Content scans that need no alias map: secrets, real home paths,
+    emails. Run on every committed file in both modes."""
+    path = repo / rel
+    if path.suffix.lower() in SKIP_SUFFIXES:
+        return
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        findings.append((str(rel), 0, "unreadable", str(exc)))
+        return
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for cat, rx in SECRET_PATTERNS:
+            for m in rx.finditer(line):
+                findings.append((str(rel), lineno, "secret-" + cat, m.group()))
+        for m in HOME_PATH_RE.finditer(line):
+            findings.append((str(rel), lineno, "real-home-path", m.group()))
+        for m in MACOS_HOME_RE.finditer(line):
+            findings.append((str(rel), lineno, "macos-home-path", m.group()))
+        for m in EMAIL_RE.finditer(line):
+            findings.append((str(rel), lineno, "email-address", m.group()))
+
 
 # --- sanitizer-output shape invariants (map-free; run on CI too) -------------
 
@@ -308,6 +359,11 @@ def main():
     for rel in shaped:
         shape_scan(repo, rel, findings)
 
+    # MAP-INDEPENDENT content scans (secrets, real home paths, emails) on
+    # every committed file. Map-free, so they run on CI too.
+    for rel in files:
+        scan_map_free(repo, rel, findings)
+
     def report(scope):
         by_cat = {}
         for rel, lineno, cat, value in findings:
@@ -327,10 +383,12 @@ def main():
     map_path = Path(args.map)
     if not map_path.is_file():
         return report(
-            "structural checks passed and %d testdata files shape-checked "
-            "across %d committed files; alias map not found (%s) — "
-            "map-dependent content scans SKIPPED (expected on CI; the map "
-            "is a local-only artifact)" % (len(shaped), len(files), map_path))
+            "structural checks passed, %d testdata files shape-checked, and "
+            "map-independent content scans (secret patterns, /home/<not "
+            "user>, /Users/*, emails) ran across %d committed files; alias "
+            "map not found (%s) — ONLY map-dependent scans (real ids/"
+            "tokens/pseudonyms) SKIPPED (expected on CI; the map is a "
+            "local-only artifact)" % (len(shaped), len(files), map_path))
 
     globals_, tokens, prefixes, pseudonyms = load_map(
         map_path, Path.home(), Path.home().name)
