@@ -405,11 +405,20 @@ func TestIncompleteTailClassification(t *testing.T) {
 	}
 }
 
+// goldenCeremony is the mandatory procedure for changing the frozen
+// golden file; it is printed wherever someone could be tempted to skip it.
+const goldenCeremony = `regenerating expected/events.json requires the full ceremony:
+  1. bump claudecode.AdapterVersion (format handling changed by definition)
+  2. TATITOK_UPDATE_GOLDEN=1 TATITOK_CONFIRM_PARITY=1 go test ./internal/adapters/claudecode -run TestGoldenEvents
+  3. re-run the fixture parity gate: go test ./internal/parity (must stay EXACT)
+  4. owner re-runs 'make parity-full' against live logs before the commit counts as verified
+commit the golden diff together with the AdapterVersion bump and note the parity re-verification in the message`
+
 // Golden test: fixtures in → exact expected normalized events out.
-// expected/events.json is generated ONCE from the first verified-parity
-// run (milestone-1 Task 4), then frozen. Regenerate explicitly with:
-//
-//	TATITOK_UPDATE_GOLDEN=1 go test ./internal/adapters/claudecode -run TestGoldenEvents
+// expected/events.json was generated from the first verified-parity run
+// (milestone-1 Task 4) and is FROZEN: a missing file fails the test, and
+// regeneration demands an explicit two-flag confirmation of the ceremony
+// above — golden updates are never casual.
 func TestGoldenEvents(t *testing.T) {
 	golden := filepath.Join(fixtureBase, "expected", "events.json")
 
@@ -430,25 +439,25 @@ func TestGoldenEvents(t *testing.T) {
 	got = append(got, '\n')
 
 	if os.Getenv("TATITOK_UPDATE_GOLDEN") == "1" {
+		if os.Getenv("TATITOK_CONFIRM_PARITY") != "1" {
+			t.Fatalf("TATITOK_UPDATE_GOLDEN=1 refused without TATITOK_CONFIRM_PARITY=1\n%s",
+				goldenCeremony)
+		}
 		if err := os.WriteFile(golden, got, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("wrote %s (%d events)", golden, len(normalized))
+		t.Logf("wrote %s (%d events)\n%s", golden, len(normalized), goldenCeremony)
 		return
 	}
 
 	want, err := os.ReadFile(golden)
-	if os.IsNotExist(err) {
-		// TODO(milestone-1 Task 6): generate expected/events.json from the
-		// first verified-parity run, commit it, and let this test enforce it.
-		t.Skip("expected/events.json not generated yet (waiting for first verified-parity run)")
-	}
 	if err != nil {
-		t.Fatal(err)
+		// A missing golden file FAILS — skipping would let the whole
+		// normalization contract go unchecked while looking green.
+		t.Fatalf("frozen golden file unreadable: %v\n%s", err, goldenCeremony)
 	}
 	if string(got) != string(want) {
-		t.Fatalf("normalized events diverge from frozen golden file %s "+
-			"(adapter behavior changed — bump AdapterVersion and regenerate "+
-			"ONLY after parity re-verifies)", golden)
+		t.Fatalf("normalized events diverge from frozen golden file %s\n%s",
+			golden, goldenCeremony)
 	}
 }
