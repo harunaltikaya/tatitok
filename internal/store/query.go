@@ -185,5 +185,34 @@ func (s *Store) ScanRawForContent(ctx context.Context, literal string) (int64, e
 	return n, err
 }
 
+// ForEachRaw streams every event's stored raw and meta blobs (either may
+// be nil) to fn; fn returning an error stops the scan. Diagnostic use
+// (doctor --scan-content).
+func (s *Store) ForEachRaw(ctx context.Context, fn func(id string, raw, meta []byte) error) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, raw, meta FROM usage_events`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id string
+		var raw, meta sql.NullString
+		if err := rows.Scan(&id, &raw, &meta); err != nil {
+			return err
+		}
+		var rb, mb []byte
+		if raw.Valid {
+			rb = []byte(raw.String)
+		}
+		if meta.Valid {
+			mb = []byte(meta.String)
+		}
+		if err := fn(id, rb, mb); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // DB exposes the handle for diagnostic commands; not for general use.
 func (s *Store) DB() *sql.DB { return s.db }

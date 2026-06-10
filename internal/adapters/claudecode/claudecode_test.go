@@ -161,50 +161,33 @@ func TestReingestIdempotent(t *testing.T) {
 	defer func() { _ = s.Close() }()
 	ctx := context.Background()
 
-	ingest := func() int {
+	ingest := func() adapters.IngestSummary {
 		t.Helper()
-		inserted := 0
-		var batch []core.Event
-		var cur adapters.FileResult
-		flush := func() {
-			if cur.Path == "" {
-				return
-			}
-			n, err := s.InsertBatch(ctx, batch, store.SourceInfo{
-				Path: cur.Path, Harness: harnessName, MTime: cur.MTime,
-				Size: cur.Size, LineCount: cur.LineCount, ParseErrors: cur.ParseErrors,
-			})
-			if err != nil {
-				t.Fatalf("insert %s: %v", cur.Path, err)
-			}
-			inserted += n
-			batch = nil
+		sum, err := adapters.IngestBackfill(ctx, s, Adapter{},
+			[]adapters.Source{fixtureSource(t)})
+		if err != nil {
+			t.Fatalf("ingest: %v", err)
 		}
-		if err := (Adapter{}).Backfill(fixtureSource(t), func(e adapters.Event) {
-			if e.File.Path != cur.Path {
-				flush()
-				cur = e.File
-			}
-			if e.ID != "" {
-				batch = append(batch, e.Event)
-			}
-		}); err != nil {
-			t.Fatal(err)
-		}
-		flush()
-		return inserted
+		return sum
 	}
 
-	if n := ingest(); n != wantUnique {
-		t.Fatalf("first ingest inserted %d, want %d", n, wantUnique)
+	first := ingest()
+	if first.Inserted != wantUnique {
+		t.Fatalf("first ingest inserted %d, want %d", first.Inserted, wantUnique)
+	}
+	if first.Emitted != wantEmitted {
+		t.Fatalf("first ingest emitted %d, want %d", first.Emitted, wantEmitted)
+	}
+	if first.ParseErrors != 0 {
+		t.Fatalf("parse errors on fixtures: %d", first.ParseErrors)
 	}
 	daily1, err := s.Daily(ctx, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if n := ingest(); n != 0 {
-		t.Fatalf("re-ingest inserted %d new rows, want 0", n)
+	if again := ingest(); again.Inserted != 0 {
+		t.Fatalf("re-ingest inserted %d new rows, want 0", again.Inserted)
 	}
 	daily2, err := s.Daily(ctx, time.UTC)
 	if err != nil {
