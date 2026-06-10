@@ -34,10 +34,19 @@ references paths inside this repo, so:
     its components are exempt (public by construction: the repo cannot
     avoid naming its own directories and docs).
 
+STRUCTURAL checks (always run, even without the map): the local-only
+artifacts (-full expectation files under expected/, *.local.json secret
+maps) must never be stageable.
+
+When the alias map is absent (CI checkout: the map is a gitignored local
+artifact), the checker still runs the structural checks and skips only the
+map-dependent content scans, stating so explicitly. On the owner's machine
+the map is expected to exist, so the full scan always runs there.
+
 Findings print as file:line + category with the matched value REDACTED
 (first 4 chars + length) so the checker's output can be shared safely;
 --show-values prints them in full. Exit 0 = clean, 1 = findings, 2 = cannot
-run (no git / no map).
+run (no git).
 
 Usage:
     python scripts/check_fixture_leaks.py [--show-values]
@@ -177,16 +186,10 @@ def main():
         return 2
     repo = Path(repo_out.stdout.strip())
 
-    map_path = Path(args.map)
-    if not map_path.is_file():
-        print("error: alias map not found: %s" % map_path, file=sys.stderr)
-        return 2
-
-    globals_, tokens, prefixes, pseudonyms = load_map(
-        map_path, Path.home(), Path.home().name)
     files = committed_files(repo)
 
-    # the local-only artifacts must never appear in the committed set
+    # STRUCTURAL: the local-only artifacts must never appear in the
+    # committed set. Runs unconditionally, with or without the map.
     for rel in files:
         s = str(rel)
         if s.endswith("-full.json") and "/expected/" in s:
@@ -196,6 +199,17 @@ def main():
         if s.endswith(".local.json"):
             print("FATAL: local-only secret map is stageable: %s" % s)
             return 1
+
+    map_path = Path(args.map)
+    if not map_path.is_file():
+        print("structural checks passed on %d committed files; alias map "
+              "not found (%s) — map-dependent content scans SKIPPED "
+              "(expected on CI; the map is a local-only artifact)"
+              % (len(files), map_path))
+        return 0
+
+    globals_, tokens, prefixes, pseudonyms = load_map(
+        map_path, Path.home(), Path.home().name)
 
     public_tokens = {repo.name.lower()}
     for rel in files:

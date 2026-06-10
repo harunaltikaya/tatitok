@@ -4,10 +4,15 @@ DIST      := dist
 
 export CGO_ENABLED := 0
 
-.PHONY: test lint build build-all clean
+.PHONY: test leakcheck lint build build-all clean
 
-test:
+test: leakcheck
 	go test ./...
+
+# Zero-real-names invariant: fails the build on any leak finding. Without
+# the local alias map (e.g. CI) it runs structural checks only.
+leakcheck:
+	python3 scripts/check_fixture_leaks.py
 
 lint:
 	go vet ./...
