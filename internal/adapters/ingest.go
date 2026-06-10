@@ -39,6 +39,7 @@ func IngestBackfill(ctx context.Context, st *store.Store, a Adapter, srcs []Sour
 				Path: cur.Path, Harness: src.Harness, MTime: cur.MTime,
 				Size: cur.Size, LineCount: cur.LineCount,
 				ParseErrors: cur.ParseErrors, ReadError: cur.ReadError,
+				IncompleteTail: cur.IncompleteTail,
 			})
 			if err != nil {
 				emitErr = err

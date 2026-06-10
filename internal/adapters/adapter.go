@@ -46,6 +46,10 @@ type FileResult struct {
 	// backfill retries the whole file. Distinct from ParseErrors, which
 	// are contained per line.
 	ReadError string
+	// IncompleteTail: the file's final line is unterminated (no trailing
+	// newline) and does not parse — almost certainly a write in progress,
+	// so it is NOT a parse error. The next backfill of the file clears it.
+	IncompleteTail bool
 }
 
 // Event pairs a normalized usage event with the provenance of the file

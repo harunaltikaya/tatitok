@@ -5,6 +5,7 @@ package claudecode
 // are measured properties of that set and change only on re-harvest.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -316,6 +317,91 @@ func TestSkippedSourcesSurfaced(t *testing.T) {
 	}
 	if _, ok := readError(unreadableFile); ok {
 		t.Fatalf("read_error not cleared after successful re-ingest")
+	}
+}
+
+// Partial-tail classification: an unterminated final line that fails to
+// parse is a write in progress — incomplete_tail bookkeeping, not a parse
+// error — and the next backfill of the completed file clears it. Uses a
+// byte-level truncation of a real fixture file (no fabricated log lines).
+func TestIncompleteTailClassification(t *testing.T) {
+	fixtures, err := filepath.Glob(filepath.Join(fixtureBase, "projects", "*", "*.jsonl"))
+	if err != nil || len(fixtures) == 0 {
+		t.Fatalf("no fixture session files: %v", err)
+	}
+	full, err := os.ReadFile(fixtures[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	trimmed := bytes.TrimRight(full, "\n")
+	lastStart := bytes.LastIndexByte(trimmed, '\n') + 1
+	cut := lastStart + min(40, (len(trimmed)-lastStart)/2)
+	frag := trimmed[:cut]
+	if json.Valid(frag[lastStart:]) {
+		t.Fatalf("truncated tail unexpectedly parses — adjust the cut")
+	}
+
+	root := filepath.Join(t.TempDir(), "projects")
+	path := filepath.Join(root, "-project-tail", "a.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, frag, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}
+
+	var res adapters.FileResult
+	if err := (Adapter{}).Backfill(src, func(e adapters.Event) {
+		res = e.File
+	}); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if !res.IncompleteTail {
+		t.Error("unterminated unparseable tail not flagged as IncompleteTail")
+	}
+	if res.ParseErrors != 0 {
+		t.Errorf("tail counted as parse error (ParseErrors=%d)", res.ParseErrors)
+	}
+	if res.ReadError != "" {
+		t.Errorf("tail treated as read error: %s", res.ReadError)
+	}
+
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+
+	tailFlag := func() int {
+		var n int
+		if err := s.DB().QueryRow(
+			`SELECT incomplete_tail FROM sources WHERE path = ?`, path).Scan(&n); err != nil {
+			t.Fatalf("sources row: %v", err)
+		}
+		return n
+	}
+	if _, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src}); err != nil {
+		t.Fatal(err)
+	}
+	if tailFlag() != 1 {
+		t.Fatal("incomplete_tail not persisted")
+	}
+
+	// The "write" completes; the next backfill clears the flag.
+	if err := os.WriteFile(path, full, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tailFlag() != 0 {
+		t.Fatal("incomplete_tail not cleared by next backfill")
+	}
+	if sum.ParseErrors != 0 {
+		t.Fatalf("completed file has parse errors: %d", sum.ParseErrors)
 	}
 }
 

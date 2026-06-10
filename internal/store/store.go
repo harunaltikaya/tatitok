@@ -62,6 +62,10 @@ var migrations = []string{
 	// read_error: why this source was skipped (NULL = read fully); a
 	// later successful ingest of the same path clears it via the upsert.
 	`ALTER TABLE sources ADD COLUMN read_error TEXT;`,
+	// incomplete_tail: the file's final line was unterminated and did not
+	// parse (write in progress, not a parse error); cleared by the next
+	// backfill of the same path via the upsert.
+	`ALTER TABLE sources ADD COLUMN incomplete_tail INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // Open opens (creating if needed) the database at path, enables WAL, and
@@ -127,6 +131,9 @@ type SourceInfo struct {
 	// ReadError non-empty marks a skipped source (could not be read);
 	// stored so `sources` always reflects what the DB is missing.
 	ReadError string
+	// IncompleteTail: unterminated, unparseable final line (write in
+	// progress); cleared by the next ingest of the same path.
+	IncompleteTail bool
 }
 
 // InsertBatch writes one file's events and its sources row in a single
@@ -187,15 +194,17 @@ func (s *Store) InsertBatch(ctx context.Context, events []core.Event, src Source
 	}
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO sources
-		(path, harness, mtime, size, line_count, ingested_at, parse_errors, read_error)
-		VALUES (?,?,?,?,?,?,?,?)
+		(path, harness, mtime, size, line_count, ingested_at, parse_errors,
+		 read_error, incomplete_tail)
+		VALUES (?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(path) DO UPDATE SET
 			harness=excluded.harness, mtime=excluded.mtime, size=excluded.size,
 			line_count=excluded.line_count, ingested_at=excluded.ingested_at,
-			parse_errors=excluded.parse_errors, read_error=excluded.read_error`,
+			parse_errors=excluded.parse_errors, read_error=excluded.read_error,
+			incomplete_tail=excluded.incomplete_tail`,
 		src.Path, src.Harness, src.MTime.UTC().Format(time.RFC3339Nano),
 		src.Size, src.LineCount, time.Now().UTC().Format(time.RFC3339Nano),
-		src.ParseErrors, nullStr(src.ReadError)); err != nil {
+		src.ParseErrors, nullStr(src.ReadError), src.IncompleteTail); err != nil {
 		return 0, fmt.Errorf("record source %s: %w", src.Path, err)
 	}
 	return inserted, tx.Commit()

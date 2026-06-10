@@ -254,12 +254,21 @@ func backfillFile(src adapters.Source, path string, emit func(adapters.Event)) e
 		if len(line) > 0 {
 			res.LineCount++
 			ev, ok, perr := parseLine(line, src, path, lineIdx, project, sessionFromName)
-			if perr != nil {
+			switch {
+			case perr != nil && errors.Is(readErr, io.EOF):
+				// Unterminated final line that does not parse: a write in
+				// progress, not a malformed line — bookkeeping, not a
+				// parse error. The next backfill clears it (the full tail
+				// state machine waits for the watcher milestone).
+				res.IncompleteTail = true
+				slog.Info("incomplete tail line",
+					"adapter", harnessName, "file", path, "line", lineIdx+1)
+			case perr != nil:
 				res.ParseErrors++
 				slog.Warn("malformed log line",
 					"adapter", harnessName, "file", path,
 					"line", lineIdx+1, "error", perr)
-			} else if ok {
+			case ok:
 				events = append(events, ev)
 			}
 		}
