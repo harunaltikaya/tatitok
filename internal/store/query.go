@@ -3,9 +3,56 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"fmt"
 	"sort"
+	"sync"
 	"time"
+
+	"modernc.org/sqlite"
 )
+
+// tatitok_day(ts, tz) is a deterministic custom SQL function: the local
+// calendar day (YYYY-MM-DD) of an RFC3339 UTC timestamp in the given IANA
+// timezone. Registering it lets day bucketing — a query/display concern,
+// hard rule 9 — run INSIDE the SQL aggregation with the exact same rule
+// the Go side used, instead of loading every event into Go.
+func init() {
+	sqlite.MustRegisterDeterministicScalarFunction("tatitok_day", 2,
+		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			ts, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("tatitok_day: ts is %T, want TEXT", args[0])
+			}
+			tzName, ok := args[1].(string)
+			if !ok {
+				return nil, fmt.Errorf("tatitok_day: tz is %T, want TEXT", args[1])
+			}
+			loc, err := lookupLocation(tzName)
+			if err != nil {
+				return nil, err
+			}
+			t, err := time.Parse(time.RFC3339Nano, ts)
+			if err != nil {
+				return nil, fmt.Errorf("tatitok_day: %w", err)
+			}
+			return t.In(loc).Format("2006-01-02"), nil
+		})
+}
+
+var locCache sync.Map // tz name -> *time.Location
+
+func lookupLocation(name string) (*time.Location, error) {
+	if loc, ok := locCache.Load(name); ok {
+		return loc.(*time.Location), nil
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, fmt.Errorf("tatitok_day: %w", err)
+	}
+	locCache.Store(name, loc)
+	return loc, nil
+}
 
 // TokenSums are the four parity-relevant token counters (cost is excluded
 // in M1).
@@ -48,9 +95,121 @@ type SessionRow struct {
 	LastActivity string   `json:"lastActivity"` // YYYY-MM-DD in query tz
 }
 
-// scanRow is the per-event projection both aggregations consume. M1 scans
-// events instead of maintaining rollups (fixture scale; full history must
-// still answer in < 5 s, which a single indexed scan does).
+// Daily returns per-day token sums bucketed in tz, oldest day first.
+// Aggregation runs in SQL: one GROUP BY (day, model) pass with the
+// timezone rule applied via tatitok_day; Go only assembles the per-day
+// rows from the (few) model rows. tz must be resolvable by its name
+// (IANA, "UTC" or "Local").
+func (s *Store) Daily(ctx context.Context, tz *time.Location) ([]DailyRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT tatitok_day(ts, ?1) AS day, model,
+			SUM(tokens_input), SUM(tokens_output),
+			SUM(tokens_cache_write), SUM(tokens_cache_read)
+		FROM usage_events
+		GROUP BY day, model
+		ORDER BY day, model`, tz.String())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []DailyRow
+	for rows.Next() {
+		var day string
+		var m ModelSums
+		if err := rows.Scan(&day, &m.Model,
+			&m.Input, &m.Output, &m.CacheWrite, &m.CacheRead); err != nil {
+			return nil, err
+		}
+		if len(out) == 0 || out[len(out)-1].Date != day {
+			out = append(out, DailyRow{Date: day})
+		}
+		d := &out[len(out)-1]
+		d.add(m.TokenSums)
+		d.ModelBreakdowns = append(d.ModelBreakdowns, m)
+		d.ModelsUsed = append(d.ModelsUsed, m.Model)
+	}
+	return out, rows.Err()
+}
+
+// Sessions returns per-session token sums, most recent activity last.
+// Aggregation runs in SQL: a GROUP BY (session, model) pass for sums,
+// models and last-activity day (MAX over tatitok_day is sound — day
+// strings are fixed-width, so lexicographic max is chronological max),
+// plus one GROUP BY session pass whose bare project column SQLite takes
+// from the MIN(ts) row (the session's first event, matching the legacy
+// scan order).
+func (s *Store) Sessions(ctx context.Context, tz *time.Location) ([]SessionRow, error) {
+	first, err := s.sessionFirstProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(session_id, '') AS sid,
+			model, MAX(tatitok_day(ts, ?1)),
+			SUM(tokens_input), SUM(tokens_output),
+			SUM(tokens_cache_write), SUM(tokens_cache_read)
+		FROM usage_events
+		GROUP BY sid, model
+		ORDER BY sid, model`, tz.String())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []SessionRow
+	for rows.Next() {
+		var sid, model, last string
+		var sums TokenSums
+		if err := rows.Scan(&sid, &model, &last,
+			&sums.Input, &sums.Output, &sums.CacheWrite, &sums.CacheRead); err != nil {
+			return nil, err
+		}
+		if len(out) == 0 || out[len(out)-1].SessionID != sid {
+			out = append(out, SessionRow{SessionID: sid, Project: first[sid]})
+		}
+		sr := &out[len(out)-1]
+		sr.add(sums)
+		sr.ModelsUsed = append(sr.ModelsUsed, model)
+		if last > sr.LastActivity {
+			sr.LastActivity = last
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].LastActivity != out[j].LastActivity {
+			return out[i].LastActivity < out[j].LastActivity
+		}
+		return out[i].SessionID < out[j].SessionID
+	})
+	return out, nil
+}
+
+// sessionFirstProjects maps each session to the project of its earliest
+// event. SQLite's bare-column-with-MIN semantics pin project to the
+// MIN(ts) row.
+func (s *Store) sessionFirstProjects(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(session_id, ''),
+			COALESCE(project, ''), MIN(ts)
+		FROM usage_events GROUP BY 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]string{}
+	for rows.Next() {
+		var sid, project, minTS string
+		if err := rows.Scan(&sid, &project, &minTS); err != nil {
+			return nil, err
+		}
+		out[sid] = project
+	}
+	return out, rows.Err()
+}
+
+// scanRow is the per-event projection the LEGACY aggregations consume.
+// Kept only until the byte-identity assertion against the SQL path has
+// run on the fixture DB (M2 Task 2); scheduled for deletion.
 type scanRow struct {
 	ts      time.Time
 	model   string
@@ -86,8 +245,9 @@ func (s *Store) scanEvents(ctx context.Context) ([]scanRow, error) {
 	return out, rows.Err()
 }
 
-// Daily returns per-day token sums bucketed in tz, oldest day first.
-func (s *Store) Daily(ctx context.Context, tz *time.Location) ([]DailyRow, error) {
+// DailyLegacy is the M1 full-scan-in-Go aggregation. Kept only for the
+// byte-identity assertion against the SQL path; scheduled for deletion.
+func (s *Store) DailyLegacy(ctx context.Context, tz *time.Location) ([]DailyRow, error) {
 	events, err := s.scanEvents(ctx)
 	if err != nil {
 		return nil, err
@@ -126,8 +286,9 @@ func (s *Store) Daily(ctx context.Context, tz *time.Location) ([]DailyRow, error
 	return out, nil
 }
 
-// Sessions returns per-session token sums, most recent activity last.
-func (s *Store) Sessions(ctx context.Context, tz *time.Location) ([]SessionRow, error) {
+// SessionsLegacy is the M1 full-scan-in-Go aggregation. Kept only for the
+// byte-identity assertion against the SQL path; scheduled for deletion.
+func (s *Store) SessionsLegacy(ctx context.Context, tz *time.Location) ([]SessionRow, error) {
 	events, err := s.scanEvents(ctx)
 	if err != nil {
 		return nil, err
