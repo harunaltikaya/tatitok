@@ -14,6 +14,7 @@ import (
 	"fmt"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
+	"github.com/harunaltikaya/tatitok/internal/pricing"
 )
 
 // LineageGapRow is one harness's provenance health: how many events and
@@ -214,36 +215,99 @@ func (s *Store) PlanModelMap(ctx context.Context, currentVersion int) (ModelMapP
 // RecomputeModelMap re-normalizes every stored event's model_family under
 // the current model map and stamps map_version — the ONLY path that ever
 // changes a historical model_family (explicit, logged; AS-4). The raw
-// model column is untouched by construction. Returns how many rows were
-// re-stamped and how many family values actually changed.
-func (s *Store) RecomputeModelMap(ctx context.Context, currentVersion int) (restamped, changed int64, err error) {
+// model column is untouched by construction.
+//
+// model_family feeds price resolution (family-key snapshot and override
+// lookups), so every event whose family changed is REPRICED before this
+// recompute exits, inside the same immediate transaction — the invariant
+// is that any recompute exiting 0 leaves the derived columns mutually
+// consistent, whatever order the recomputes run in (M3.1 finding 2).
+// Returns how many rows were re-stamped, how many family values actually
+// changed, and how many of those were repriced.
+func (s *Store) RecomputeModelMap(ctx context.Context, currentVersion int, ov *pricing.Overrides) (restamped, changed, repriced int64, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
+	fail := func(err error) (int64, int64, int64, error) {
+		_ = tx.Rollback()
+		return 0, 0, 0, err
+	}
+	// The ids whose family is about to change — the repricing work set.
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id FROM usage_events WHERE model_family IS NOT `+currentFamilyExpr)
+	if err != nil {
+		return fail(fmt.Errorf("plan family changes: %w", err))
+	}
+	changedIDs := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return fail(err)
+		}
+		changedIDs[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fail(err)
+	}
+	_ = rows.Close()
+
 	res, err := tx.ExecContext(ctx, `UPDATE usage_events SET
 			model_family = `+currentFamilyExpr+`
 		WHERE model_family IS NOT `+currentFamilyExpr, // counts real changes
 	)
 	if err != nil {
-		_ = tx.Rollback()
-		return 0, 0, fmt.Errorf("recompute model_family: %w", err)
+		return fail(fmt.Errorf("recompute model_family: %w", err))
 	}
 	if changed, err = res.RowsAffected(); err != nil {
-		_ = tx.Rollback()
-		return 0, 0, err
+		return fail(err)
 	}
 	res, err = tx.ExecContext(ctx, `UPDATE usage_events SET map_version = ?1
 		WHERE map_version IS NOT ?1`, currentVersion)
 	if err != nil {
-		_ = tx.Rollback()
-		return 0, 0, fmt.Errorf("stamp map_version: %w", err)
+		return fail(fmt.Errorf("stamp map_version: %w", err))
 	}
 	if restamped, err = res.RowsAffected(); err != nil {
-		_ = tx.Rollback()
-		return 0, 0, err
+		return fail(err)
 	}
-	return restamped, changed, tx.Commit()
+
+	// Reprice the changed-family rows from their post-update state. Same
+	// transaction: the immediate lock means no replacement can interleave,
+	// so a zero-row reprice here is an internal error, not a conflict.
+	if len(changedIDs) > 0 {
+		updates, err := collectPricingUpdates(ctx, tx, ov, changedIDs)
+		if err != nil {
+			return fail(err)
+		}
+		stmt, err := tx.PrepareContext(ctx, repriceSQL)
+		if err != nil {
+			return fail(err)
+		}
+		for _, u := range updates {
+			r, err := stmt.ExecContext(ctx, u.args()...)
+			if err != nil {
+				_ = stmt.Close()
+				return fail(fmt.Errorf("reprice %s: %w", u.id, err))
+			}
+			n, err := r.RowsAffected()
+			if err != nil {
+				_ = stmt.Close()
+				return fail(err)
+			}
+			if n == 0 {
+				_ = stmt.Close()
+				return fail(fmt.Errorf("reprice %s: row changed inside the transaction (driver invariant broken)", u.id))
+			}
+			repriced++
+		}
+		_ = stmt.Close()
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, 0, err
+	}
+	return restamped, changed, repriced, nil
 }
 
 // StampProvenance fills NULL provenance columns on the given verified

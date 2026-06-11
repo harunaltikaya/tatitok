@@ -151,7 +151,7 @@ func TestRecomputePricingConflictIsSkippedAndSwept(t *testing.T) {
 	}
 
 	// Read pass prices the OLD payload (1000 in / 100 out).
-	updates, err := s.collectPricingUpdates(ctx, nil, nil)
+	updates, err := collectPricingUpdates(ctx, s.db, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

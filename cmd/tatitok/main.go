@@ -58,7 +58,9 @@ events — after verifying each stored payload is identical to the
 re-parse (differences are reported, never altered). recompute
 --model-map re-normalizes every stored model_family under the current
 model map — the ONLY operation that ever changes a historical
-model_family (raw model stays immutable). recompute --pricing
+model_family (raw model stays immutable) — and reprices the events
+whose family changed, so derived columns stay mutually consistent
+whatever order the recomputes run in. recompute --pricing
 re-derives every cost column under the current price snapshot +
 overrides — the ONLY operation that ever changes a historical cost.
 All are explicit and logged, never a side effect (PRD AS-4); --dry-run
@@ -442,7 +444,10 @@ func cmdRecompute(args []string) error {
 
 // cmdRecomputeModelMap is the explicit model_family re-normalization
 // path (M3 Task 1) — the only operation that ever changes a historical
-// model_family. Raw model strings are untouched by construction.
+// model_family. Raw model strings are untouched by construction. Events
+// whose family changed are repriced in the same transaction (family
+// feeds price resolution): a recompute that exits 0 leaves the derived
+// columns mutually consistent, whatever order the recomputes run in.
 func cmdRecomputeModelMap(dbPath string, dryRun bool) error {
 	st, err := openStore(dbPath)
 	if err != nil {
@@ -456,7 +461,7 @@ func cmdRecomputeModelMap(dbPath string, dryRun bool) error {
 		return err
 	}
 	fmt.Printf("model map version: %d\n", plan.CurrentVersion)
-	fmt.Printf("events: %s — not on current map version: %s, model_family values that would change: %s\n",
+	fmt.Printf("events: %s — not on current map version: %s, model_family values that would change: %s (changed families are repriced)\n",
 		formatTokens(plan.Events), formatTokens(plan.Stale), formatTokens(plan.FamilyChanges))
 	if plan.Stale == 0 && plan.FamilyChanges == 0 {
 		fmt.Println("model_family is current — nothing to recompute")
@@ -467,17 +472,23 @@ func cmdRecomputeModelMap(dbPath string, dryRun bool) error {
 		return nil
 	}
 
+	overrides, err := loadPriceOverrides(realProbe())
+	if err != nil {
+		return err
+	}
 	slog.Info("recompute --model-map starting", "db", dbPath,
 		"map_version", plan.CurrentVersion, "stale_events", plan.Stale,
 		"family_changes", plan.FamilyChanges)
-	restamped, changed, err := st.RecomputeModelMap(ctx, modelmap.Version())
+	restamped, changed, repriced, err := st.RecomputeModelMap(ctx, modelmap.Version(), overrides)
 	if err != nil {
 		return err
 	}
 	slog.Info("recompute --model-map complete",
-		"events_restamped", restamped, "model_family_changed", changed)
-	fmt.Printf("\nre-stamped %s events under map version %d; %s model_family values changed\n",
-		formatTokens(restamped), plan.CurrentVersion, formatTokens(changed))
+		"events_restamped", restamped, "model_family_changed", changed,
+		"events_repriced", repriced)
+	fmt.Printf("\nre-stamped %s events under map version %d; %s model_family values changed, %s repriced\n",
+		formatTokens(restamped), plan.CurrentVersion, formatTokens(changed),
+		formatTokens(repriced))
 	return nil
 }
 

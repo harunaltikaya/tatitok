@@ -137,7 +137,7 @@ func TestRollupConsistencyRandomized(t *testing.T) {
 
 			// Explicit recomputes move rows between buckets; the triggers
 			// must follow.
-			if _, _, err := s.RecomputeModelMap(ctx, modelmap.Version()); err != nil {
+			if _, _, _, err := s.RecomputeModelMap(ctx, modelmap.Version(), nil); err != nil {
 				t.Fatal(err)
 			}
 			assertRollupConsistent(t, s, "after recompute --model-map")

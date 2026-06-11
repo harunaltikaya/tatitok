@@ -51,7 +51,7 @@ func TestRollupConsistencyFixtures(t *testing.T) {
 	ingestAllFixtures(t, st)
 	assertRollupDaily(t, st, "after combined re-ingest")
 
-	if _, _, err := st.RecomputeModelMap(ctx, modelmap.Version()); err != nil {
+	if _, _, _, err := st.RecomputeModelMap(ctx, modelmap.Version(), nil); err != nil {
 		t.Fatal(err)
 	}
 	assertRollupDaily(t, st, "after recompute --model-map")

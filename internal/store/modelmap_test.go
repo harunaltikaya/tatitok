@@ -6,11 +6,14 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
 	"github.com/harunaltikaya/tatitok/internal/modelmap"
+	"github.com/harunaltikaya/tatitok/internal/pricing"
 )
 
 // Migration 6 over a v4 database: model_map table arrives seeded, events
@@ -132,12 +135,13 @@ func TestRecomputeModelMap(t *testing.T) {
 		t.Fatalf("plan: %+v, want 3 events / 3 stale / 2 family changes", plan)
 	}
 
-	restamped, changed, err := s.RecomputeModelMap(ctx, modelmap.Version())
+	restamped, changed, repriced, err := s.RecomputeModelMap(ctx, modelmap.Version(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restamped != 3 || changed != 2 {
-		t.Fatalf("recompute: restamped=%d changed=%d, want 3/2", restamped, changed)
+	if restamped != 3 || changed != 2 || repriced != 2 {
+		t.Fatalf("recompute: restamped=%d changed=%d repriced=%d, want 3/2/2",
+			restamped, changed, repriced)
 	}
 
 	want := map[string]struct{ model, family string }{
@@ -169,5 +173,92 @@ func TestRecomputeModelMap(t *testing.T) {
 	}
 	if plan.Stale != 0 || plan.FamilyChanges != 0 {
 		t.Fatalf("second plan not empty: %+v", plan)
+	}
+}
+
+// The ordering scenario from M3.1 finding 2: model_family feeds price
+// resolution, so running recompute --pricing FIRST and --model-map
+// SECOND used to exit 0 with costs still derived from the old family.
+// --model-map now reprices the changed-family rows itself: whatever
+// order the recomputes run in, exit 0 means the derived columns are
+// mutually consistent.
+func TestRecomputeModelMapRepricesChangedFamilies(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+
+	// Price exists only under the FAMILY key, via the override file.
+	ovPath := filepath.Join(t.TempDir(), "prices.json")
+	if err := os.WriteFile(ovPath, []byte(`{
+		"prices": {"deepseek-v4-flash": {
+			"input_usd_per_mtok": "0.28", "output_usd_per_mtok": "0.42"
+		}}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := pricing.LoadOverrides(ovPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	moved := eventH("opencode", "m1", "r1", "deepseek-v4-flash-free", "s1", ts,
+		TokenSums{Input: 1000, Output: 100})
+	moved.Provider = "opencode"
+	stays := eventH("opencode", "m2", "r2", "unknown-model", "s1",
+		ts.Add(time.Minute), TokenSums{Input: 50})
+	stays.Provider = "opencode"
+	if _, err := s.InsertBatch(ctx, []core.Event{moved, stays}, testSource(2)); err != nil {
+		t.Fatal(err)
+	}
+	// Stale-map state: family = raw model, never normalized.
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE usage_events SET model_family = model, map_version = NULL,
+		 cost_usd_micro=NULL, cost_basis=NULL, price_snapshot=NULL, price_rates=NULL`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Recompute order under test: pricing FIRST (stale family resolves
+	// nothing — basis unknown), model-map SECOND.
+	if _, err := s.RecomputePricing(ctx, ov); err != nil {
+		t.Fatal(err)
+	}
+	var basis string
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(cost_basis,'')
+		FROM usage_events WHERE id = ?`, moved.ID).Scan(&basis); err != nil {
+		t.Fatal(err)
+	}
+	if basis != "unknown" {
+		t.Fatalf("precondition: stale family priced as %q, want unknown", basis)
+	}
+
+	_, changed, repriced, err := s.RecomputeModelMap(ctx, modelmap.Version(), ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 || repriced != 1 {
+		t.Fatalf("changed=%d repriced=%d, want 1/1", changed, repriced)
+	}
+
+	// The moved row is now consistent with its NEW family: override hit.
+	var cost sql.NullInt64
+	var snap string
+	if err := s.db.QueryRowContext(ctx, `SELECT cost_usd_micro,
+		COALESCE(cost_basis,''), COALESCE(price_snapshot,'')
+		FROM usage_events WHERE id = ?`, moved.ID).Scan(&cost, &basis, &snap); err != nil {
+		t.Fatal(err)
+	}
+	// 1000×$0.28 + 100×$0.42 per Mtok = 280 + 42 micro-USD.
+	if basis != "api_price" || snap != "override" || !cost.Valid || cost.Int64 != 322 {
+		t.Fatalf("changed-family row not repriced: basis=%s snap=%s cost=%v", basis, snap, cost)
+	}
+
+	// A follow-up recompute --pricing finds nothing left to do: the exit-0
+	// invariant held without it.
+	res, err := s.RecomputePricing(ctx, ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Repriced != 0 {
+		t.Fatalf("derived columns were left inconsistent: --pricing rewrote %d rows", res.Repriced)
 	}
 }

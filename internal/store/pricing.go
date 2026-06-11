@@ -156,7 +156,7 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 	res := PricingResult{ByBasis: map[string]int64{}}
 	var only map[string]bool // nil = all events; else the sweep work set
 	for sweep := 0; ; sweep++ {
-		updates, err := s.collectPricingUpdates(ctx, ov, only)
+		updates, err := collectPricingUpdates(ctx, s.db, ov, only)
 		if err != nil {
 			return res, err
 		}
@@ -179,12 +179,41 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 	}
 }
 
+// querier lets the pricing read pass run on the pool or inside an open
+// transaction (RecomputeModelMap reprices changed-family rows in its own
+// transaction).
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// repriceSQL re-stamps one event's cost columns, re-verifying NULL-safely
+// that the pricing-relevant payload the values were derived from is still
+// in place — zero rows affected means a concurrent replacement landed
+// since the read (impossible inside a transaction that did the read).
+const repriceSQL = `UPDATE usage_events SET
+	cost_usd_micro=?2, cost_basis=?3, price_snapshot=?4, price_rates=?5,
+	cost_api_equiv_micro=?6
+	WHERE id=?1
+	  AND harness IS ?7 AND provider IS ?8 AND model IS ?9
+	  AND model_family IS ?10
+	  AND tokens_input IS ?11 AND tokens_output IS ?12
+	  AND tokens_cache_write IS ?13 AND tokens_cache_read IS ?14
+	  AND tokens_reasoning IS ?15 AND meta IS ?16`
+
+// args orders the update for repriceSQL's positional parameters.
+func (u *pricingUpdate) args() []any {
+	return []any{u.id, u.cost, nullStr(u.basis), nullStr(u.snapshot),
+		u.rates, u.equiv,
+		u.harness, u.provider, u.model, u.family,
+		u.in, u.out, u.cw, u.cr, u.reasoning, u.meta}
+}
+
 // collectPricingUpdates is the read pass: price every event (restricted
-// to `only` when sweeping) from its CURRENT payload and keep that payload
+// to `only` when given) from its CURRENT payload and keep that payload
 // for the write-time re-verification. Rows already priced identically
 // produce no update.
-func (s *Store) collectPricingUpdates(ctx context.Context, ov *pricing.Overrides, only map[string]bool) ([]pricingUpdate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, harness,
+func collectPricingUpdates(ctx context.Context, q querier, ov *pricing.Overrides, only map[string]bool) ([]pricingUpdate, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id, harness,
 			provider, model, model_family,
 			tokens_input, tokens_output, tokens_cache_write, tokens_cache_read,
 			tokens_reasoning, meta,
@@ -272,24 +301,13 @@ func (s *Store) applyPricingUpdates(ctx context.Context, updates []pricingUpdate
 		if err != nil {
 			return nil, err
 		}
-		stmt, err := tx.PrepareContext(ctx, `UPDATE usage_events SET
-			cost_usd_micro=?2, cost_basis=?3, price_snapshot=?4, price_rates=?5,
-			cost_api_equiv_micro=?6
-			WHERE id=?1
-			  AND harness IS ?7 AND provider IS ?8 AND model IS ?9
-			  AND model_family IS ?10
-			  AND tokens_input IS ?11 AND tokens_output IS ?12
-			  AND tokens_cache_write IS ?13 AND tokens_cache_read IS ?14
-			  AND tokens_reasoning IS ?15 AND meta IS ?16`)
+		stmt, err := tx.PrepareContext(ctx, repriceSQL)
 		if err != nil {
 			_ = tx.Rollback()
 			return nil, err
 		}
 		for _, u := range updates[start:end] {
-			r, err := stmt.ExecContext(ctx, u.id, u.cost,
-				nullStr(u.basis), nullStr(u.snapshot), u.rates, u.equiv,
-				u.harness, u.provider, u.model, u.family,
-				u.in, u.out, u.cw, u.cr, u.reasoning, u.meta)
+			r, err := stmt.ExecContext(ctx, u.args()...)
 			if err != nil {
 				_ = stmt.Close()
 				_ = tx.Rollback()
