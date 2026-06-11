@@ -143,7 +143,7 @@ func (Adapter) Backfill(ctx context.Context, src adapters.Source, sink adapters.
 		if err := sink.FileStart(f); err != nil {
 			return err
 		}
-		res, readErr, sinkErr := backfillFile(src, f, sink)
+		res, readErr, sinkErr := backfillFile(ctx, src, f, sink)
 		if sinkErr != nil {
 			return sinkErr
 		}
@@ -245,12 +245,19 @@ func readLine(r *bufio.Reader) ([]byte, error) {
 	return line, err
 }
 
+// cancelCheckInterval is how many lines a parse loop reads between ctx
+// checks: session files reach hundreds of megabytes, and honoring
+// cancellation only at file boundaries could stall a shutdown for the
+// whole file.
+const cancelCheckInterval = 1000
+
 // backfillFile streams one session file's billable events to the sink in
-// batches of at most adapters.BatchSize. The two error returns are
-// distinct on purpose: readErr means the FILE could not be (fully) read —
-// Backfill reports it as a skipped source; sinkErr came back from the
-// sink and must cancel the whole backfill unchanged.
-func backfillFile(src adapters.Source, path string, sink adapters.Sink) (res adapters.FileResult, readErr, sinkErr error) {
+// batches of at most adapters.BatchSize, checking ctx every
+// cancelCheckInterval lines. The error returns are distinct on purpose:
+// readErr means the FILE could not be (fully) read — Backfill reports it
+// as a skipped source; sinkErr (also carrying ctx cancellation) must
+// cancel the whole backfill unchanged.
+func backfillFile(ctx context.Context, src adapters.Source, path string, sink adapters.Sink) (res adapters.FileResult, readErr, sinkErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return res, err, nil
@@ -281,6 +288,11 @@ func backfillFile(src adapters.Source, path string, sink adapters.Sink) (res ada
 	}
 	r := bufio.NewReaderSize(f, 256*1024)
 	for lineIdx := 0; ; lineIdx++ {
+		if lineIdx%cancelCheckInterval == 0 {
+			if err := ctx.Err(); err != nil {
+				return res, nil, err
+			}
+		}
 		line, lineErr := readLine(r)
 		if lineErr != nil && !errors.Is(lineErr, io.EOF) {
 			// Non-EOF read error: fail the whole file; Backfill records it

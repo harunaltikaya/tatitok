@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -533,5 +534,36 @@ func TestGoldenEvents(t *testing.T) {
 	if string(got) != string(want) {
 		t.Fatalf("normalized events diverge from frozen golden file %s\n%s",
 			golden, goldenCeremony)
+	}
+}
+
+// cancelOnFirstStartSink cancels the run's context as soon as a file is
+// declared, so the cancellation lands while that file is mid-parse.
+type cancelOnFirstStartSink struct {
+	*collectSink
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnFirstStartSink) FileStart(path string) error {
+	c.cancel()
+	return c.collectSink.FileStart(path)
+}
+
+// In-file cancellation (M2.1 item 5): a context canceled while a file is
+// being parsed stops the parse loop at the next checkpoint — the file
+// never completes (no FileDone), nothing is emitted after the cancel,
+// and the cancellation error propagates unchanged.
+func TestBackfillCanceledMidFile(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sink := newCollectSink(t)
+	err := (Adapter{}).Backfill(ctx, fixtureSource(t),
+		&cancelOnFirstStartSink{collectSink: sink, cancel: cancel})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if len(sink.results) != 0 || len(sink.events) != 0 {
+		t.Fatalf("work continued after cancellation: %d results, %d events",
+			len(sink.results), len(sink.events))
 	}
 }
