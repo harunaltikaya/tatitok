@@ -171,8 +171,9 @@ var migrations = []string{
 	//   - raw model joins the grain (and the PK, with model_family —
 	//     mixed-map states are real) so the rollup-served stats path is
 	//     byte-equal to direct aggregation.
-	//   - map_version/snapshot_version record the latest contributing
-	//     event's versions; `recompute --rollups` rebuilds and normalizes.
+	//   - map_version/snapshot_version: last-written here, superseded by
+	//     migration 10's MAX semantics (advisory; exact after
+	//     `recompute --rollups`).
 	// The backfill at the end constructs rollups for pre-existing events
 	// (new derived data — no historical numbers change).
 	`CREATE TABLE rollup_daily (
@@ -209,6 +210,26 @@ var migrations = []string{
 		` + rollupCleanupOldSQL + `
 	END;
 	` + rollupRebuildSQL,
+	// Rollup version columns (M3.1 finding 4, migration 10). Owner ruling:
+	// rollup map_version/snapshot_version are ADVISORY — MAX over the
+	// contributing events' versions, exact after `recompute --rollups`.
+	// Migration 9's triggers kept the LAST contributing event's versions,
+	// which diverged from the rebuild's MAX under out-of-order ingest; the
+	// recreated insert/update triggers use MAX semantics, aligning the
+	// incremental path with rollupRebuildSQL. A delete or bucket-move can
+	// still leave a stale MAX until the explicit rebuild — that is the
+	// advisory contract. The delete trigger never touched version columns
+	// and is unchanged.
+	`DROP TRIGGER rollup_daily_ai;
+	DROP TRIGGER rollup_daily_au;
+	CREATE TRIGGER rollup_daily_ai AFTER INSERT ON usage_events BEGIN
+		` + rollupAddNewMaxSQL + `
+	END;
+	CREATE TRIGGER rollup_daily_au AFTER UPDATE ON usage_events BEGIN
+		` + rollupSubtractOldSQL + `
+		` + rollupAddNewMaxSQL + `
+		` + rollupCleanupOldSQL + `
+	END;`,
 }
 
 // rollupKeyOld matches a rollup row by the OLD event values (NULL-safe
@@ -218,7 +239,9 @@ const rollupKeyOld = `day_utc = substr(old.ts, 1, 10) AND machine = old.machine
 	AND model = old.model AND model_family = old.model_family
 	AND project = COALESCE(old.project, '')`
 
-// rollupAddNewSQL upserts the NEW event row's contribution.
+// rollupAddNewSQL upserts the NEW event row's contribution. FROZEN for
+// shipped migration 9 (append-only rule): its last-written version
+// columns were superseded by rollupAddNewMaxSQL in migration 10.
 const rollupAddNewSQL = `INSERT INTO rollup_daily (day_utc, machine, harness,
 		provider, model, model_family, project, events, tokens_input,
 		tokens_output, tokens_cache_write, tokens_cache_read,
@@ -243,6 +266,36 @@ const rollupAddNewSQL = `INSERT INTO rollup_daily (day_utc, machine, harness,
 		events_unpriced = events_unpriced + (new.cost_usd_micro IS NULL),
 		map_version = COALESCE(new.map_version, map_version),
 		snapshot_version = COALESCE(new.price_snapshot, snapshot_version);`
+
+// rollupAddNewMaxSQL is migration 10's add-new upsert: identical to
+// rollupAddNewSQL except the version columns take MAX over the bucket's
+// contributors (NULL-safe — sqlite scalar max() is NULL when either arg
+// is), matching rollupRebuildSQL's MAX() aggregates. Advisory by ruling:
+// exact after `recompute --rollups`.
+const rollupAddNewMaxSQL = `INSERT INTO rollup_daily (day_utc, machine, harness,
+		provider, model, model_family, project, events, tokens_input,
+		tokens_output, tokens_cache_write, tokens_cache_read,
+		tokens_reasoning, cost_usd_micro, cost_api_equiv_micro,
+		events_unpriced, map_version, snapshot_version)
+	VALUES (substr(new.ts, 1, 10), new.machine, COALESCE(new.harness, ''),
+		new.provider, new.model, new.model_family, COALESCE(new.project, ''),
+		1, new.tokens_input, new.tokens_output, new.tokens_cache_write,
+		new.tokens_cache_read, COALESCE(new.tokens_reasoning, 0),
+		COALESCE(new.cost_usd_micro, 0), COALESCE(new.cost_api_equiv_micro, 0),
+		(new.cost_usd_micro IS NULL), new.map_version, new.price_snapshot)
+	ON CONFLICT (day_utc, machine, harness, provider, model, model_family, project)
+	DO UPDATE SET
+		events = events + 1,
+		tokens_input = tokens_input + new.tokens_input,
+		tokens_output = tokens_output + new.tokens_output,
+		tokens_cache_write = tokens_cache_write + new.tokens_cache_write,
+		tokens_cache_read = tokens_cache_read + new.tokens_cache_read,
+		tokens_reasoning = tokens_reasoning + COALESCE(new.tokens_reasoning, 0),
+		cost_usd_micro = cost_usd_micro + COALESCE(new.cost_usd_micro, 0),
+		cost_api_equiv_micro = cost_api_equiv_micro + COALESCE(new.cost_api_equiv_micro, 0),
+		events_unpriced = events_unpriced + (new.cost_usd_micro IS NULL),
+		map_version = COALESCE(MAX(map_version, new.map_version), map_version, new.map_version),
+		snapshot_version = COALESCE(MAX(snapshot_version, new.price_snapshot), snapshot_version, new.price_snapshot);`
 
 // rollupSubtractOldSQL removes the OLD event row's contribution.
 const rollupSubtractOldSQL = `UPDATE rollup_daily SET

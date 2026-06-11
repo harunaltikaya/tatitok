@@ -155,6 +155,52 @@ func TestRollupConsistencyRandomized(t *testing.T) {
 	}
 }
 
+// Rollup version columns are ADVISORY with MAX semantics (M3.1 finding 4,
+// owner ruling): the incremental triggers keep the MAX over contributing
+// events — agreeing with the rebuild's MAX() — even when a lower-version
+// event arrives later (out-of-order ingest of an older file).
+func TestRollupVersionColumnsMaxSemantics(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+
+	newer := event("m1", "r1", "model-a", "s1", ts, TokenSums{Input: 1})
+	newer.PriceSnapshot = "snap-b"
+	src := testSource(1)
+	src.MapVersion = 2
+	if _, err := s.InsertBatch(ctx, []core.Event{newer}, src); err != nil {
+		t.Fatal(err)
+	}
+	// Same bucket, LOWER versions, ingested later.
+	older := event("m2", "r2", "model-a", "s1", ts.Add(time.Minute), TokenSums{Input: 1})
+	older.PriceSnapshot = "snap-a"
+	src.MapVersion = 1
+	if _, err := s.InsertBatch(ctx, []core.Event{older}, src); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(when string) {
+		t.Helper()
+		var mapVersion int64
+		var snapshot string
+		if err := s.db.QueryRowContext(ctx, `SELECT map_version, snapshot_version
+			FROM rollup_daily`).Scan(&mapVersion, &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if mapVersion != 2 || snapshot != "snap-b" {
+			t.Fatalf("%s: rollup versions %d/%s, want MAX semantics 2/snap-b",
+				when, mapVersion, snapshot)
+		}
+	}
+	check("incremental (last-written would say 1/snap-a)")
+
+	// The rebuild agrees — incremental and rebuild share MAX semantics.
+	if _, err := s.RecomputeRollups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	check("after rebuild")
+}
+
 // Migration 9 backfills rollups for events that predate the triggers.
 func TestMigration9BackfillsRollups(t *testing.T) {
 	path := buildV4DB(t)
