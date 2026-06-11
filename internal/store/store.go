@@ -140,6 +140,19 @@ var migrations = []string{
 		model_family TEXT NOT NULL,
 		map_version  INTEGER NOT NULL
 	);`,
+	// Pricing engine (M3 Task 2, migration 7). Four derived cost columns,
+	// integer micro-USD only (no REAL anywhere): cost_usd_micro is NULL
+	// exactly when the event could not be priced; cost_basis per PRD §9.1
+	// (M3 uses 'local' — the energy model is a later milestone);
+	// price_snapshot + price_rates pin what priced each row (FR-9.5), so
+	// a snapshot refresh never changes historical costs silently — that
+	// is `tatitok recompute --pricing`, explicit. NO data backfill here:
+	// pre-pricing rows stay NULL until that recompute.
+	`ALTER TABLE usage_events ADD COLUMN cost_usd_micro INTEGER;
+	ALTER TABLE usage_events ADD COLUMN cost_basis TEXT
+		CHECK (cost_basis IN ('api_price','plan_included','local','free','unknown'));
+	ALTER TABLE usage_events ADD COLUMN price_snapshot TEXT;
+	ALTER TABLE usage_events ADD COLUMN price_rates TEXT;`,
 }
 
 // migrationHooks run inside the migration's transaction, after its SQL —
@@ -351,8 +364,8 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 		 project, session_id, request_id,
 		 tokens_input, tokens_output, tokens_cache_write, tokens_cache_read,
 		 tokens_reasoning, accuracy, meta, raw, adapter_version, source_id,
-		 map_version)
-		VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)`)
+		 map_version, cost_usd_micro, cost_basis, price_snapshot, price_rates)
+		VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return nil, err
@@ -361,18 +374,19 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 	// a message row while the turn is in flight), so an event ID can come
 	// back with a different payload. The DB mirrors the latest source read:
 	// on conflict, update iff the payload differs (NULL-safe IS NOT).
-	// adapter_version, source_id, model_family and map_version are
-	// derived/provenance, not payload — they are stamped when a
-	// replacement happens but never trigger one by themselves (a model-map
-	// bump must never rewrite history through re-ingest; that is
-	// `recompute --model-map`, explicit). Replacements are counted and
-	// logged, never silent (AS-4).
+	// adapter_version, source_id, model_family, map_version and the cost
+	// columns are derived/provenance, not payload — they are stamped when
+	// a replacement happens but never trigger one by themselves (a
+	// model-map or price-snapshot bump must never rewrite history through
+	// re-ingest; that is `recompute --model-map` / `--pricing`, explicit).
+	// Replacements are counted and logged, never silent (AS-4).
 	upd, err := tx.PrepareContext(ctx, `UPDATE usage_events SET
 		ts=?2, machine=?3, source_kind=?4, harness=?5, provider=?6, model=?7,
 		model_family=?8, project=?9, session_id=?10, request_id=?11,
 		tokens_input=?12, tokens_output=?13, tokens_cache_write=?14,
 		tokens_cache_read=?15, tokens_reasoning=?16, accuracy=?17, meta=?18,
-		raw=?19, adapter_version=?20, source_id=?21, map_version=?22
+		raw=?19, adapter_version=?20, source_id=?21, map_version=?22,
+		cost_usd_micro=?23, cost_basis=?24, price_snapshot=?25, price_rates=?26
 		WHERE id=?1 AND (
 			ts IS NOT ?2 OR machine IS NOT ?3 OR source_kind IS NOT ?4 OR
 			harness IS NOT ?5 OR provider IS NOT ?6 OR model IS NOT ?7 OR
@@ -432,8 +446,17 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Pro
 		if err != nil {
 			return err
 		}
+		var rates any
+		if len(e.PriceRates) > 0 {
+			rates = string(e.PriceRates)
+		}
+		var cost any
+		if e.CostUSDMicro != nil {
+			cost = *e.CostUSDMicro
+		}
 		args = append(args, nullVersion(prov.AdapterVersion),
-			nullStr(prov.SourceID), nullVersion(prov.MapVersion))
+			nullStr(prov.SourceID), nullVersion(prov.MapVersion),
+			cost, nullStr(e.CostBasis), nullStr(e.PriceSnapshot), rates)
 		res, err := f.ins.ExecContext(ctx, args...)
 		if err != nil {
 			return fmt.Errorf("insert %s: %w", e.ID, err)

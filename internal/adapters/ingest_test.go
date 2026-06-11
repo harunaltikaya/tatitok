@@ -103,7 +103,7 @@ func TestIngestSinkErrorCancelsBackfill(t *testing.T) {
 		{path: "/fake/never.jsonl", batches: [][]core.Event{{synthEvent(4)}}},
 	}}
 
-	sum, err := IngestBackfill(context.Background(), s, a, []Source{{Harness: "fake"}})
+	sum, err := IngestBackfill(context.Background(), s, a, []Source{{Harness: "fake"}}, nil)
 	if err == nil {
 		t.Fatal("want insert error to propagate, got nil")
 	}
@@ -133,7 +133,7 @@ func TestIngestContextCancellation(t *testing.T) {
 	}}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}})
+	_, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}}, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
@@ -155,7 +155,7 @@ func TestIngestReadErrorDiscardsPartialEvents(t *testing.T) {
 		{path: "/fake/ok.jsonl", batches: [][]core.Event{{synthEvent(3)}}},
 	}}
 
-	sum, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}})
+	sum, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}}, nil)
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestIngestZeroEventFileRecorded(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
 	a := &fakeAdapter{files: []fakeFile{{path: "/fake/empty.jsonl"}}}
-	sum, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}})
+	sum, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}}, nil)
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestIngestZeroEventFileRecorded(t *testing.T) {
 func TestIngestMissingFileDoneIsAnError(t *testing.T) {
 	s := openTemp(t)
 	a := &noDoneAdapter{}
-	_, err := IngestBackfill(context.Background(), s, a, []Source{{Harness: "fake"}})
+	_, err := IngestBackfill(context.Background(), s, a, []Source{{Harness: "fake"}}, nil)
 	if err == nil {
 		t.Fatal("want contract-violation error, got nil")
 	}
@@ -325,7 +325,7 @@ func TestIngestContractViolationsRejected(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := openTemp(t)
 			_, err := IngestBackfill(context.Background(), s,
-				&scriptAdapter{run: tc.run}, []Source{{Harness: "fake"}})
+				&scriptAdapter{run: tc.run}, []Source{{Harness: "fake"}}, nil)
 			if err == nil {
 				t.Fatal("want contract-violation error, got nil")
 			}
@@ -354,7 +354,7 @@ func TestIngestCountsEmptyModelEvents(t *testing.T) {
 	a := &fakeAdapter{files: []fakeFile{
 		{path: "/fake/a.jsonl", batches: [][]core.Event{{synthEvent(1), noModel}}},
 	}}
-	sum, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}})
+	sum, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}}, nil)
 	if err != nil {
 		t.Fatalf("empty-model event rejected: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestIngestStampsAdapterVersion(t *testing.T) {
 	a := &fakeAdapter{files: []fakeFile{
 		{path: "/fake/a.jsonl", batches: [][]core.Event{{synthEvent(1), synthEvent(2)}}},
 	}}
-	if _, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}}); err != nil {
+	if _, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, q := range []string{

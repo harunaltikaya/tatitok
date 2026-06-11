@@ -235,7 +235,7 @@ func TestReingestIdempotent(t *testing.T) {
 	ingest := func() adapters.IngestSummary {
 		t.Helper()
 		sum, err := adapters.IngestBackfill(ctx, s, Adapter{},
-			[]adapters.Source{fixtureSource(t)})
+			[]adapters.Source{fixtureSource(t)}, nil)
 		if err != nil {
 			t.Fatalf("ingest: %v", err)
 		}

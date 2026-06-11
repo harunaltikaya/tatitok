@@ -1,0 +1,135 @@
+package pricing
+
+// User price overrides (FR-9.2): a local file layered over the embedded
+// snapshot. Rates are decimal USD per MILLION tokens (the unit people
+// quote prices in), parsed exactly into integer micro-USD — a malformed
+// price is an error, never a silent zero.
+//
+// File: $XDG_CONFIG_HOME/tatitok/prices.json (default ~/.config/...):
+//
+//	{
+//	  "prices": {
+//	    "deepseek-v4-flash": {
+//	      "input_usd_per_mtok": "0.28",
+//	      "output_usd_per_mtok": "0.42",
+//	      "cache_read_usd_per_mtok": "0.028"
+//	    },
+//	    "some-free-routing": { "free": true }
+//	  }
+//	}
+//
+// Keys match raw model first, then model_family (see Resolve).
+
+import (
+	"encoding/json"
+	"fmt"
+	"math/big"
+	"os"
+	"path/filepath"
+)
+
+// Overrides is the parsed override file; the zero value (or nil) means
+// no overrides.
+type Overrides struct {
+	rates map[string]Rates
+	path  string
+}
+
+// Path returns the file the overrides were read from ("" when none).
+func (o *Overrides) Path() string {
+	if o == nil {
+		return ""
+	}
+	return o.path
+}
+
+// Len reports how many models the override file covers.
+func (o *Overrides) Len() int {
+	if o == nil {
+		return 0
+	}
+	return len(o.rates)
+}
+
+type overrideEntry struct {
+	Free       bool        `json:"free"`
+	Input      json.Number `json:"input_usd_per_mtok"`
+	Output     json.Number `json:"output_usd_per_mtok"`
+	CacheWrite json.Number `json:"cache_write_usd_per_mtok"`
+	CacheRead  json.Number `json:"cache_read_usd_per_mtok"`
+}
+
+type overrideFile struct {
+	Prices map[string]overrideEntry `json:"prices"`
+}
+
+// OverridesPath resolves the override file location from the
+// environment (XDG_CONFIG_HOME, falling back to ~/.config).
+func OverridesPath(getenv func(string) string, home string) string {
+	base := getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "tatitok", "prices.json")
+}
+
+// LoadOverrides reads the override file at path. A missing file is no
+// overrides; a malformed file is an error (prices are inputs — failing
+// loudly beats pricing under silently-dropped overrides).
+func LoadOverrides(path string) (*Overrides, error) {
+	body, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("price overrides %s: %w", path, err)
+	}
+	var f overrideFile
+	if err := json.Unmarshal(body, &f); err != nil {
+		return nil, fmt.Errorf("price overrides %s: %w", path, err)
+	}
+	ov := &Overrides{rates: make(map[string]Rates, len(f.Prices)), path: path}
+	for model, e := range f.Prices {
+		if model == "" {
+			return nil, fmt.Errorf("price overrides %s: empty model key", path)
+		}
+		var r Rates
+		if !e.Free {
+			for _, c := range []struct {
+				n   json.Number
+				dst *int64
+			}{
+				{e.Input, &r.Input}, {e.Output, &r.Output},
+				{e.CacheWrite, &r.CacheWrite}, {e.CacheRead, &r.CacheRead},
+			} {
+				v, err := usdPerMtokToMicro(c.n)
+				if err != nil {
+					return nil, fmt.Errorf("price overrides %s: model %q: %w", path, model, err)
+				}
+				*c.dst = v
+			}
+		}
+		ov.rates[model] = r
+	}
+	return ov, nil
+}
+
+// usdPerMtokToMicro converts decimal USD-per-Mtok to integer micro-USD
+// per Mtok, exactly: value × 1e6.
+func usdPerMtokToMicro(n json.Number) (int64, error) {
+	if n == "" {
+		return 0, nil
+	}
+	r, ok := new(big.Rat).SetString(n.String())
+	if !ok {
+		return 0, fmt.Errorf("unparseable price %q", n)
+	}
+	r.Mul(r, new(big.Rat).SetInt64(1_000_000))
+	if !r.IsInt() {
+		return 0, fmt.Errorf("price %q is finer than micro-USD per Mtok", n)
+	}
+	if !r.Num().IsInt64() {
+		return 0, fmt.Errorf("price %q out of range", n)
+	}
+	return r.Num().Int64(), nil
+}

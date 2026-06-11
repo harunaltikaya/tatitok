@@ -239,7 +239,7 @@ func TestReingestIdempotent(t *testing.T) {
 	ingest := func() adapters.IngestSummary {
 		t.Helper()
 		sum, err := adapters.IngestBackfill(ctx, s, Adapter{},
-			[]adapters.Source{fixtureSource(t)})
+			[]adapters.Source{fixtureSource(t)}, nil)
 		if err != nil {
 			t.Fatalf("ingest: %v", err)
 		}
@@ -347,7 +347,7 @@ func TestSkippedSourcesSurfaced(t *testing.T) {
 	defer func() { _ = s.Close() }()
 	ctx := context.Background()
 
-	sum, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src})
+	sum, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src}, nil)
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
@@ -381,7 +381,7 @@ func TestSkippedSourcesSurfaced(t *testing.T) {
 	if err := os.Chmod(unreadableFile, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sum, err = adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src})
+	sum, err = adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src}, nil)
 	if err != nil {
 		t.Fatalf("re-ingest: %v", err)
 	}
@@ -457,7 +457,7 @@ func TestIncompleteTailClassification(t *testing.T) {
 		}
 		return n
 	}
-	if _, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src}); err != nil {
+	if _, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if tailFlag() != 1 {
@@ -468,7 +468,7 @@ func TestIncompleteTailClassification(t *testing.T) {
 	if err := os.WriteFile(path, full, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sum, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src})
+	sum, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

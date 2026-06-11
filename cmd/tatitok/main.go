@@ -24,6 +24,7 @@ import (
 	"github.com/harunaltikaya/tatitok/internal/adapters/codex"
 	"github.com/harunaltikaya/tatitok/internal/adapters/opencode"
 	"github.com/harunaltikaya/tatitok/internal/modelmap"
+	"github.com/harunaltikaya/tatitok/internal/pricing"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
@@ -151,6 +152,20 @@ func realProbe() adapters.Probe {
 	return adapters.Probe{Getenv: os.Getenv, HomeDir: home, Machine: host}
 }
 
+// loadPriceOverrides reads the user's price-override file (FR-9.2);
+// missing file = no overrides, malformed file = hard error.
+func loadPriceOverrides(probe adapters.Probe) (*pricing.Overrides, error) {
+	path := pricing.OverridesPath(probe.Getenv, probe.HomeDir)
+	ov, err := pricing.LoadOverrides(path)
+	if err != nil {
+		return nil, err
+	}
+	if ov.Len() > 0 {
+		slog.Info("price overrides loaded", "path", path, "models", ov.Len())
+	}
+	return ov, nil
+}
+
 func cmdIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	backfill := fs.Bool("backfill", false, "ingest full history from detected log roots")
@@ -179,6 +194,10 @@ func cmdIngest(args []string) error {
 	defer func() { _ = st.Close() }()
 
 	probe := realProbe()
+	overrides, err := loadPriceOverrides(probe)
+	if err != nil {
+		return err
+	}
 	ctx := context.Background()
 	ingested, skippedTotal := 0, 0
 	for _, a := range selected {
@@ -196,7 +215,7 @@ func cmdIngest(args []string) error {
 		for _, s := range srcs {
 			slog.Info("ingesting", "adapter", a.Name(), "root", s.Root)
 		}
-		sum, err := adapters.IngestBackfill(ctx, st, a, srcs)
+		sum, err := adapters.IngestBackfill(ctx, st, a, srcs, overrides)
 		if err != nil {
 			return fmt.Errorf("%s: %w", a.Name(), err)
 		}
@@ -289,15 +308,25 @@ func cmdRecompute(args []string) error {
 	fs := flag.NewFlagSet("recompute", flag.ExitOnError)
 	provenance := fs.Bool("provenance", false, "fill NULL adapter_version/source-link columns from the source files")
 	modelMap := fs.Bool("model-map", false, "re-normalize stored model_family under the current model map")
+	prices := fs.Bool("pricing", false, "re-derive cost columns under the current price snapshot + overrides")
 	dryRun := fs.Bool("dry-run", false, "print the plan and change nothing")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	source := fs.String("source", "", "restrict to one adapter (claude-code, codex, opencode)")
 	_ = fs.Parse(args)
-	if *provenance == *modelMap {
-		return fmt.Errorf("pass exactly one of --provenance or --model-map (--rollups arrives later in milestone 3)")
+	modes := 0
+	for _, m := range []bool{*provenance, *modelMap, *prices} {
+		if m {
+			modes++
+		}
+	}
+	if modes != 1 {
+		return fmt.Errorf("pass exactly one of --provenance, --model-map or --pricing (--rollups arrives later in milestone 3)")
 	}
 	if *modelMap {
 		return cmdRecomputeModelMap(*dbPath, *dryRun)
+	}
+	if *prices {
+		return cmdRecomputePricing(*dbPath, *dryRun)
 	}
 
 	selected := allAdapters
@@ -414,6 +443,53 @@ func cmdRecomputeModelMap(dbPath string, dryRun bool) error {
 		"events_restamped", restamped, "model_family_changed", changed)
 	fmt.Printf("\nre-stamped %s events under map version %d; %s model_family values changed\n",
 		formatTokens(restamped), plan.CurrentVersion, formatTokens(changed))
+	return nil
+}
+
+// cmdRecomputePricing re-derives the cost columns for the whole history
+// under the current snapshot + overrides (FR-9.5 explicit recompute).
+func cmdRecomputePricing(dbPath string, dryRun bool) error {
+	st, err := openStore(dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+
+	version, err := pricing.SnapshotVersion()
+	if err != nil {
+		return err
+	}
+	plan, err := st.PlanPricing(ctx, version)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("price snapshot: %s\n", plan.SnapshotVersion)
+	fmt.Printf("events: %s — never priced: %s, on current snapshot/override: %s, on another snapshot: %s\n",
+		formatTokens(plan.Events), formatTokens(plan.Unpriced),
+		formatTokens(plan.OnCurrent), formatTokens(plan.OnOther))
+	if dryRun {
+		fmt.Println("\ndry run — no changes made (note: rows on the current snapshot may still be re-stamped if the override file changed)")
+		return nil
+	}
+
+	overrides, err := loadPriceOverrides(realProbe())
+	if err != nil {
+		return err
+	}
+	slog.Info("recompute --pricing starting", "db", dbPath,
+		"snapshot", version, "overrides", overrides.Len())
+	res, err := st.RecomputePricing(ctx, overrides)
+	if err != nil {
+		return err
+	}
+	slog.Info("recompute --pricing complete", "repriced", res.Repriced,
+		"cost_changed", res.CostChanged)
+	fmt.Printf("\nrepriced %s events (%s cost values changed) under %s\n",
+		formatTokens(res.Repriced), formatTokens(res.CostChanged), version)
+	for basis, n := range res.ByBasis {
+		fmt.Printf("  %-14s %s\n", basis, formatTokens(n))
+	}
 	return nil
 }
 

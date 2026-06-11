@@ -1,0 +1,21 @@
+{
+  "_doc": [
+    "Provenance of the committed price snapshot (prices_snapshot.json).",
+    "Prices are INPUTS, not code: refreshing the snapshot is an explicit",
+    "owner/maintainer ceremony —",
+    "  1. fetch https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+    "  2. review the diff against the current snapshot (price changes are",
+    "     deliberate input changes, never drive-by edits)",
+    "  3. update this metadata (snapshot_version, source_commit, sha256,",
+    "     fetched) and run `tatitok recompute --pricing` ONLY as a",
+    "     deliberate follow-up (AS-4: historical costs never change",
+    "     silently; per-event snapshots keep old rows honest)",
+    "No network calls happen at runtime or in tests; this file is the",
+    "record of the one fetch that produced the committed snapshot."
+  ],
+  "snapshot_version": "litellm-2026-06-11-3ceb8bff",
+  "source_url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+  "source_commit": "3b40ac987fb4fe08061b67dda91b286dc41bee28",
+  "sha256": "3ceb8bff5ba6e98c074fb4b459a986b7d5d7f6fd983c2c5a0f3bd039cfc8215c",
+  "fetched": "2026-06-11"
+}

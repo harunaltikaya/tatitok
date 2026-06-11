@@ -250,7 +250,7 @@ func TestReingestIdempotent(t *testing.T) {
 	ingest := func() adapters.IngestSummary {
 		t.Helper()
 		sum, err := adapters.IngestBackfill(ctx, s, Adapter{},
-			[]adapters.Source{src})
+			[]adapters.Source{src}, nil)
 		if err != nil {
 			t.Fatalf("ingest: %v", err)
 		}
@@ -307,7 +307,7 @@ func TestMutatedRowSupersededOnReingest(t *testing.T) {
 	}
 	defer func() { _ = ref.Close() }()
 	if _, err := adapters.IngestBackfill(ctx, ref, Adapter{},
-		[]adapters.Source{fixtureSource(t)}); err != nil {
+		[]adapters.Source{fixtureSource(t)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	wantDaily, err := ref.Daily(ctx, time.UTC, "")
@@ -386,7 +386,7 @@ func TestMutatedRowSupersededOnReingest(t *testing.T) {
 	defer func() { _ = s.Close() }()
 	ingest := func() adapters.IngestSummary {
 		t.Helper()
-		sum, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src})
+		sum, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src}, nil)
 		if err != nil {
 			t.Fatalf("ingest: %v", err)
 		}

@@ -70,6 +70,20 @@ type Event struct {
 	// thinking/reasoning tokens separately (Claude Code does not).
 	TokensReasoning *int64 `json:"tokens_reasoning,omitempty"`
 
+	// Cost fields (M3 Task 2, PRD §9.1) — derived at ingest by the pricing
+	// engine, never by adapters (adapter-emitted events leave them empty,
+	// so adapter goldens are cost-free). Integer micro-USD; CostUSDMicro
+	// is nil when the event could not be priced (basis `unknown`).
+	CostUSDMicro *int64 `json:"cost_usd_micro,omitempty"`
+	// CostBasis: api_price | plan_included | local | free | unknown.
+	CostBasis string `json:"cost_basis,omitempty"`
+	// PriceSnapshot is the price-snapshot version (or "override") that
+	// priced this event (FR-9.5).
+	PriceSnapshot string `json:"price_snapshot,omitempty"`
+	// PriceRates is the JSON-encoded unit rates used, integer micro-USD
+	// per million tokens per component (FR-9.5).
+	PriceRates json.RawMessage `json:"price_rates,omitempty"`
+
 	Accuracy Accuracy `json:"accuracy"`
 	// Meta holds source-specific extras (cwd, branch, client version,
 	// per-TTL cache detail, …).
@@ -119,6 +133,14 @@ func (e *Event) Validate() error {
 	if e.TokensReasoning != nil && *e.TokensReasoning < 0 {
 		return fmt.Errorf("event %s has negative reasoning tokens (%d)",
 			e.ID, *e.TokensReasoning)
+	}
+	if e.CostUSDMicro != nil && *e.CostUSDMicro < 0 {
+		return fmt.Errorf("event %s has negative cost (%d micro-USD)", e.ID, *e.CostUSDMicro)
+	}
+	switch e.CostBasis {
+	case "", "api_price", "plan_included", "local", "free", "unknown":
+	default:
+		return fmt.Errorf("event %s has invalid cost_basis %q", e.ID, e.CostBasis)
 	}
 	if len(e.Raw) > 0 {
 		findings, err := CheckRawSanitized(e.Raw)

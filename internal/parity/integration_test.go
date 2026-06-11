@@ -32,7 +32,7 @@ func ingestAllFixtures(t *testing.T, st *store.Store) int {
 		sum, err := adapters.IngestBackfill(context.Background(), st, set.adapter,
 			[]adapters.Source{{
 				Harness: set.harness, Root: set.root(t, machineDir), Machine: "gx10",
-			}})
+			}}, nil)
 		if err != nil {
 			t.Fatalf("%s: ingest: %v", set.harness, err)
 		}

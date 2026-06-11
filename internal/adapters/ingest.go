@@ -6,6 +6,7 @@ import (
 
 	"github.com/harunaltikaya/tatitok/internal/core"
 	"github.com/harunaltikaya/tatitok/internal/modelmap"
+	"github.com/harunaltikaya/tatitok/internal/pricing"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
@@ -44,12 +45,13 @@ type IngestSummary struct {
 // bracket, a path closes exactly once per run, and FileDone.Events must
 // match the delivered batch total.
 type storeSink struct {
-	ctx     context.Context
-	st      *store.Store
-	harness string
-	machine string
-	version int
-	sum     *IngestSummary
+	ctx       context.Context
+	st        *store.Store
+	harness   string
+	machine   string
+	version   int
+	overrides *pricing.Overrides
+	sum       *IngestSummary
 
 	cur           *store.FileTx
 	started       string          // path declared by FileStart; "" when no file is open
@@ -91,11 +93,16 @@ func (k *storeSink) EmitBatch(path string, events []core.Event) error {
 		}
 		k.cur = tx
 	}
-	// Normalization point (M3 Task 1): adapters emit model_family = model
-	// verbatim; the ingest layer derives the family through the versioned
-	// map. Unknown models pass through unchanged.
+	// Derivation point (M3 Tasks 1+2): adapters emit model_family = model
+	// verbatim and no cost fields; the ingest layer derives the family
+	// through the versioned map and prices the event under the pinned
+	// snapshot + user overrides. Unknown models pass through unchanged
+	// and unpriceable events stay basis `unknown` with NULL cost.
 	for i := range events {
 		events[i].ModelFamily = modelmap.Family(events[i].Model)
+		if err := pricing.Apply(&events[i], k.overrides); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
 	}
 	if err := k.cur.InsertEvents(k.ctx, events, store.Provenance{
 		AdapterVersion: k.version,
@@ -179,15 +186,16 @@ func (k *storeSink) FileDone(res FileResult) error {
 }
 
 // IngestBackfill runs adapter backfill over the given sources and writes
-// the events into st via a per-file-transaction sink. On error the open
-// file transaction is rolled back; the summary reflects only completed
-// files.
-func IngestBackfill(ctx context.Context, st *store.Store, a Adapter, srcs []Source) (IngestSummary, error) {
+// the events into st via a per-file-transaction sink. ov is the user's
+// price-override file (nil = none; tests pass nil so they never read the
+// real config). On error the open file transaction is rolled back; the
+// summary reflects only completed files.
+func IngestBackfill(ctx context.Context, st *store.Store, a Adapter, srcs []Source, ov *pricing.Overrides) (IngestSummary, error) {
 	var sum IngestSummary
 	for _, src := range srcs {
 		sink := &storeSink{
 			ctx: ctx, st: st, harness: src.Harness, machine: src.Machine,
-			version: a.Version(), sum: &sum,
+			version: a.Version(), overrides: ov, sum: &sum,
 			closed: map[string]bool{},
 		}
 		err := a.Backfill(ctx, src, sink)

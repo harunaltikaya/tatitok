@@ -69,7 +69,7 @@ func ingestIntoWith(t *testing.T, a adapters.Adapter, srcs []adapters.Source) *s
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	sum, err := adapters.IngestBackfill(context.Background(), s, a, srcs)
+	sum, err := adapters.IngestBackfill(context.Background(), s, a, srcs, nil)
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
