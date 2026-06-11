@@ -202,9 +202,9 @@ func (h *Hub) apiTotals(w http.ResponseWriter, r *http.Request) {
 	}
 	today := time.Now().UTC().Format(dayFormat)
 	from := ""
-	switch {
-	case window == "all":
-	case window == "today":
+	switch window {
+	case "all":
+	case "today":
 		from = today
 	default:
 		m := windowRe.FindStringSubmatch(window)
