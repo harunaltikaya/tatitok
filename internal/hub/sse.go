@@ -31,6 +31,14 @@ const DefaultHeartbeat = 15 * time.Second
 // events and marks the client stale (it refetches).
 const sseBuffer = 16
 
+// sseWriteTimeout bounds every single write to a stream client (M4
+// Codex round, finding 2): a client that stops reading fills its socket
+// buffers and would otherwise block the handler in Write indefinitely —
+// past srv.Shutdown's grace. With the per-write deadline (plus the stop
+// watcher that shortens it to "now" at shutdown) a handler outlives
+// streamStop by at most this long, strictly under the shutdown grace.
+const sseWriteTimeout = 2 * time.Second
+
 type sseEvent struct {
 	id   int64
 	name string
@@ -108,11 +116,11 @@ func (h *Hub) apiStream(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
 		return
 	}
-	fl, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		writeErr(w, http.StatusInternalServerError, "no_stream", "response writer cannot stream")
 		return
 	}
+	rc := http.NewResponseController(w)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
@@ -121,12 +129,34 @@ func (h *Hub) apiStream(w http.ResponseWriter, r *http.Request) {
 	h.bcast.add(c)
 	defer h.bcast.remove(c)
 
+	// Stop watcher (finding 2): a write blocked on a stuck client's full
+	// socket must observe shutdown. Closing streamStop (or the client
+	// vanishing) slams the write deadline to "now", aborting an in-flight
+	// Write immediately; the per-write deadline below bounds the race
+	// where one more write re-arms after the slam.
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	go func() {
+		select {
+		case <-h.streamStop:
+		case <-r.Context().Done():
+		case <-watchDone:
+			return
+		}
+		_ = rc.SetWriteDeadline(time.Now())
+	}()
+
 	write := func(ev sseEvent) bool {
+		select {
+		case <-h.streamStop:
+			return false // never re-arm the deadline after stop
+		default:
+		}
+		_ = rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
 		if _, err := fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", ev.id, ev.name, ev.data); err != nil {
 			return false
 		}
-		fl.Flush()
-		return true
+		return rc.Flush() == nil
 	}
 
 	// hello documents the protocol to the client: no replay — refetch

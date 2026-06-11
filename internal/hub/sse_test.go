@@ -155,6 +155,52 @@ func TestSSEHeartbeat(t *testing.T) {
 	}
 }
 
+// TestSSEShutdownWithStuckClient is the Codex M4 finding-2 adversarial
+// reproduction, kept permanently: a client that opened the stream and
+// then stopped reading fills its socket buffers; the handler blocks in
+// Write. Shutdown must still complete within its grace — the stop
+// watcher slams the write deadline, the per-write deadline bounds the
+// re-arm race, and the handler releases before the server drain.
+func TestSSEShutdownWithStuckClient(t *testing.T) {
+	h, err := Start(Config{
+		DBPath: filepath.Join(t.TempDir(), "hub.db"), Addr: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	br, closeStream := openStream(t, h)
+	defer closeStream()
+	if p, err := readPacket(br); err != nil || p.event != "hello" {
+		t.Fatalf("want hello, got %q (%v)", p.event, err)
+	}
+
+	// Stop reading entirely and flood until the handler is blocked in a
+	// socket write (the payload total far exceeds kernel buffers).
+	payload := strings.Repeat("y", 4096)
+	for i := 0; i < 20_000; i++ {
+		h.bcast.publish("ingest_pass", map[string]any{"i": i, "pad": payload})
+	}
+	time.Sleep(100 * time.Millisecond) // let the handler hit the blocked write
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	start := time.Now()
+	err = h.Shutdown(ctx)
+	elapsed := time.Since(start)
+	if ctx.Err() != nil {
+		t.Fatalf("shutdown overran its grace with a stuck stream client (took %v)", elapsed)
+	}
+	if err != nil {
+		t.Fatalf("shutdown: %v (took %v)", err, elapsed)
+	}
+	// Strictly under the grace: the deadline math says ≤ sseWriteTimeout
+	// plus scheduling noise, not "just under 8s by luck".
+	if elapsed > sseWriteTimeout+2*time.Second {
+		t.Fatalf("shutdown took %v with a stuck client — handler did not observe stop promptly", elapsed)
+	}
+}
+
 // TestSSEBackpressure: a client that stops reading must never block
 // publish (the ingest path), loses events beyond its buffer, and is
 // told it is stale once it drains again.
