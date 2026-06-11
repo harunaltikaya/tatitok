@@ -71,8 +71,9 @@ func lookupLocation(name string) (*time.Location, error) {
 	return loc, nil
 }
 
-// TokenSums are the four parity-relevant token counters (cost is excluded
-// in M1).
+// TokenSums are the four parity-relevant token counters — the
+// zero-tolerance comparison struct, deliberately unchanged by M3 (cost
+// and reasoning live in CostSums).
 type TokenSums struct {
 	Input      int64 `json:"inputTokens"`
 	Output     int64 `json:"outputTokens"`
@@ -87,10 +88,30 @@ func (t *TokenSums) add(o TokenSums) {
 	t.CacheRead += o.CacheRead
 }
 
+// CostSums are the M3 Task 4 additions: reasoning tokens
+// (codex/opencode report them; others sum 0) and integer micro-USD cost
+// columns (rendered to dollars only at the CLI edge). UnpricedEvents
+// keeps cost sums honest — a nonzero value means the cost column is a
+// floor, not a total.
+type CostSums struct {
+	Reasoning         int64 `json:"reasoningTokens"`
+	CostUSDMicro      int64 `json:"costUSDMicro"`
+	CostAPIEquivMicro int64 `json:"costAPIEquivMicro"`
+	UnpricedEvents    int64 `json:"unpricedEvents"`
+}
+
+func (c *CostSums) addCost(o CostSums) {
+	c.Reasoning += o.Reasoning
+	c.CostUSDMicro += o.CostUSDMicro
+	c.CostAPIEquivMicro += o.CostAPIEquivMicro
+	c.UnpricedEvents += o.UnpricedEvents
+}
+
 // ModelSums is a per-model breakdown within a day or session.
 type ModelSums struct {
 	Model string `json:"modelName"`
 	TokenSums
+	CostSums
 }
 
 // HarnessSums is a per-harness breakdown within a day (M2 Task 5: one DB
@@ -98,6 +119,7 @@ type ModelSums struct {
 type HarnessSums struct {
 	Harness string `json:"harness"`
 	TokenSums
+	CostSums
 }
 
 // DailyRow is one local-time day. Date is YYYY-MM-DD in the query
@@ -106,6 +128,7 @@ type HarnessSums struct {
 type DailyRow struct {
 	Date string `json:"date"`
 	TokenSums
+	CostSums
 	ModelsUsed        []string      `json:"modelsUsed"`
 	ModelBreakdowns   []ModelSums   `json:"modelBreakdowns"`
 	HarnessBreakdowns []HarnessSums `json:"harnessBreakdowns"`
@@ -122,6 +145,7 @@ type SessionRow struct {
 	SessionID string `json:"sessionId"`
 	Project   string `json:"projectPath,omitempty"`
 	TokenSums
+	CostSums
 	ModelsUsed   []string `json:"modelsUsed"`
 	LastActivity string   `json:"lastActivity"` // YYYY-MM-DD in query tz
 }
@@ -137,7 +161,11 @@ func (s *Store) Daily(ctx context.Context, tz *time.Location, harness string) ([
 	rows, err := s.db.QueryContext(ctx, `SELECT tatitok_day(ts, ?1) AS day,
 			COALESCE(harness, '') AS h, model,
 			SUM(tokens_input), SUM(tokens_output),
-			SUM(tokens_cache_write), SUM(tokens_cache_read)
+			SUM(tokens_cache_write), SUM(tokens_cache_read),
+			SUM(COALESCE(tokens_reasoning, 0)),
+			SUM(COALESCE(cost_usd_micro, 0)),
+			SUM(COALESCE(cost_api_equiv_micro, 0)),
+			SUM(cost_usd_micro IS NULL)
 		FROM usage_events
 		WHERE ?2 = '' OR harness = ?2
 		GROUP BY day, h, model
@@ -175,9 +203,12 @@ func assembleDaily(rows *sql.Rows) ([]DailyRow, error) {
 	for rows.Next() {
 		var day, h string
 		var sums TokenSums
+		var costs CostSums
 		var model string
 		if err := rows.Scan(&day, &h, &model,
-			&sums.Input, &sums.Output, &sums.CacheWrite, &sums.CacheRead); err != nil {
+			&sums.Input, &sums.Output, &sums.CacheWrite, &sums.CacheRead,
+			&costs.Reasoning, &costs.CostUSDMicro,
+			&costs.CostAPIEquivMicro, &costs.UnpricedEvents); err != nil {
 			return nil, err
 		}
 		if len(out) == 0 || out[len(out)-1].Date != day {
@@ -186,12 +217,14 @@ func assembleDaily(rows *sql.Rows) ([]DailyRow, error) {
 		}
 		d := &out[len(out)-1]
 		d.add(sums)
+		d.addCost(costs)
 		// rows arrive ordered by harness within the day: extend or append
 		if n := len(d.HarnessBreakdowns); n > 0 && d.HarnessBreakdowns[n-1].Harness == h {
 			d.HarnessBreakdowns[n-1].add(sums)
+			d.HarnessBreakdowns[n-1].addCost(costs)
 		} else {
 			d.HarnessBreakdowns = append(d.HarnessBreakdowns,
-				HarnessSums{Harness: h, TokenSums: sums})
+				HarnessSums{Harness: h, TokenSums: sums, CostSums: costs})
 		}
 		// models merge across harnesses (a model may appear in several)
 		m := models[model]
@@ -200,6 +233,7 @@ func assembleDaily(rows *sql.Rows) ([]DailyRow, error) {
 			models[model] = m
 		}
 		m.add(sums)
+		m.addCost(costs)
 	}
 	flushModels()
 	return out, rows.Err()
@@ -224,7 +258,11 @@ func (s *Store) Sessions(ctx context.Context, tz *time.Location, harness string)
 			COALESCE(session_id, '') AS sid,
 			model, MAX(tatitok_day(ts, ?1)),
 			SUM(tokens_input), SUM(tokens_output),
-			SUM(tokens_cache_write), SUM(tokens_cache_read)
+			SUM(tokens_cache_write), SUM(tokens_cache_read),
+			SUM(COALESCE(tokens_reasoning, 0)),
+			SUM(COALESCE(cost_usd_micro, 0)),
+			SUM(COALESCE(cost_api_equiv_micro, 0)),
+			SUM(cost_usd_micro IS NULL)
 		FROM usage_events
 		WHERE ?2 = '' OR harness = ?2
 		GROUP BY machine, h, sid, model
@@ -238,8 +276,11 @@ func (s *Store) Sessions(ctx context.Context, tz *time.Location, harness string)
 	for rows.Next() {
 		var m, h, sid, model, last string
 		var sums TokenSums
+		var costs CostSums
 		if err := rows.Scan(&m, &h, &sid, &model, &last,
-			&sums.Input, &sums.Output, &sums.CacheWrite, &sums.CacheRead); err != nil {
+			&sums.Input, &sums.Output, &sums.CacheWrite, &sums.CacheRead,
+			&costs.Reasoning, &costs.CostUSDMicro,
+			&costs.CostAPIEquivMicro, &costs.UnpricedEvents); err != nil {
 			return nil, err
 		}
 		if n := len(out); n == 0 || out[n-1].Machine != m ||
@@ -249,6 +290,7 @@ func (s *Store) Sessions(ctx context.Context, tz *time.Location, harness string)
 		}
 		sr := &out[len(out)-1]
 		sr.add(sums)
+		sr.addCost(costs)
 		sr.ModelsUsed = append(sr.ModelsUsed, model)
 		if last > sr.LastActivity {
 			sr.LastActivity = last
@@ -270,6 +312,64 @@ func (s *Store) Sessions(ctx context.Context, tz *time.Location, harness string)
 		return out[i].Machine < out[j].Machine
 	})
 	return out, nil
+}
+
+// DailyByRow is one (day, dimension value) group of `stats --daily
+// --by harness|provider|model|project` (M3 Task 4).
+type DailyByRow struct {
+	Date string `json:"date"`
+	Key  string `json:"key"`
+	TokenSums
+	CostSums
+}
+
+// dailyByDims maps the --by dimension name to its NULL-safe column
+// expression. model is the RAW model string (consistent with every
+// other stats surface); family-level slicing is deferred — the rollup
+// table carries model_family for it.
+var dailyByDims = map[string]string{
+	"harness":  "COALESCE(harness, '')",
+	"provider": "provider",
+	"model":    "model",
+	"project":  "COALESCE(project, '')",
+}
+
+// DailyBy returns per-day sums broken down by one dimension, oldest day
+// first, keys ordered within the day. Totals across a day's keys equal
+// the Daily row for that day (tested).
+func (s *Store) DailyBy(ctx context.Context, tz *time.Location, dim, harness string) ([]DailyByRow, error) {
+	expr, ok := dailyByDims[dim]
+	if !ok {
+		return nil, fmt.Errorf("unknown --by dimension %q (supported: harness, provider, model, project)", dim)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT tatitok_day(ts, ?1) AS day,
+			`+expr+` AS key,
+			SUM(tokens_input), SUM(tokens_output),
+			SUM(tokens_cache_write), SUM(tokens_cache_read),
+			SUM(COALESCE(tokens_reasoning, 0)),
+			SUM(COALESCE(cost_usd_micro, 0)),
+			SUM(COALESCE(cost_api_equiv_micro, 0)),
+			SUM(cost_usd_micro IS NULL)
+		FROM usage_events
+		WHERE ?2 = '' OR harness = ?2
+		GROUP BY day, key
+		ORDER BY day, key`, tz.String(), harness)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []DailyByRow
+	for rows.Next() {
+		var r DailyByRow
+		if err := rows.Scan(&r.Date, &r.Key,
+			&r.Input, &r.Output, &r.CacheWrite, &r.CacheRead,
+			&r.Reasoning, &r.CostUSDMicro,
+			&r.CostAPIEquivMicro, &r.UnpricedEvents); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 type sessionKey struct{ machine, harness, sid string }

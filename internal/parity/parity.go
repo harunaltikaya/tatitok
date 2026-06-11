@@ -24,6 +24,12 @@ type CCUsageDaily struct {
 type CCUsageDay struct {
 	Date string `json:"date"`
 	store.TokenSums
+	// ReasoningOutputTokens joins the comparison when ccusage reports it
+	// (codex daily output; M3 Task 4 decision: YES — it is
+	// provider-reported and matched exactly on the fixture set, so it is
+	// zero-tolerance like the other token columns). nil when the harness's
+	// ccusage output has no such column (claude, opencode).
+	ReasoningOutputTokens *int64 `json:"reasoningOutputTokens"`
 }
 
 // Meta is the capture record written by the harvest script next to the
@@ -68,13 +74,20 @@ func ParseDailyJSON(b []byte) (CCUsageDaily, error) {
 	return d, err
 }
 
-// CompareDaily checks the four token sums per day for exact equality.
-// The returned string is a per-day diff table, empty when parity holds.
+// CompareDaily checks the four token sums per day for exact equality —
+// plus reasoning tokens on days where ccusage reports the column (codex;
+// same zero tolerance). The returned string is a per-day diff table,
+// empty when parity holds.
 func CompareDaily(got []store.DailyRow, want CCUsageDaily) string {
-	type row struct{ got, want *store.TokenSums }
+	type row struct {
+		got           *store.TokenSums
+		gotReasoning  int64
+		want          *store.TokenSums
+		wantReasoning *int64
+	}
 	days := map[string]*row{}
 	for i := range got {
-		days[got[i].Date] = &row{got: &got[i].TokenSums}
+		days[got[i].Date] = &row{got: &got[i].TokenSums, gotReasoning: got[i].Reasoning}
 	}
 	for i := range want.Daily {
 		d := days[want.Daily[i].Date]
@@ -83,6 +96,7 @@ func CompareDaily(got []store.DailyRow, want CCUsageDaily) string {
 			days[want.Daily[i].Date] = d
 		}
 		d.want = &want.Daily[i].TokenSums
+		d.wantReasoning = want.Daily[i].ReasoningOutputTokens
 	}
 
 	var dates []string
@@ -102,13 +116,17 @@ func CompareDaily(got []store.DailyRow, want CCUsageDaily) string {
 		case r.got == nil:
 			mismatches++
 			fmt.Fprintf(&b, "%s: day present in ccusage but absent from tatitok (want %+v)\n", date, *r.want)
-		case *r.got != *r.want:
+		case *r.got != *r.want ||
+			(r.wantReasoning != nil && r.gotReasoning != *r.wantReasoning):
 			mismatches++
 			fmt.Fprintf(&b, "%s: MISMATCH\n", date)
 			diffField(&b, "input", r.got.Input, r.want.Input)
 			diffField(&b, "output", r.got.Output, r.want.Output)
 			diffField(&b, "cache-write", r.got.CacheWrite, r.want.CacheWrite)
 			diffField(&b, "cache-read", r.got.CacheRead, r.want.CacheRead)
+			if r.wantReasoning != nil {
+				diffField(&b, "reasoning", r.gotReasoning, *r.wantReasoning)
+			}
 		}
 	}
 	if mismatches == 0 {

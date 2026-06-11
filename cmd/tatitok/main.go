@@ -32,7 +32,8 @@ const usageText = `tatitok — local-first AI token usage tracker
 
 Usage:
   tatitok ingest --backfill [--db PATH] [--source claude-code|codex|opencode]
-  tatitok stats  --daily|--session [--json] [--db PATH] [--timezone TZ] [--harness NAME]
+  tatitok stats  --daily [--by harness|provider|model|project] | --session
+                 [--json] [--db PATH] [--timezone TZ] [--harness NAME]
   tatitok doctor --scan-content [--db PATH] [LITERAL...]
   tatitok doctor --provenance [--db PATH] [--json]
   tatitok doctor --pricing [--db PATH]
@@ -261,6 +262,7 @@ func cmdStats(args []string) error {
 	fs := flag.NewFlagSet("stats", flag.ExitOnError)
 	daily := fs.Bool("daily", false, "per-day token sums")
 	session := fs.Bool("session", false, "per-session token sums")
+	by := fs.String("by", "", "break the daily report down by one dimension (harness, provider, model, project)")
 	asJSON := fs.Bool("json", false, "JSON output")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	tzName := fs.String("timezone", "local", "IANA timezone for day bucketing")
@@ -268,6 +270,9 @@ func cmdStats(args []string) error {
 	_ = fs.Parse(args)
 	if *daily == *session {
 		return fmt.Errorf("pass exactly one of --daily or --session")
+	}
+	if *by != "" && !*daily {
+		return fmt.Errorf("--by applies to --daily only")
 	}
 
 	tz := time.Local
@@ -284,8 +289,28 @@ func cmdStats(args []string) error {
 	defer func() { _ = st.Close() }()
 
 	ctx := context.Background()
-	if *daily {
-		rows, err := st.Daily(ctx, tz, *harness)
+	switch {
+	case *daily && *by != "":
+		rows, err := st.DailyBy(ctx, tz, *by, *harness)
+		if err != nil {
+			return err
+		}
+		if *asJSON {
+			return printJSON(map[string]any{"by": *by, "daily_by": rows})
+		}
+		printDailyByTable(*by, rows)
+		return nil
+	case *daily:
+		// UTC daily is served from the pre-aggregated rollup table —
+		// byte-equal to direct aggregation by construction (property
+		// tested); other timezones aggregate events exactly (rollup days
+		// are UTC buckets; M3 decision).
+		var rows []store.DailyRow
+		if tz.String() == "UTC" {
+			rows, err = st.DailyFromRollups(ctx, *harness)
+		} else {
+			rows, err = st.Daily(ctx, tz, *harness)
+		}
 		if err != nil {
 			return err
 		}

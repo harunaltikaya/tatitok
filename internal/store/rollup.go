@@ -17,7 +17,9 @@ func (s *Store) DailyFromRollups(ctx context.Context, harness string) ([]DailyRo
 	rows, err := s.db.QueryContext(ctx, `SELECT day_utc AS day,
 			harness AS h, model,
 			SUM(tokens_input), SUM(tokens_output),
-			SUM(tokens_cache_write), SUM(tokens_cache_read)
+			SUM(tokens_cache_write), SUM(tokens_cache_read),
+			SUM(tokens_reasoning), SUM(cost_usd_micro),
+			SUM(cost_api_equiv_micro), SUM(events_unpriced)
 		FROM rollup_daily
 		WHERE events > 0 AND (?1 = '' OR harness = ?1)
 		GROUP BY day, h, model

@@ -32,22 +32,57 @@ func printDailyTable(rows []store.DailyRow) {
 		fmt.Println("no events ingested yet — run: tatitok ingest --backfill")
 		return
 	}
-	fmt.Printf("%-12s %15s %15s %15s %15s  %s\n",
-		"DATE", "INPUT", "OUTPUT", "CACHE WRITE", "CACHE READ", "MODELS")
+	fmt.Printf("%-12s %15s %15s %15s %15s %12s %13s  %s\n",
+		"DATE", "INPUT", "OUTPUT", "CACHE WRITE", "CACHE READ", "REASONING", "COST", "MODELS")
 	var total store.TokenSums
+	var totalCost, totalReasoning, totalUnpriced int64
 	for _, r := range rows {
-		fmt.Printf("%-12s %15s %15s %15s %15s  %s\n",
+		fmt.Printf("%-12s %15s %15s %15s %15s %12s %13s  %s\n",
 			r.Date, formatTokens(r.Input), formatTokens(r.Output),
 			formatTokens(r.CacheWrite), formatTokens(r.CacheRead),
+			formatTokens(r.Reasoning), formatCostCell(r.CostUSDMicro, r.UnpricedEvents),
 			strings.Join(r.ModelsUsed, ", "))
 		total.Input += r.Input
 		total.Output += r.Output
 		total.CacheWrite += r.CacheWrite
 		total.CacheRead += r.CacheRead
+		totalReasoning += r.Reasoning
+		totalCost += r.CostUSDMicro
+		totalUnpriced += r.UnpricedEvents
 	}
-	fmt.Printf("%-12s %15s %15s %15s %15s\n",
+	fmt.Printf("%-12s %15s %15s %15s %15s %12s %13s\n",
 		"TOTAL", formatTokens(total.Input), formatTokens(total.Output),
-		formatTokens(total.CacheWrite), formatTokens(total.CacheRead))
+		formatTokens(total.CacheWrite), formatTokens(total.CacheRead),
+		formatTokens(totalReasoning), formatCostCell(totalCost, totalUnpriced))
+	if totalUnpriced > 0 {
+		fmt.Printf("(* %s events unpriced — cost is a floor; see doctor --pricing / recompute --pricing)\n",
+			formatTokens(totalUnpriced))
+	}
+}
+
+// formatCostCell renders micro-USD to dollars at the CLI edge; a '*'
+// marks sums with unpriced events underneath (the cost is a floor).
+func formatCostCell(micro, unpriced int64) string {
+	cell := fmt.Sprintf("$%d.%02d", micro/1_000_000, (micro%1_000_000)/10_000)
+	if unpriced > 0 {
+		cell += "*"
+	}
+	return cell
+}
+
+func printDailyByTable(dim string, rows []store.DailyByRow) {
+	if len(rows) == 0 {
+		fmt.Println("no events ingested yet — run: tatitok ingest --backfill")
+		return
+	}
+	fmt.Printf("%-12s %-34s %15s %15s %15s %15s %12s %13s\n",
+		"DATE", strings.ToUpper(dim), "INPUT", "OUTPUT", "CACHE WRITE", "CACHE READ", "REASONING", "COST")
+	for _, r := range rows {
+		fmt.Printf("%-12s %-34s %15s %15s %15s %15s %12s %13s\n",
+			r.Date, r.Key, formatTokens(r.Input), formatTokens(r.Output),
+			formatTokens(r.CacheWrite), formatTokens(r.CacheRead),
+			formatTokens(r.Reasoning), formatCostCell(r.CostUSDMicro, r.UnpricedEvents))
+	}
 }
 
 func printSessionTable(rows []store.SessionRow) {
@@ -55,13 +90,14 @@ func printSessionTable(rows []store.SessionRow) {
 		fmt.Println("no events ingested yet — run: tatitok ingest --backfill")
 		return
 	}
-	fmt.Printf("%-12s %-12s %-38s %-12s %12s %12s %14s %14s  %s\n",
-		"MACHINE", "HARNESS", "SESSION", "LAST", "INPUT", "OUTPUT", "CACHE WRITE", "CACHE READ", "PROJECT")
+	fmt.Printf("%-12s %-12s %-38s %-12s %12s %12s %14s %14s %11s %12s  %s\n",
+		"MACHINE", "HARNESS", "SESSION", "LAST", "INPUT", "OUTPUT", "CACHE WRITE", "CACHE READ", "REASONING", "COST", "PROJECT")
 	for _, r := range rows {
-		fmt.Printf("%-12s %-12s %-38s %-12s %12s %12s %14s %14s  %s\n",
+		fmt.Printf("%-12s %-12s %-38s %-12s %12s %12s %14s %14s %11s %12s  %s\n",
 			r.Machine, r.Harness, r.SessionID, r.LastActivity, formatTokens(r.Input),
 			formatTokens(r.Output), formatTokens(r.CacheWrite),
-			formatTokens(r.CacheRead), r.Project)
+			formatTokens(r.CacheRead), formatTokens(r.Reasoning),
+			formatCostCell(r.CostUSDMicro, r.UnpricedEvents), r.Project)
 	}
 }
 
