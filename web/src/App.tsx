@@ -156,15 +156,21 @@ export default function App() {
           ))}
           <input
             type="date"
+            id="range-from"
+            name="range-from"
+            aria-label="range start (UTC day)"
             value={from}
-            onChange={(e) => setFrom(e.target.value)}
+            onChange={(e) => e.target.value && setFrom(e.target.value)}
             className="rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1 text-zinc-300"
           />
           <span className="text-zinc-600">→</span>
           <input
             type="date"
+            id="range-to"
+            name="range-to"
+            aria-label="range end (UTC day)"
             value={to}
-            onChange={(e) => setTo(e.target.value)}
+            onChange={(e) => e.target.value && setTo(e.target.value)}
             className="rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1 text-zinc-300"
           />
           <span className="cursor-help text-xs text-zinc-500" title="Rollup-backed days are UTC buckets — same numbers as `tatitok stats --daily --timezone UTC`. Exact local-timezone serving stays in the CLI this milestone.">
