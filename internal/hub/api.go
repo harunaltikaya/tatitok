@@ -62,15 +62,27 @@ func checkParams(r *http.Request, allowed ...string) error {
 	return nil
 }
 
-// registerAPI mounts /api/v1 on the hub's mux.
+// registerAPI mounts /api/v1 on the hub's mux. Every endpoint is
+// GET-only; a known path with any other method gets the JSON envelope
+// with an Allow header (M4 Codex round, finding 5 — the mux's built-in
+// 405 is text/plain, off-contract), and everything else under /api/ is
+// a JSON 404 (never the dashboard's HTML).
 func (h *Hub) registerAPI(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/v1/health", h.apiHealth)
-	mux.HandleFunc("GET /api/v1/stats/daily", h.apiStatsDaily)
-	mux.HandleFunc("GET /api/v1/totals", h.apiTotals)
-	mux.HandleFunc("GET /api/v1/meta/models", h.apiMetaModels)
-	mux.HandleFunc("GET /api/v1/stream", h.apiStream)
-	// Everything else under /api/ is a JSON 404 (not the dashboard's
-	// HTML), and wrong methods on known paths get a JSON 405.
+	get := func(path string, fn http.HandlerFunc) {
+		mux.HandleFunc("GET "+path, fn)
+		// Method-less pattern: more specific than "/api/", less than
+		// "GET path" — exactly the wrong-method case.
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Allow", "GET")
+			writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed",
+				r.Method+" is not supported on "+path+" (only GET)")
+		})
+	}
+	get("/api/v1/health", h.apiHealth)
+	get("/api/v1/stats/daily", h.apiStatsDaily)
+	get("/api/v1/totals", h.apiTotals)
+	get("/api/v1/meta/models", h.apiMetaModels)
+	get("/api/v1/stream", h.apiStream)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found",
 			"unknown API path "+r.URL.Path+" (this hub serves /api/v1)")

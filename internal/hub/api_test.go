@@ -271,6 +271,44 @@ func TestAPIMetaModels(t *testing.T) {
 	}
 }
 
+// TestAPIMethodNotAllowed (Codex M4 finding 5): a known path with the
+// wrong method answers with the JSON envelope and an Allow header — the
+// api.go contract, not the mux's text/plain default.
+func TestAPIMethodNotAllowed(t *testing.T) {
+	h := seedHub(t)
+	paths := []string{
+		"/api/v1/health", "/api/v1/stats/daily", "/api/v1/totals",
+		"/api/v1/meta/models", "/api/v1/stream",
+	}
+	for _, p := range paths {
+		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+			req, err := http.NewRequest(method, "http://"+h.Addr()+p, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Errorf("%s %s = %d, want 405", method, p, resp.StatusCode)
+			}
+			if allow := resp.Header.Get("Allow"); allow != "GET" {
+				t.Errorf("%s %s: Allow = %q, want GET", method, p, allow)
+			}
+			if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+				t.Errorf("%s %s: Content-Type %q, want the JSON envelope", method, p, ct)
+			}
+			var e apiError
+			if err := json.Unmarshal(b, &e); err != nil || e.Error.Code != "method_not_allowed" {
+				t.Errorf("%s %s: not the error envelope: %s", method, p, b)
+			}
+		}
+	}
+}
+
 func TestAPIErrors(t *testing.T) {
 	h := seedHub(t)
 	cases := []struct {
