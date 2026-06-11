@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
@@ -115,50 +116,101 @@ func (s *Store) PricingReconciliation(ctx context.Context, usdToMicro func(text 
 type PricingResult struct {
 	Repriced    int64            // rows whose cost columns were (re)stamped
 	CostChanged int64            // of those, rows whose cost_usd_micro value actually changed
+	Conflicts   int64            // concurrent replacements detected (skipped, then swept)
 	ByBasis     map[string]int64 // post-run basis distribution of repriced rows
 }
 
+// pricingUpdate is one row's repricing: the new derived values, plus the
+// pricing-relevant payload AS READ — the write re-verifies that payload
+// is still in place (the --provenance verify-before-stamp pattern), so a
+// concurrent ingest replacement can never be clobbered with a cost
+// derived from the payload it replaced.
+type pricingUpdate struct {
+	id                       string
+	harness, meta, reasoning any // NULL-able payload as read (nil = NULL)
+	provider, model, family  string
+	in, out, cw, cr          int64
+	cost, equiv, rates       any
+	basis, snapshot          string
+	costEq                   bool
+}
+
+// pricingWriteBatch bounds each write transaction: batches keep the
+// database available to concurrent writers during a long recompute.
+const pricingWriteBatch = 500
+
+// maxPricingSweeps bounds the conflict sweep; a database replaced faster
+// than it can be swept is an error, never a silent partial recompute.
+const maxPricingSweeps = 5
+
 // RecomputePricing re-derives cost columns for ALL events. Token columns
 // and every other payload field are untouched by construction.
+//
+// Concurrency: the read pass holds no lock, so a row can be replaced by
+// a concurrent ingest between read and write. Each write happens in a
+// per-batch immediate transaction and re-verifies the pricing-relevant
+// payload before stamping; a changed row is skipped, logged and swept —
+// re-read and re-priced from its current payload — so an exit code 0
+// always means every cost column is consistent with the payload beside it.
 func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (PricingResult, error) {
 	res := PricingResult{ByBasis: map[string]int64{}}
-
-	type update struct {
-		id       string
-		cost     any
-		basis    string
-		snapshot string
-		rates    any
-		equiv    any
-		costEq   bool
+	var only map[string]bool // nil = all events; else the sweep work set
+	for sweep := 0; ; sweep++ {
+		updates, err := s.collectPricingUpdates(ctx, ov, only)
+		if err != nil {
+			return res, err
+		}
+		conflicts, err := s.applyPricingUpdates(ctx, updates, &res)
+		if err != nil {
+			return res, err
+		}
+		if len(conflicts) == 0 {
+			return res, nil
+		}
+		res.Conflicts += int64(len(conflicts))
+		if sweep+1 >= maxPricingSweeps {
+			return res, fmt.Errorf(
+				"recompute --pricing: %d rows still being replaced concurrently after %d sweeps — re-run when ingest is quiet",
+				len(conflicts), maxPricingSweeps)
+		}
+		slog.Warn("recompute --pricing: rows replaced concurrently — sweeping them from their current payload",
+			"rows", len(conflicts), "sweep", sweep+1)
+		only = conflicts
 	}
-	var updates []update
+}
 
-	// Read pass first (collected, then applied — no UPDATE under an open
-	// cursor on the same connection).
-	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(harness,''),
+// collectPricingUpdates is the read pass: price every event (restricted
+// to `only` when sweeping) from its CURRENT payload and keep that payload
+// for the write-time re-verification. Rows already priced identically
+// produce no update.
+func (s *Store) collectPricingUpdates(ctx context.Context, ov *pricing.Overrides, only map[string]bool) ([]pricingUpdate, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, harness,
 			provider, model, model_family,
 			tokens_input, tokens_output, tokens_cache_write, tokens_cache_read,
-			tokens_reasoning, COALESCE(meta,''),
+			tokens_reasoning, meta,
 			cost_usd_micro, COALESCE(cost_basis,''), COALESCE(price_snapshot,''),
 			COALESCE(price_rates,''), cost_api_equiv_micro
 		FROM usage_events`)
 	if err != nil {
-		return res, err
+		return nil, err
 	}
+	defer func() { _ = rows.Close() }()
+	var updates []pricingUpdate
 	for rows.Next() {
-		var id, harness, provider, model, family, meta, oldBasis, oldSnap, oldRates string
+		var id, provider, model, family, oldBasis, oldSnap, oldRates string
+		var harness, meta sql.NullString
 		var in, out, cw, cr int64
-		var reasoning sql.NullInt64
-		var oldCost, oldEquiv sql.NullInt64
+		var reasoning, oldCost, oldEquiv sql.NullInt64
 		if err := rows.Scan(&id, &harness, &provider, &model, &family,
 			&in, &out, &cw, &cr, &reasoning, &meta, &oldCost, &oldBasis, &oldSnap,
 			&oldRates, &oldEquiv); err != nil {
-			_ = rows.Close()
-			return res, err
+			return nil, err
+		}
+		if only != nil && !only[id] {
+			continue
 		}
 		e := core.Event{
-			ID: id, Harness: harness, Provider: provider, Model: model,
+			ID: id, Harness: harness.String, Provider: provider, Model: model,
 			ModelFamily: family, TokensInput: in, TokensOutput: out,
 			TokensCacheWrite: cw, TokensCacheRead: cr,
 		}
@@ -166,14 +218,13 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 			v := reasoning.Int64
 			e.TokensReasoning = &v
 		}
-		if meta != "" {
+		if meta.Valid {
 			// meta feeds pricing detail (cache-write TTL split); a decode
 			// failure only loses that refinement, never the row.
-			_ = json.Unmarshal([]byte(meta), &e.Meta)
+			_ = json.Unmarshal([]byte(meta.String), &e.Meta)
 		}
 		if err := pricing.Apply(&e, ov); err != nil {
-			_ = rows.Close()
-			return res, fmt.Errorf("price %s: %w", id, err)
+			return nil, fmt.Errorf("price %s: %w", id, err)
 		}
 		newRates := string(e.PriceRates)
 		costEq := (e.CostUSDMicro == nil) == !oldCost.Valid &&
@@ -184,7 +235,13 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 			e.PriceSnapshot == oldSnap && newRates == oldRates {
 			continue // already priced identically — nothing to write
 		}
-		u := update{id: id, basis: e.CostBasis, snapshot: e.PriceSnapshot, costEq: costEq}
+		u := pricingUpdate{
+			id: id, provider: provider, model: model, family: family,
+			in: in, out: out, cw: cw, cr: cr,
+			harness: nullable(harness), meta: nullable(meta),
+			reasoning: nullableInt(reasoning),
+			basis:     e.CostBasis, snapshot: e.PriceSnapshot, costEq: costEq,
+		}
 		if e.CostUSDMicro != nil {
 			u.cost = *e.CostUSDMicro
 		}
@@ -196,37 +253,84 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 		}
 		updates = append(updates, u)
 	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return res, err
-	}
-	_ = rows.Close()
+	return updates, rows.Err()
+}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return res, err
-	}
-	stmt, err := tx.PrepareContext(ctx, `UPDATE usage_events SET
-		cost_usd_micro=?2, cost_basis=?3, price_snapshot=?4, price_rates=?5,
-		cost_api_equiv_micro=?6
-		WHERE id=?1`)
-	if err != nil {
-		_ = tx.Rollback()
-		return res, err
-	}
-	for _, u := range updates {
-		if _, err := stmt.ExecContext(ctx, u.id, u.cost,
-			nullStr(u.basis), nullStr(u.snapshot), u.rates, u.equiv); err != nil {
-			_ = stmt.Close()
+// applyPricingUpdates is the write pass: per-batch immediate transactions,
+// each UPDATE re-verifying (NULL-safe IS) that the pricing-relevant
+// payload it was derived from is still in place. A zero-row UPDATE means
+// a concurrent replacement landed since the read — that id is returned
+// for the sweep, never written.
+func (s *Store) applyPricingUpdates(ctx context.Context, updates []pricingUpdate, res *PricingResult) (map[string]bool, error) {
+	conflicts := map[string]bool{}
+	for start := 0; start < len(updates); start += pricingWriteBatch {
+		end := start + pricingWriteBatch
+		if end > len(updates) {
+			end = len(updates)
+		}
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, err
+		}
+		stmt, err := tx.PrepareContext(ctx, `UPDATE usage_events SET
+			cost_usd_micro=?2, cost_basis=?3, price_snapshot=?4, price_rates=?5,
+			cost_api_equiv_micro=?6
+			WHERE id=?1
+			  AND harness IS ?7 AND provider IS ?8 AND model IS ?9
+			  AND model_family IS ?10
+			  AND tokens_input IS ?11 AND tokens_output IS ?12
+			  AND tokens_cache_write IS ?13 AND tokens_cache_read IS ?14
+			  AND tokens_reasoning IS ?15 AND meta IS ?16`)
+		if err != nil {
 			_ = tx.Rollback()
-			return res, fmt.Errorf("reprice %s: %w", u.id, err)
+			return nil, err
 		}
-		res.Repriced++
-		if !u.costEq {
-			res.CostChanged++
+		for _, u := range updates[start:end] {
+			r, err := stmt.ExecContext(ctx, u.id, u.cost,
+				nullStr(u.basis), nullStr(u.snapshot), u.rates, u.equiv,
+				u.harness, u.provider, u.model, u.family,
+				u.in, u.out, u.cw, u.cr, u.reasoning, u.meta)
+			if err != nil {
+				_ = stmt.Close()
+				_ = tx.Rollback()
+				return nil, fmt.Errorf("reprice %s: %w", u.id, err)
+			}
+			n, err := r.RowsAffected()
+			if err != nil {
+				_ = stmt.Close()
+				_ = tx.Rollback()
+				return nil, err
+			}
+			if n == 0 {
+				conflicts[u.id] = true
+				slog.Warn("recompute --pricing: row replaced since read — skipped, will sweep",
+					"id", u.id)
+				continue
+			}
+			res.Repriced++
+			if !u.costEq {
+				res.CostChanged++
+			}
+			res.ByBasis[u.basis]++
 		}
-		res.ByBasis[u.basis]++
+		_ = stmt.Close()
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
 	}
-	_ = stmt.Close()
-	return res, tx.Commit()
+	return conflicts, nil
+}
+
+func nullable(v sql.NullString) any {
+	if !v.Valid {
+		return nil
+	}
+	return v.String
+}
+
+func nullableInt(v sql.NullInt64) any {
+	if !v.Valid {
+		return nil
+	}
+	return v.Int64
 }

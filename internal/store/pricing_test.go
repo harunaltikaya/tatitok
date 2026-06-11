@@ -129,3 +129,83 @@ func TestRecomputePricing(t *testing.T) {
 		t.Fatalf("second run repriced %d, want 0", res.Repriced)
 	}
 }
+
+// The recompute/replacement race (M3.1 finding 1): a row replaced by a
+// concurrent ingest between the recompute's read and write passes must
+// never be stamped with a cost derived from the payload it replaced.
+// The write re-verifies the payload (zero rows affected = conflict,
+// skipped and swept) — exercised here deterministically through the
+// collect/apply seam, exactly the interleaving a live ingest produces.
+func TestRecomputePricingConflictIsSkippedAndSwept(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	e := eventH("claude-code", "m1", "r1", "claude-fable-5", "s1", ts,
+		TokenSums{Input: 1000, Output: 100})
+	if _, err := s.InsertBatch(ctx, []core.Event{e}, testSource(1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE usage_events SET
+		cost_usd_micro=NULL, cost_basis=NULL, price_snapshot=NULL, price_rates=NULL`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read pass prices the OLD payload (1000 in / 100 out).
+	updates, err := s.collectPricingUpdates(ctx, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 {
+		t.Fatalf("collected %d updates, want 1", len(updates))
+	}
+
+	// Concurrent ingest replaces the row: payload changed, cost columns
+	// re-derived from the NEW payload (what the real ingest layer does).
+	replaced := e
+	replaced.TokensOutput = 500
+	if err := pricing.Apply(&replaced, nil); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := s.InsertBatch(ctx, []core.Event{replaced}, testSource(1))
+	if err != nil || stats.Replaced != 1 {
+		t.Fatalf("replacement: %+v, %v", stats, err)
+	}
+
+	// Write pass must detect the conflict and write NOTHING to that row.
+	var res PricingResult
+	res.ByBasis = map[string]int64{}
+	conflicts, err := s.applyPricingUpdates(ctx, updates, &res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conflicts[e.ID] || res.Repriced != 0 {
+		t.Fatalf("conflict not detected: conflicts=%v repriced=%d", conflicts, res.Repriced)
+	}
+	var got int64
+	if err := s.db.QueryRowContext(ctx, `SELECT cost_usd_micro
+		FROM usage_events WHERE id = ?`, e.ID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != *replaced.CostUSDMicro {
+		t.Fatalf("stale recompute clobbered the replacement: cost=%d, want %d",
+			got, *replaced.CostUSDMicro)
+	}
+
+	// The full recompute sweeps from the CURRENT payload and exits 0 with
+	// every cost column consistent with the payload beside it.
+	full, err := s.RecomputePricing(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.Repriced != 0 {
+		// The replacement already priced the row identically; nothing to do.
+		t.Fatalf("post-conflict recompute rewrote %d rows, want 0", full.Repriced)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT cost_usd_micro
+		FROM usage_events WHERE id = ?`, e.ID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != *replaced.CostUSDMicro {
+		t.Fatalf("final state inconsistent: cost=%d, want %d", got, *replaced.CostUSDMicro)
+	}
+}

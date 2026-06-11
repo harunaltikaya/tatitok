@@ -312,9 +312,13 @@ func reportLineageBackfill(tx *sql.Tx) error {
 }
 
 // dsn builds the connection string. _pragma values apply per connection;
-// busy_timeout guards WAL writers.
+// busy_timeout guards WAL writers. _txlock=immediate makes every explicit
+// transaction take the write lock at BEGIN: all of this package's
+// transactions are writers, and a deferred BEGIN that upgrades to a write
+// lock mid-transaction can deadlock or interleave with a concurrent
+// writer (two Opens migrating, recompute racing an ingest replacement).
 func dsn(path string) string {
-	return fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
+	return fmt.Sprintf("file:%s?_txlock=immediate&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
 }
 
 // Open opens (creating if needed) the database at path, enables WAL, and
