@@ -22,9 +22,13 @@ jobs:
         run: make test
         env:
           CGO_ENABLED: "0"
+      - name: Cross-compile all targets
+        run: make build-all
       - name: Vet
         run: go vet ./...
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          # pinned (review finding 14): "latest" let CI drift from the
+          # locally used linter; bump deliberately together with local
+          version: v2.12.2

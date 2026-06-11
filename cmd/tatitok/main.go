@@ -14,6 +14,11 @@ import (
 	"path/filepath"
 	"time"
 
+	// Embed the IANA zone database: day bucketing (--timezone) must work
+	// on hosts without tzdata — Windows has none, minimal containers strip
+	// it. The embedded copy is the fallback; a host database still wins.
+	_ "time/tzdata"
+
 	"github.com/harunaltikaya/tatitok/internal/adapters"
 	"github.com/harunaltikaya/tatitok/internal/adapters/claudecode"
 	"github.com/harunaltikaya/tatitok/internal/adapters/codex"

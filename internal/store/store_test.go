@@ -10,6 +10,10 @@ import (
 	"testing"
 	"time"
 
+	// The timezone matrix below must never skip for missing host tzdata
+	// (the shipped binary embeds the zone database the same way).
+	_ "time/tzdata"
+
 	"github.com/harunaltikaya/tatitok/internal/core"
 )
 
@@ -174,7 +178,7 @@ func TestDailyTimezoneBucketing(t *testing.T) {
 	ctx := context.Background()
 	ist, err := time.LoadLocation("Europe/Istanbul")
 	if err != nil {
-		t.Skipf("tzdata unavailable: %v", err)
+		t.Fatalf("tzdata embedded via time/tzdata, must resolve: %v", err)
 	}
 	batch := []core.Event{
 		event("m1", "r1", "model-a", "s1",
@@ -212,6 +216,69 @@ func TestDailyTimezoneBucketing(t *testing.T) {
 	}
 	if len(utcDays) != 2 || utcDays[0].Input != 5 || utcDays[0].CacheRead != 9 {
 		t.Errorf("utc bucketing wrong: %+v", utcDays)
+	}
+}
+
+// SQL day bucketing (tatitok_day) across the 4-zone matrix with
+// DST-boundary and odd-offset cases (M2.1 item 8). Expected dates are
+// computed BY HAND from the IANA rules, not via the same Go call the
+// function uses: US DST 2026 starts Mar 8 10:00Z (PST→PDT) and ends
+// Nov 1 09:00Z (PDT→PST); Istanbul is fixed +03 (no DST since 2016);
+// Kathmandu is fixed +05:45.
+func TestDailyTimezoneMatrixDST(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	batch := []core.Event{
+		// LA spring-forward bracket: both sides of Mar 8 10:00Z
+		event("m1", "r1", "model-a", "s1",
+			time.Date(2026, 3, 8, 9, 30, 0, 0, time.UTC), TokenSums{Input: 1}),
+		event("m2", "r2", "model-a", "s1",
+			time.Date(2026, 3, 8, 10, 30, 0, 0, time.UTC), TokenSums{Input: 2}),
+		// LA fall-back bracket: 06:30Z is 23:30 PDT Oct 31; 09:30Z is 01:30 PST Nov 1
+		event("m3", "r3", "model-a", "s1",
+			time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC), TokenSums{Input: 4}),
+		event("m4", "r4", "model-a", "s1",
+			time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC), TokenSums{Input: 8}),
+		// Kathmandu's +05:45 crosses midnight at 18:15Z
+		event("m5", "r5", "model-a", "s1",
+			time.Date(2026, 6, 9, 18, 20, 0, 0, time.UTC), TokenSums{Input: 16}),
+		// Istanbul's +03 crosses midnight at 21:00Z
+		event("m6", "r6", "model-a", "s1",
+			time.Date(2026, 6, 9, 21, 30, 0, 0, time.UTC), TokenSums{Input: 32}),
+	}
+	if _, err := s.InsertBatch(ctx, batch, testSource(6)); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]map[string]int64{
+		"UTC": {
+			"2026-03-08": 3, "2026-06-09": 48, "2026-11-01": 12},
+		"Europe/Istanbul": {
+			"2026-03-08": 3, "2026-06-09": 16, "2026-06-10": 32, "2026-11-01": 12},
+		"America/Los_Angeles": {
+			"2026-03-08": 3, "2026-06-09": 48, "2026-10-31": 4, "2026-11-01": 8},
+		"Asia/Kathmandu": {
+			"2026-03-08": 3, "2026-06-10": 48, "2026-11-01": 12},
+	}
+	for zone, days := range want {
+		t.Run(zone, func(t *testing.T) {
+			loc, err := time.LoadLocation(zone)
+			if err != nil {
+				t.Fatalf("tzdata embedded via time/tzdata, must resolve: %v", err)
+			}
+			got, err := s.Daily(ctx, loc, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(days) {
+				t.Fatalf("got %d days, want %d: %+v", len(got), len(days), got)
+			}
+			for _, d := range got {
+				if days[d.Date] != d.Input {
+					t.Errorf("%s: input %d, want %d", d.Date, d.Input, days[d.Date])
+				}
+			}
+		})
 	}
 }
 
