@@ -400,6 +400,72 @@ func TestApplySubMicroSourceCostIsNotFree(t *testing.T) {
 	}
 }
 
+// PRD FR-9.3 / M3.1 finding 6: the config-gated local cloud-equivalent.
+// reference_models maps a local model (or family) to a snapshot model;
+// local-basis events then carry the "would have cost" value with
+// per-event derivation provenance. Default off; an unresolvable
+// reference model fails at load, never silently.
+func TestApplyLocalReferenceEquivalent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prices.json")
+	if err := os.WriteFile(path, []byte(`{
+		"reference_models": {"qwen3.6-27b": "claude-fable-5"}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := LoadOverrides(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ov.References() != 1 {
+		t.Fatalf("References = %d, want 1", ov.References())
+	}
+
+	e := core.Event{ID: "l1", Harness: "opencode", Provider: "vllm",
+		Model: "qwen3.6-27b", ModelFamily: "qwen3.6-27b",
+		TokensInput: 1000, TokensOutput: 100,
+		Meta: map[string]any{"source_cost": json.Number("0")}}
+	if err := Apply(&e, ov); err != nil {
+		t.Fatal(err)
+	}
+	if e.CostBasis != "local" || e.CostUSDMicro == nil || *e.CostUSDMicro != 0 {
+		t.Fatalf("local basis lost: %+v", e)
+	}
+	// 1000×$10 + 100×$50 per Mtok at the fable-5 reference rates.
+	if e.CostAPIEquivMicro == nil || *e.CostAPIEquivMicro != 15_000 {
+		t.Fatalf("reference equivalent = %v, want 15000 micro", e.CostAPIEquivMicro)
+	}
+	var detail struct {
+		EquivSource string `json:"equiv_source"`
+		EquivRates  *Rates `json:"equiv_rates"`
+	}
+	if err := json.Unmarshal(e.PriceRates, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.EquivSource != "reference:claude-fable-5" || detail.EquivRates == nil {
+		t.Fatalf("reference derivation not recorded: %+v", detail)
+	}
+
+	// Unmapped local model: bills 0, carries no equivalent (default off).
+	u := core.Event{ID: "l2", Harness: "opencode", Provider: "vllm-delegate",
+		Model: "gx10", ModelFamily: "gx10", TokensInput: 1000}
+	if err := Apply(&u, ov); err != nil {
+		t.Fatal(err)
+	}
+	if u.CostBasis != "local" || u.CostAPIEquivMicro != nil {
+		t.Fatalf("unmapped local model: %+v", u)
+	}
+
+	// A reference model the snapshot cannot price is a LOAD error.
+	if err := os.WriteFile(path, []byte(`{
+		"reference_models": {"qwen3.6-27b": "no-such-model-anywhere"}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOverrides(path); err == nil {
+		t.Fatal("unresolvable reference model accepted at load")
+	}
+}
+
 // M3.1 finding 5 (owner ruling): free:true overrides stay an
 // owner-declared basis, with provenance distinct from source-reported $0
 // — price_rates carries free_source "override" vs "source".

@@ -19,10 +19,22 @@ package pricing
 //	      "cache_read_usd_per_mtok": "0.028"
 //	    },
 //	    "some-free-routing": { "free": true }
+//	  },
+//	  "reference_models": {
+//	    "qwen3.6-27b": "claude-fable-5"
 //	  }
 //	}
 //
 // Keys match raw model first, then model_family (see Apply/Resolve).
+//
+// "reference_models" is the local cloud-equivalent gate (PRD FR-9.3,
+// default off): it maps a LOCAL model (raw model or family key) to the
+// snapshot model whose prices answer "what would this usage have cost
+// on X". When configured, local-basis events bill 0 as always but carry
+// cost_api_equiv_micro computed at the reference model's rates, with the
+// derivation recorded per event (price_rates equiv_source
+// "reference:<model>"). A reference model absent from the snapshot is a
+// load error — failing loudly beats silently-missing equivalents.
 //
 // "free": true is the OWNER-DECLARED free basis: the model bills $0 by
 // the owner's word, no source evidence needed, and it beats every other
@@ -70,6 +82,7 @@ func (p overridePatch) apply(base Rates) Rates {
 // no overrides.
 type Overrides struct {
 	patches map[string]overridePatch
+	refs    map[string]string // local model/family → reference snapshot model
 	path    string
 }
 
@@ -101,6 +114,28 @@ func (o *Overrides) lookup(keys ...string) (overridePatch, bool) {
 	return overridePatch{}, false
 }
 
+// References reports how many local models have a reference mapping.
+func (o *Overrides) References() int {
+	if o == nil {
+		return 0
+	}
+	return len(o.refs)
+}
+
+// Reference resolves the configured cloud-reference model for a local
+// model — raw model first, then family, mirroring the price lookup.
+func (o *Overrides) Reference(model, family string) (string, bool) {
+	if o == nil {
+		return "", false
+	}
+	for _, k := range []string{model, family} {
+		if ref, ok := o.refs[k]; ok {
+			return ref, true
+		}
+	}
+	return "", false
+}
+
 type overrideEntry struct {
 	Free         bool        `json:"free"`
 	Input        json.Number `json:"input_usd_per_mtok"`
@@ -111,7 +146,8 @@ type overrideEntry struct {
 }
 
 type overrideFile struct {
-	Prices map[string]overrideEntry `json:"prices"`
+	Prices          map[string]overrideEntry `json:"prices"`
+	ReferenceModels map[string]string        `json:"reference_models"`
 }
 
 // OverridesPath resolves the override file location from the
@@ -163,6 +199,22 @@ func LoadOverrides(path string) (*Overrides, error) {
 			*c.dst = &v
 		}
 		ov.patches[model] = p
+	}
+	for local, ref := range f.ReferenceModels {
+		if local == "" || ref == "" {
+			return nil, fmt.Errorf("price overrides %s: empty reference_models entry (%q: %q)", path, local, ref)
+		}
+		_, found, err := ReferenceRates(ref)
+		if err != nil {
+			return nil, fmt.Errorf("price overrides %s: %w", path, err)
+		}
+		if !found {
+			return nil, fmt.Errorf("price overrides %s: reference model %q for %q is not in the price snapshot", path, ref, local)
+		}
+		if ov.refs == nil {
+			ov.refs = make(map[string]string, len(f.ReferenceModels))
+		}
+		ov.refs[local] = ref
 	}
 	return ov, nil
 }

@@ -169,8 +169,9 @@ func loadPriceOverrides(probe adapters.Probe) (*pricing.Overrides, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ov.Len() > 0 {
-		slog.Info("price overrides loaded", "path", path, "models", ov.Len())
+	if ov.Len() > 0 || ov.References() > 0 {
+		slog.Info("price overrides loaded", "path", path,
+			"models", ov.Len(), "reference_models", ov.References())
 	}
 	return ov, nil
 }
