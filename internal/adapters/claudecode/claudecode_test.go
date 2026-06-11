@@ -42,21 +42,33 @@ func fixtureSource(t *testing.T) adapters.Source {
 }
 
 // collectSink is a contract-v2 test sink: it collects everything and
-// fails the test on any sequencing violation (oversized batch, batches
-// interleaving across files, a batch after its file's FileDone, or a
-// second FileDone for the same path).
+// fails the test on any bracketing violation (oversized batch, missing
+// or duplicate FileStart, batches outside their file's bracket, files
+// interleaving, a second FileDone, or an Events count mismatch).
 type collectSink struct {
 	t       *testing.T
 	events  []core.Event // billable events in emission order
 	byFile  map[string][]core.Event
 	results []adapters.FileResult
 	done    map[string]bool
-	open    string // file with batches emitted but no FileDone yet
+	open    string // file declared by FileStart but no FileDone yet
 }
 
 func newCollectSink(t *testing.T) *collectSink {
 	return &collectSink{t: t,
 		byFile: map[string][]core.Event{}, done: map[string]bool{}}
+}
+
+func (c *collectSink) FileStart(path string) error {
+	c.t.Helper()
+	if c.done[path] {
+		c.t.Fatalf("duplicate path %s in one backfill run", path)
+	}
+	if c.open != "" {
+		c.t.Fatalf("FileStart for %s while %s is still open", path, c.open)
+	}
+	c.open = path
+	return nil
 }
 
 func (c *collectSink) EmitBatch(path string, events []core.Event) error {
@@ -65,13 +77,10 @@ func (c *collectSink) EmitBatch(path string, events []core.Event) error {
 		c.t.Fatalf("batch of %d events for %s (BatchSize %d)",
 			len(events), path, adapters.BatchSize)
 	}
-	if c.done[path] {
-		c.t.Fatalf("batch for %s after its FileDone", path)
+	if c.open != path {
+		c.t.Fatalf("batch for %s outside its FileStart/FileDone bracket (open: %q)",
+			path, c.open)
 	}
-	if c.open != "" && c.open != path {
-		c.t.Fatalf("batch for %s while %s is still open", path, c.open)
-	}
-	c.open = path
 	c.events = append(c.events, events...)
 	c.byFile[path] = append(c.byFile[path], events...)
 	return nil
@@ -79,11 +88,9 @@ func (c *collectSink) EmitBatch(path string, events []core.Event) error {
 
 func (c *collectSink) FileDone(res adapters.FileResult) error {
 	c.t.Helper()
-	if c.done[res.Path] {
-		c.t.Fatalf("second FileDone for %s", res.Path)
-	}
-	if c.open != "" && c.open != res.Path {
-		c.t.Fatalf("FileDone for %s while %s is still open", res.Path, c.open)
+	if c.open != res.Path {
+		c.t.Fatalf("FileDone for %s outside its FileStart bracket (open: %q)",
+			res.Path, c.open)
 	}
 	// A skipped source (ReadError) may follow partial batches that the
 	// ingest layer would discard; the Events count contract only holds

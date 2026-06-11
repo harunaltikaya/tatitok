@@ -55,19 +55,31 @@ func fixtureSource(t *testing.T) adapters.Source {
 }
 
 // collectSink mirrors the other adapters' test sink: collects everything
-// and fails the test on contract-v2 sequencing violations.
+// and fails the test on contract-v2 bracketing violations.
 type collectSink struct {
 	t       *testing.T
 	events  []core.Event
 	byFile  map[string][]core.Event
 	results []adapters.FileResult
 	done    map[string]bool
-	open    string
+	open    string // file declared by FileStart but no FileDone yet
 }
 
 func newCollectSink(t *testing.T) *collectSink {
 	return &collectSink{t: t,
 		byFile: map[string][]core.Event{}, done: map[string]bool{}}
+}
+
+func (c *collectSink) FileStart(path string) error {
+	c.t.Helper()
+	if c.done[path] {
+		c.t.Fatalf("duplicate path %s in one backfill run", path)
+	}
+	if c.open != "" {
+		c.t.Fatalf("FileStart for %s while %s is still open", path, c.open)
+	}
+	c.open = path
+	return nil
 }
 
 func (c *collectSink) EmitBatch(path string, events []core.Event) error {
@@ -76,13 +88,10 @@ func (c *collectSink) EmitBatch(path string, events []core.Event) error {
 		c.t.Fatalf("batch of %d events for %s (BatchSize %d)",
 			len(events), path, adapters.BatchSize)
 	}
-	if c.done[path] {
-		c.t.Fatalf("batch for %s after its FileDone", path)
+	if c.open != path {
+		c.t.Fatalf("batch for %s outside its FileStart/FileDone bracket (open: %q)",
+			path, c.open)
 	}
-	if c.open != "" && c.open != path {
-		c.t.Fatalf("batch for %s while %s is still open", path, c.open)
-	}
-	c.open = path
 	c.events = append(c.events, events...)
 	c.byFile[path] = append(c.byFile[path], events...)
 	return nil
@@ -90,11 +99,9 @@ func (c *collectSink) EmitBatch(path string, events []core.Event) error {
 
 func (c *collectSink) FileDone(res adapters.FileResult) error {
 	c.t.Helper()
-	if c.done[res.Path] {
-		c.t.Fatalf("second FileDone for %s", res.Path)
-	}
-	if c.open != "" && c.open != res.Path {
-		c.t.Fatalf("FileDone for %s while %s is still open", res.Path, c.open)
+	if c.open != res.Path {
+		c.t.Fatalf("FileDone for %s outside its FileStart bracket (open: %q)",
+			res.Path, c.open)
 	}
 	if got := len(c.byFile[res.Path]); res.ReadError == "" && got != res.Events {
 		c.t.Fatalf("%s: FileDone.Events=%d but %d events emitted",

@@ -129,6 +129,9 @@ type tokens struct {
 // database-level failure reports the store as a skipped source.
 func (Adapter) Backfill(ctx context.Context, src adapters.Source, sink adapters.Sink) error {
 	dbPath := filepath.Join(src.Root, "opencode.db")
+	if err := sink.FileStart(dbPath); err != nil {
+		return err
+	}
 	res, readErr, sinkErr := backfillDB(ctx, src, dbPath, sink)
 	if sinkErr != nil {
 		return sinkErr

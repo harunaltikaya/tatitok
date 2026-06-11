@@ -33,6 +33,11 @@ type IngestSummary struct {
 // back — a skipped source contributes bookkeeping, never partial data.
 // Any error returned from a Sink method cancels the adapter's backfill
 // per the contract.
+//
+// The sink enforces the bracketing contract (M2.1 hardening): every
+// batch and FileDone must fall inside a declared FileStart/FileDone
+// bracket, a path closes exactly once per run, and FileDone.Events must
+// match the delivered batch total.
 type storeSink struct {
 	ctx     context.Context
 	st      *store.Store
@@ -41,8 +46,21 @@ type storeSink struct {
 	sum     *IngestSummary
 
 	cur        *store.FileTx
-	curPath    string
-	curEmitted int // events inserted for the open file (counted into the summary only on commit)
+	started    string          // path declared by FileStart; "" when no file is open
+	curEmitted int             // events inserted for the open file (counted into the summary only on commit)
+	closed     map[string]bool // paths already finished this run
+}
+
+func (k *storeSink) FileStart(path string) error {
+	if k.started != "" {
+		return fmt.Errorf("adapter contract violation: FileStart for %s while %s is still open (missing FileDone)",
+			path, k.started)
+	}
+	if k.closed[path] {
+		return fmt.Errorf("adapter contract violation: duplicate path %s in one backfill run", path)
+	}
+	k.started = path
+	return nil
 }
 
 func (k *storeSink) EmitBatch(path string, events []core.Event) error {
@@ -50,16 +68,19 @@ func (k *storeSink) EmitBatch(path string, events []core.Event) error {
 		return fmt.Errorf("adapter contract violation: batch of %d events exceeds BatchSize %d (%s)",
 			len(events), BatchSize, path)
 	}
-	if k.cur != nil && k.curPath != path {
-		return fmt.Errorf("adapter contract violation: batch for %s while %s is still open (missing FileDone)",
-			path, k.curPath)
+	if k.started != path {
+		if k.closed[path] {
+			return fmt.Errorf("adapter contract violation: batch for %s after its FileDone", path)
+		}
+		return fmt.Errorf("adapter contract violation: batch for %s without FileStart (open file: %q)",
+			path, k.started)
 	}
 	if k.cur == nil {
 		tx, err := k.st.BeginFile(k.ctx)
 		if err != nil {
 			return err
 		}
-		k.cur, k.curPath = tx, path
+		k.cur = tx
 	}
 	if err := k.cur.InsertEvents(k.ctx, events, k.version); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
@@ -69,9 +90,19 @@ func (k *storeSink) EmitBatch(path string, events []core.Event) error {
 }
 
 func (k *storeSink) FileDone(res FileResult) error {
-	if k.cur != nil && k.curPath != res.Path {
-		return fmt.Errorf("adapter contract violation: FileDone for %s while %s is still open",
-			res.Path, k.curPath)
+	if k.started != res.Path {
+		if k.closed[res.Path] {
+			return fmt.Errorf("adapter contract violation: second FileDone for %s", res.Path)
+		}
+		return fmt.Errorf("adapter contract violation: FileDone for %s without FileStart (open file: %q)",
+			res.Path, k.started)
+	}
+	// A skipped source (ReadError) may follow partial batches the ingest
+	// layer discards; the Events count contract only holds for files read
+	// to completion.
+	if res.ReadError == "" && res.Events != k.curEmitted {
+		return fmt.Errorf("adapter contract violation: %s declares %d events but delivered %d",
+			res.Path, res.Events, k.curEmitted)
 	}
 	info := store.SourceInfo{
 		Path: res.Path, Harness: k.harness, MTime: res.MTime,
@@ -79,6 +110,7 @@ func (k *storeSink) FileDone(res FileResult) error {
 		ParseErrors: res.ParseErrors, ReadError: res.ReadError,
 		IncompleteTail: res.IncompleteTail, AdapterVersion: k.version,
 	}
+	k.closed[res.Path] = true
 	if res.ReadError != "" {
 		// Skipped source: discard any events already inserted for the
 		// file (the summary never counted them) so the next backfill
@@ -88,8 +120,9 @@ func (k *storeSink) FileDone(res FileResult) error {
 			if err := k.cur.Rollback(); err != nil {
 				return err
 			}
-			k.cur, k.curPath, k.curEmitted = nil, "", 0
+			k.cur = nil
 		}
+		k.started, k.curEmitted = "", 0
 		if err := k.st.RecordSource(k.ctx, info); err != nil {
 			return err
 		}
@@ -99,13 +132,14 @@ func (k *storeSink) FileDone(res FileResult) error {
 	}
 	if k.cur == nil {
 		// Zero-event file: bookkeeping row only.
+		k.started = ""
 		if err := k.st.RecordSource(k.ctx, info); err != nil {
 			return err
 		}
 	} else {
 		stats, err := k.cur.Commit(k.ctx, info)
 		emitted := k.curEmitted
-		k.cur, k.curPath, k.curEmitted = nil, "", 0
+		k.cur, k.started, k.curEmitted = nil, "", 0
 		if err != nil {
 			return err
 		}
@@ -129,16 +163,17 @@ func IngestBackfill(ctx context.Context, st *store.Store, a Adapter, srcs []Sour
 		sink := &storeSink{
 			ctx: ctx, st: st, harness: src.Harness,
 			version: a.Version(), sum: &sum,
+			closed: map[string]bool{},
 		}
 		err := a.Backfill(ctx, src, sink)
 		if sink.cur != nil {
 			// A file was left open: either the backfill errored mid-file
-			// or the adapter broke the one-FileDone-per-file contract.
+			// or the adapter broke the bracketing contract.
 			_ = sink.cur.Rollback()
-			if err == nil {
-				err = fmt.Errorf("adapter contract violation: backfill returned with %s still open (missing FileDone)",
-					sink.curPath)
-			}
+		}
+		if err == nil && sink.started != "" {
+			err = fmt.Errorf("adapter contract violation: backfill returned with %s still open (missing FileDone)",
+				sink.started)
 		}
 		if err != nil {
 			return sum, err

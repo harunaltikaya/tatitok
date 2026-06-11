@@ -7,10 +7,14 @@
 //   - Backfill pushes events through a Sink in size-bounded batches (at
 //     most BatchSize events per EmitBatch call), so memory stays bounded
 //     regardless of file size.
-//   - Each source file finishes with exactly ONE FileDone carrying its
-//     completion result; every EmitBatch for a file precedes its FileDone,
-//     and files never interleave. A file with no billable events still
-//     gets a FileDone — the sources bookkeeping must see every file.
+//   - Each source file is bracketed by exactly ONE FileStart and exactly
+//     ONE FileDone carrying its completion result; every EmitBatch for a
+//     file falls between the two, files never interleave, and a path
+//     appears at most once per backfill run. Zero-event and unreadable
+//     (skipped) files are bracketed too — the sources bookkeeping must
+//     see every file. FileDone.Events must equal the file's delivered
+//     batch total. The ingest layer rejects any deviation as a contract
+//     violation (M2.1 hardening).
 //   - Both Sink methods return errors. A non-nil return (e.g. a DB
 //     failure in the ingest layer) CANCELS the backfill: the adapter must
 //     stop all remaining work and return that error unchanged — no
@@ -83,6 +87,10 @@ type FileResult struct {
 // ingest layer (and by tests); see the package comment for the call
 // sequence and cancellation semantics.
 type Sink interface {
+	// FileStart declares the file at path before any of its batches —
+	// exactly one per file per run, zero-event and skipped files
+	// included. A non-nil error cancels the backfill.
+	FileStart(path string) error
 	// EmitBatch delivers up to BatchSize billable events parsed from the
 	// file at path. A non-nil error cancels the backfill.
 	EmitBatch(path string, events []core.Event) error

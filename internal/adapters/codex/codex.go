@@ -123,6 +123,9 @@ func (Adapter) Backfill(ctx context.Context, src adapters.Source, sink adapters.
 	for _, s := range skipped {
 		slog.Warn("skipping unreadable sessions subtree",
 			"adapter", harnessName, "path", s.path, "error", s.err)
+		if err := sink.FileStart(s.path); err != nil {
+			return err
+		}
 		if err := sink.FileDone(adapters.FileResult{
 			Path: s.path, ReadError: s.err.Error(),
 		}); err != nil {
@@ -132,6 +135,9 @@ func (Adapter) Backfill(ctx context.Context, src adapters.Source, sink adapters.
 	sort.Strings(files)
 	for _, f := range files {
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := sink.FileStart(f); err != nil {
 			return err
 		}
 		res, readErr, sinkErr := backfillFile(src, f, sink)

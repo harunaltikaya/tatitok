@@ -11,6 +11,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +71,9 @@ func (a *fakeAdapter) Backfill(ctx context.Context, src Source, sink Sink) error
 			return err
 		}
 		a.filesStarted++
+		if err := sink.FileStart(f.path); err != nil {
+			return err
+		}
 		events := 0
 		for _, b := range f.batches {
 			if err := sink.EmitBatch(f.path, b); err != nil {
@@ -213,7 +217,130 @@ func TestIngestMissingFileDoneIsAnError(t *testing.T) {
 type noDoneAdapter struct{ fakeAdapter }
 
 func (a *noDoneAdapter) Backfill(ctx context.Context, src Source, sink Sink) error {
+	if err := sink.FileStart("/fake/open.jsonl"); err != nil {
+		return err
+	}
 	return sink.EmitBatch("/fake/open.jsonl", []core.Event{synthEvent(1)})
+}
+
+// scriptAdapter drives an arbitrary call sequence against the sink, for
+// contract-violation tests.
+type scriptAdapter struct {
+	fakeAdapter
+	run func(sink Sink) error
+}
+
+func (a *scriptAdapter) Backfill(_ context.Context, _ Source, sink Sink) error {
+	return a.run(sink)
+}
+
+// The ingest sink rejects every bracketing violation (M2.1 hardening):
+// nothing lands in the DB and the run fails loudly.
+func TestIngestContractViolationsRejected(t *testing.T) {
+	done := func(s Sink, path string, events int) error {
+		return s.FileDone(FileResult{Path: path, MTime: time.Now().UTC(),
+			Size: 1, LineCount: events, Events: events})
+	}
+	cases := []struct {
+		name string
+		run  func(s Sink) error
+	}{
+		{"batch without FileStart", func(s Sink) error {
+			return s.EmitBatch("/fake/a", []core.Event{synthEvent(1)})
+		}},
+		{"FileDone without FileStart", func(s Sink) error {
+			return done(s, "/fake/a", 0)
+		}},
+		{"duplicate FileStart for open file", func(s Sink) error {
+			if err := s.FileStart("/fake/a"); err != nil {
+				return err
+			}
+			return s.FileStart("/fake/a")
+		}},
+		{"FileStart while another file open", func(s Sink) error {
+			if err := s.FileStart("/fake/a"); err != nil {
+				return err
+			}
+			return s.FileStart("/fake/b")
+		}},
+		{"duplicate path across brackets", func(s Sink) error {
+			if err := s.FileStart("/fake/a"); err != nil {
+				return err
+			}
+			if err := done(s, "/fake/a", 0); err != nil {
+				return err
+			}
+			return s.FileStart("/fake/a")
+		}},
+		{"batch after FileDone", func(s Sink) error {
+			if err := s.FileStart("/fake/a"); err != nil {
+				return err
+			}
+			if err := done(s, "/fake/a", 0); err != nil {
+				return err
+			}
+			return s.EmitBatch("/fake/a", []core.Event{synthEvent(1)})
+		}},
+		{"second FileDone", func(s Sink) error {
+			if err := s.FileStart("/fake/a"); err != nil {
+				return err
+			}
+			if err := done(s, "/fake/a", 0); err != nil {
+				return err
+			}
+			return done(s, "/fake/a", 0)
+		}},
+		{"batch for foreign file", func(s Sink) error {
+			if err := s.FileStart("/fake/a"); err != nil {
+				return err
+			}
+			return s.EmitBatch("/fake/b", []core.Event{synthEvent(1)})
+		}},
+		{"FileDone for foreign file", func(s Sink) error {
+			if err := s.FileStart("/fake/a"); err != nil {
+				return err
+			}
+			return done(s, "/fake/b", 0)
+		}},
+		{"Events overdeclared", func(s Sink) error {
+			if err := s.FileStart("/fake/a"); err != nil {
+				return err
+			}
+			if err := s.EmitBatch("/fake/a", []core.Event{synthEvent(1)}); err != nil {
+				return err
+			}
+			return done(s, "/fake/a", 2)
+		}},
+		{"Events underdeclared", func(s Sink) error {
+			if err := s.FileStart("/fake/a"); err != nil {
+				return err
+			}
+			if err := s.EmitBatch("/fake/a", []core.Event{synthEvent(1)}); err != nil {
+				return err
+			}
+			return done(s, "/fake/a", 0)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTemp(t)
+			_, err := IngestBackfill(context.Background(), s,
+				&scriptAdapter{run: tc.run}, []Source{{Harness: "fake"}})
+			if err == nil {
+				t.Fatal("want contract-violation error, got nil")
+			}
+			if !strings.Contains(err.Error(), "contract violation") {
+				t.Fatalf("want a contract-violation error, got: %v", err)
+			}
+			n, err2 := s.CountEvents(context.Background())
+			if err2 != nil {
+				t.Fatal(err2)
+			}
+			if n != 0 {
+				t.Fatalf("violating run persisted %d events", n)
+			}
+		})
+	}
 }
 
 // Provenance stamping: every event row and sources row carries the
