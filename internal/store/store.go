@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -534,6 +535,11 @@ type Provenance struct {
 type InsertStats struct {
 	Inserted int // new rows (duplicates collapse on the deterministic ID)
 	Replaced int // existing rows updated because their source row changed
+	// TouchedDays are the UTC days (YYYY-MM-DD) of the rows actually
+	// inserted or replaced — exactly the days whose rollup_daily rows
+	// the triggers touched (M4 Task 3: the SSE stream tells dashboards
+	// which days to refetch). Sorted; nil when nothing changed.
+	TouchedDays []string
 }
 
 // FileTx is one source file's ingest transaction: events arrive in
@@ -542,12 +548,13 @@ type InsertStats struct {
 // Rollback discards everything, so a file that fails mid-read leaves no
 // partial events behind.
 type FileTx struct {
-	tx    *sql.Tx
-	ins   *sql.Stmt
-	upd   *sql.Stmt
-	stats InsertStats
-	done  bool
-	quiet bool // inherited from Store.quietReplace at BeginFile
+	tx      *sql.Tx
+	ins     *sql.Stmt
+	upd     *sql.Stmt
+	stats   InsertStats
+	touched map[string]struct{} // UTC days written (insert or replace)
+	done    bool
+	quiet   bool // inherited from Store.quietReplace at BeginFile
 }
 
 // QuietReplacements switches the per-event AS-4 replacement log line
@@ -609,7 +616,8 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 		_ = tx.Rollback()
 		return nil, err
 	}
-	return &FileTx{tx: tx, ins: ins, upd: upd, quiet: s.quietReplace}, nil
+	return &FileTx{tx: tx, ins: ins, upd: upd, quiet: s.quietReplace,
+		touched: map[string]struct{}{}}, nil
 }
 
 // eventArgs encodes an event's payload into the 19 positional parameters
@@ -677,6 +685,7 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Pro
 		}
 		if n == 1 {
 			f.stats.Inserted++
+			f.touched[e.TS.UTC().Format("2006-01-02")] = struct{}{}
 			continue
 		}
 		res, err = f.upd.ExecContext(ctx, args...)
@@ -688,6 +697,7 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Pro
 		}
 		if n == 1 {
 			f.stats.Replaced++
+			f.touched[e.TS.UTC().Format("2006-01-02")] = struct{}{}
 			if !f.quiet {
 				slog.Info("replaced stored event: source row changed since last ingest",
 					"id", e.ID, "harness", e.Harness, "ts", e.TS.UTC())
@@ -698,7 +708,7 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Pro
 }
 
 // Commit writes the file's sources row and commits the transaction,
-// returning the insert/replace counts.
+// returning the insert/replace counts and the touched UTC days.
 func (f *FileTx) Commit(ctx context.Context, src SourceInfo) (InsertStats, error) {
 	f.done = true
 	f.closeStmts()
@@ -709,6 +719,10 @@ func (f *FileTx) Commit(ctx context.Context, src SourceInfo) (InsertStats, error
 	if err := f.tx.Commit(); err != nil {
 		return InsertStats{}, err
 	}
+	for day := range f.touched {
+		f.stats.TouchedDays = append(f.stats.TouchedDays, day)
+	}
+	sort.Strings(f.stats.TouchedDays)
 	return f.stats, nil
 }
 

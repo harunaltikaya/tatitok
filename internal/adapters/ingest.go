@@ -33,6 +33,24 @@ type IngestSummary struct {
 	// reported distinctly from parse errors. Skipped > 0 means the run
 	// completed but the DB does not reflect the full log history.
 	Skipped int
+	// TouchedDays are the UTC days whose rollup rows this run's inserts
+	// and replacements touched, sorted (M4 Task 3 — the SSE stream
+	// tells dashboards which days to refetch).
+	TouchedDays []string
+}
+
+// mergeTouched unions newly touched days into the summary, keeping the
+// slice sorted and unique (per-pass day counts are tiny).
+func (s *IngestSummary) mergeTouched(days []string) {
+	for _, d := range days {
+		i := sort.SearchStrings(s.TouchedDays, d)
+		if i < len(s.TouchedDays) && s.TouchedDays[i] == d {
+			continue
+		}
+		s.TouchedDays = append(s.TouchedDays, "")
+		copy(s.TouchedDays[i+1:], s.TouchedDays[i:])
+		s.TouchedDays[i] = d
+	}
 }
 
 // storeSink implements Sink over one Store: one SQLite transaction per
@@ -180,6 +198,7 @@ func (k *storeSink) FileDone(res FileResult) error {
 		k.sum.Replaced += stats.Replaced
 		k.sum.Emitted += emitted
 		k.sum.EmptyModel += emptyModel
+		k.sum.mergeTouched(stats.TouchedDays)
 	}
 	k.sum.Files++
 	k.sum.Lines += res.LineCount

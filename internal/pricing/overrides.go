@@ -54,7 +54,7 @@ import (
 // overridePatch is one parsed entry: nil fields were absent and fall
 // back to the snapshot-resolved component.
 type overridePatch struct {
-	free                                              bool
+	free                                               bool
 	input, output, cacheWrite, cacheWrite1h, cacheRead *int64
 }
 

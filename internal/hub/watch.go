@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -65,7 +66,8 @@ type watcher struct {
 	targets   []*watchTarget
 
 	events chan fileEvent
-	passes atomic.Int64 // completed ingest passes (tests; SSE in Task 3)
+	passes atomic.Int64      // completed ingest passes
+	onPass func(passSummary) // SSE fan-out (M4 Task 3); never blocks
 
 	cancelLoop context.CancelFunc // stops watching and the debounce loop
 	cancelPass context.CancelFunc // hard-aborts an in-flight pass (Stop timeout)
@@ -76,13 +78,13 @@ type watcher struct {
 // startWatcher wires the goroutines: one fsnotify loop for all notify
 // targets, one poller for polling targets (which also runs the startup
 // catch-up scan for everyone), one debounce/ingest loop.
-func startWatcher(st *store.Store, ov *pricing.Overrides, targets []WatchTarget, debounce, pollEvery time.Duration) *watcher {
+func startWatcher(st *store.Store, ov *pricing.Overrides, targets []WatchTarget, debounce, pollEvery time.Duration, onPass func(passSummary)) *watcher {
 	loopCtx, cancelLoop := context.WithCancel(context.Background())
 	passCtx, cancelPass := context.WithCancel(context.Background())
 	w := &watcher{
 		st: st, overrides: ov,
 		debounce: debounce, pollEvery: pollEvery,
-		events:     make(chan fileEvent, 1024),
+		events: make(chan fileEvent, 1024), onPass: onPass,
 		cancelLoop: cancelLoop, cancelPass: cancelPass,
 		done: make(chan struct{}),
 	}
@@ -372,6 +374,8 @@ func (w *watcher) debounceLoop(loopCtx, passCtx context.Context) {
 // A failing target is logged and does not stop the others; the watcher
 // keeps running.
 func (w *watcher) runPass(ctx context.Context, batch map[*watchTarget]map[string]struct{}) {
+	pass := passSummary{At: time.Now().UTC().Format(time.RFC3339)}
+	touched := map[string]struct{}{}
 	for _, t := range w.targets {
 		files := batch[t]
 		if len(files) == 0 {
@@ -395,6 +399,21 @@ func (w *watcher) runPass(ctx context.Context, batch map[*watchTarget]map[string
 			"empty_model", sum.EmptyModel, "parse_errors", sum.ParseErrors,
 			"skipped", sum.Skipped,
 			"duration_ms", time.Since(start).Milliseconds())
+		pass.Harnesses = append(pass.Harnesses, harnessPassSummary{
+			Harness: t.src.Harness, Files: sum.Files, Events: sum.Emitted,
+			New: sum.Inserted, Replaced: sum.Replaced, ParseErrors: sum.ParseErrors,
+		})
+		for _, d := range sum.TouchedDays {
+			touched[d] = struct{}{}
+		}
 	}
-	w.passes.Add(1)
+	pass.Pass = w.passes.Add(1)
+	if w.onPass != nil && len(pass.Harnesses) > 0 {
+		pass.TouchedDays = make([]string, 0, len(touched))
+		for d := range touched {
+			pass.TouchedDays = append(pass.TouchedDays, d)
+		}
+		sort.Strings(pass.TouchedDays)
+		w.onPass(pass)
+	}
 }

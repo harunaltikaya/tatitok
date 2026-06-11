@@ -68,6 +68,7 @@ func (h *Hub) registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/stats/daily", h.apiStatsDaily)
 	mux.HandleFunc("GET /api/v1/totals", h.apiTotals)
 	mux.HandleFunc("GET /api/v1/meta/models", h.apiMetaModels)
+	mux.HandleFunc("GET /api/v1/stream", h.apiStream)
 	// Everything else under /api/ is a JSON 404 (not the dashboard's
 	// HTML), and wrong methods on known paths get a JSON 405.
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {

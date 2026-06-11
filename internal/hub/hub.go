@@ -50,9 +50,11 @@ type Config struct {
 	Overrides *pricing.Overrides
 	// Debounce coalesces rapid changes into one ingest pass
 	// (0 = DefaultDebounce); PollInterval drives the polling sources
-	// (0 = DefaultPollInterval).
+	// (0 = DefaultPollInterval); Heartbeat is the SSE keep-alive
+	// cadence (0 = DefaultHeartbeat).
 	Debounce     time.Duration
 	PollInterval time.Duration
+	Heartbeat    time.Duration
 }
 
 // Hub is a started serve process.
@@ -68,6 +70,10 @@ type Hub struct {
 	snapshot string // pinned price snapshot id
 	dbHash   string // sha256 of the absolute DB path — never the path
 	started  time.Time
+
+	// live stream (M4 Task 3).
+	bcast      *broadcaster
+	streamStop chan struct{} // closed at Shutdown so SSE handlers release the drain
 
 	done     chan struct{} // closed when the serve loop returns
 	serveErr error         // read only after done is closed
@@ -135,14 +141,16 @@ func Start(cfg Config) (*Hub, error) {
 	}
 
 	h := &Hub{
-		cfg:      cfg,
-		st:       st,
-		ln:       ln,
-		version:  buildVersion(),
-		snapshot: snapshot,
-		dbHash:   dbPathHash(cfg.DBPath),
-		started:  time.Now(),
-		done:     make(chan struct{}),
+		cfg:        cfg,
+		st:         st,
+		ln:         ln,
+		version:    buildVersion(),
+		snapshot:   snapshot,
+		dbHash:     dbPathHash(cfg.DBPath),
+		started:    time.Now(),
+		bcast:      newBroadcaster(),
+		streamStop: make(chan struct{}),
+		done:       make(chan struct{}),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
@@ -182,7 +190,7 @@ func Start(cfg Config) (*Hub, error) {
 		if poll <= 0 {
 			poll = DefaultPollInterval
 		}
-		h.w = startWatcher(st, cfg.Overrides, cfg.WatchTargets, debounce, poll)
+		h.w = startWatcher(st, cfg.Overrides, cfg.WatchTargets, debounce, poll, h.publishPass)
 		slog.Info("watchers started", "targets", len(cfg.WatchTargets),
 			"debounce", debounce.String(), "poll_interval", poll.String())
 	}
@@ -208,10 +216,14 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 	if h.w != nil {
 		h.w.Stop(ctx)
 	}
+	close(h.streamStop) // release long-lived SSE handlers before the drain
 	srvErr := h.srv.Shutdown(ctx)
 	<-h.done
 	return errors.Join(srvErr, h.serveErr, h.st.Close())
 }
+
+// publishPass fans an ingest-pass summary out to SSE clients.
+func (h *Hub) publishPass(p passSummary) { h.bcast.publish("ingest_pass", p) }
 
 // nonLoopbackWarning returns the startup warning for a bind that is
 // reachable beyond this machine, "" for loopback. Binding non-loopback
