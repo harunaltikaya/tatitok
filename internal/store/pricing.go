@@ -44,12 +44,16 @@ func (s *Store) PlanPricing(ctx context.Context, snapshotVersion string) (Pricin
 type PricingReconRow struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
-	Events   int64  `json:"events"`
+	// Basis is the group's cost_basis (uniform under current rules).
+	Basis  string `json:"cost_basis"`
+	Events int64  `json:"events"`
 	// Unpriced counts events whose OUR cost is NULL (snapshot gap) —
 	// reported as coverage findings, not tolerance violations.
 	Unpriced    int64 `json:"events_unpriced"`
 	OursMicro   int64 `json:"ours_usd_micro"`
 	SourceMicro int64 `json:"source_usd_micro"`
+	// EquivMicro sums the stored API-equivalent values (free basis).
+	EquivMicro int64 `json:"api_equiv_usd_micro"`
 }
 
 // PricingReconciliation aggregates ours-vs-source costs per
@@ -58,7 +62,7 @@ type PricingReconRow struct {
 // caller passes pricing.USDToMicro — the store stays float-free).
 func (s *Store) PricingReconciliation(ctx context.Context, usdToMicro func(text string) (int64, error)) ([]PricingReconRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT provider, model,
-			cost_usd_micro, meta
+			COALESCE(cost_basis, ''), cost_usd_micro, cost_api_equiv_micro, meta
 		FROM usage_events
 		WHERE meta IS NOT NULL AND instr(meta, '"source_cost"') > 0
 		ORDER BY provider, model`)
@@ -69,9 +73,9 @@ func (s *Store) PricingReconciliation(ctx context.Context, usdToMicro func(text 
 
 	var out []PricingReconRow
 	for rows.Next() {
-		var provider, model, meta string
-		var ours sql.NullInt64
-		if err := rows.Scan(&provider, &model, &ours, &meta); err != nil {
+		var provider, model, basis, meta string
+		var ours, equiv sql.NullInt64
+		if err := rows.Scan(&provider, &model, &basis, &ours, &equiv, &meta); err != nil {
 			return nil, err
 		}
 		var m struct {
@@ -92,6 +96,12 @@ func (s *Store) PricingReconciliation(ctx context.Context, usdToMicro func(text 
 		r := &out[len(out)-1]
 		r.Events++
 		r.SourceMicro += src
+		if basis != "" {
+			r.Basis = basis
+		}
+		if equiv.Valid {
+			r.EquivMicro += equiv.Int64
+		}
 		if ours.Valid {
 			r.OursMicro += ours.Int64
 		} else {
@@ -119,6 +129,7 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 		basis    string
 		snapshot string
 		rates    any
+		equiv    any
 		costEq   bool
 	}
 	var updates []update
@@ -130,7 +141,7 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 			tokens_input, tokens_output, tokens_cache_write, tokens_cache_read,
 			tokens_reasoning, COALESCE(meta,''),
 			cost_usd_micro, COALESCE(cost_basis,''), COALESCE(price_snapshot,''),
-			COALESCE(price_rates,'')
+			COALESCE(price_rates,''), cost_api_equiv_micro
 		FROM usage_events`)
 	if err != nil {
 		return res, err
@@ -139,9 +150,10 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 		var id, harness, provider, model, family, meta, oldBasis, oldSnap, oldRates string
 		var in, out, cw, cr int64
 		var reasoning sql.NullInt64
-		var oldCost sql.NullInt64
+		var oldCost, oldEquiv sql.NullInt64
 		if err := rows.Scan(&id, &harness, &provider, &model, &family,
-			&in, &out, &cw, &cr, &reasoning, &meta, &oldCost, &oldBasis, &oldSnap, &oldRates); err != nil {
+			&in, &out, &cw, &cr, &reasoning, &meta, &oldCost, &oldBasis, &oldSnap,
+			&oldRates, &oldEquiv); err != nil {
 			_ = rows.Close()
 			return res, err
 		}
@@ -166,12 +178,18 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 		newRates := string(e.PriceRates)
 		costEq := (e.CostUSDMicro == nil) == !oldCost.Valid &&
 			(e.CostUSDMicro == nil || *e.CostUSDMicro == oldCost.Int64)
-		if costEq && e.CostBasis == oldBasis && e.PriceSnapshot == oldSnap && newRates == oldRates {
+		equivEq := (e.CostAPIEquivMicro == nil) == !oldEquiv.Valid &&
+			(e.CostAPIEquivMicro == nil || *e.CostAPIEquivMicro == oldEquiv.Int64)
+		if costEq && equivEq && e.CostBasis == oldBasis &&
+			e.PriceSnapshot == oldSnap && newRates == oldRates {
 			continue // already priced identically — nothing to write
 		}
 		u := update{id: id, basis: e.CostBasis, snapshot: e.PriceSnapshot, costEq: costEq}
 		if e.CostUSDMicro != nil {
 			u.cost = *e.CostUSDMicro
+		}
+		if e.CostAPIEquivMicro != nil {
+			u.equiv = *e.CostAPIEquivMicro
 		}
 		if newRates != "" {
 			u.rates = newRates
@@ -189,7 +207,8 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 		return res, err
 	}
 	stmt, err := tx.PrepareContext(ctx, `UPDATE usage_events SET
-		cost_usd_micro=?2, cost_basis=?3, price_snapshot=?4, price_rates=?5
+		cost_usd_micro=?2, cost_basis=?3, price_snapshot=?4, price_rates=?5,
+		cost_api_equiv_micro=?6
 		WHERE id=?1`)
 	if err != nil {
 		_ = tx.Rollback()
@@ -197,7 +216,7 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 	}
 	for _, u := range updates {
 		if _, err := stmt.ExecContext(ctx, u.id, u.cost,
-			nullStr(u.basis), nullStr(u.snapshot), u.rates); err != nil {
+			nullStr(u.basis), nullStr(u.snapshot), u.rates, u.equiv); err != nil {
 			_ = stmt.Close()
 			_ = tx.Rollback()
 			return res, fmt.Errorf("reprice %s: %w", u.id, err)

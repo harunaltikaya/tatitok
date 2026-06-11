@@ -91,7 +91,10 @@ func TestResolveBases(t *testing.T) {
 		{"vllm", "qwen3.6-27b", "qwen3.6-27b", BasisLocal, true},
 		{"vllm-tecnigmaai-nvfp4", "qwen3.6-35b-nvfp4-tecnigmaai", "qwen3.6-35b", BasisLocal, true},
 		{"vllm-delegate", "gx10", "gx10", BasisLocal, true},
-		{"opencode", "deepseek-v4-flash-free", "deepseek-v4-flash", BasisFree, true},
+		// Owner ruling: a "-free" NAME alone never means free — without a
+		// source-reported $0 (Apply-level), resolution proceeds normally
+		// and this model is simply absent from the snapshot.
+		{"opencode", "deepseek-v4-flash-free", "deepseek-v4-flash", BasisUnknown, false},
 		{"deepseek", "deepseek-v4-flash", "deepseek-v4-flash", BasisUnknown, false}, // absent from snapshot — honest unknown
 		{"openai", "", "", BasisUnknown, false},                                     // codex pre-turn_context
 		{"openai", "gpt-5.5", "gpt-5.5", BasisAPIPrice, false},
@@ -136,7 +139,7 @@ func TestOverridesResolution(t *testing.T) {
 		t.Fatalf("Len = %d, want 2", ov.Len())
 	}
 
-	// Raw model hit.
+	// Raw model hit (model absent from the snapshot: patch over zeros).
 	q, err := Resolve("deepseek", "deepseek-v4-flash", "deepseek-v4-flash", ov)
 	if err != nil {
 		t.Fatal(err)
@@ -145,9 +148,7 @@ func TestOverridesResolution(t *testing.T) {
 	if q.Basis != BasisAPIPrice || q.Snapshot != "override" || *q.Rates != want {
 		t.Fatalf("override quote: %+v rates %+v, want api_price/override/%+v", q, *q.Rates, want)
 	}
-	// Family hit: the -free variant folds into family deepseek-v4-flash,
-	// but an override beats even the free-suffix rule ONLY via its keys —
-	// here the variant's FAMILY matches the override.
+	// Family hit: the -free variant's FAMILY matches the override key.
 	q, err = Resolve("opencode", "deepseek-v4-flash-free", "deepseek-v4-flash", ov)
 	if err != nil {
 		t.Fatal(err)
@@ -162,6 +163,28 @@ func TestOverridesResolution(t *testing.T) {
 	}
 	if q.Basis != BasisFree || !q.Rates.IsZero() {
 		t.Fatalf("free override: %+v", q)
+	}
+
+	// Partial patch over a snapshot-resolved model: ONLY the specified
+	// component changes (the owner's sonnet 1h-rate patch — a
+	// whole-entry replacement here would zero $3/$15 base rates).
+	if err := os.WriteFile(path, []byte(`{
+		"prices": {"claude-sonnet-4-6": {"cache_write_1h_usd_per_mtok": "6.00"}}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ov, err = LoadOverrides(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err = Resolve("anthropic", "claude-sonnet-4-6", "claude-sonnet-4-6", ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := Rates{Input: 3_000_000, Output: 15_000_000,
+		CacheWrite: 3_750_000, CacheWrite1h: 6_000_000, CacheRead: 300_000}
+	if q.Snapshot != "override" || *q.Rates != patched {
+		t.Fatalf("partial patch: %+v, want %+v", *q.Rates, patched)
 	}
 
 	// Missing file = nil overrides; malformed file = loud error.
@@ -249,5 +272,103 @@ func TestApplyEndToEnd(t *testing.T) {
 	}
 	if u.CostUSDMicro != nil || u.CostBasis != "unknown" || u.PriceRates != nil {
 		t.Fatalf("unknown pricing leaked values: %+v", u)
+	}
+}
+
+// Owner ruling 2026-06-11: basis free ONLY on an explicitly-present
+// source-reported cost of exactly $0; the API-equivalent value is
+// computed and stored alongside, exact model key first, then
+// base-family key flagged "family".
+func TestApplyFreeBasis(t *testing.T) {
+	// Source billed $0 and the model resolves: free + model-keyed equiv.
+	free := core.Event{ID: "f1", Harness: "opencode", Provider: "opencode",
+		Model: "gpt-5-nano", ModelFamily: "gpt-5-nano",
+		TokensInput: 1_000_000, TokensOutput: 0,
+		Meta: map[string]any{"source_cost": json.Number("0")}}
+	if err := Apply(&free, nil); err != nil {
+		t.Fatal(err)
+	}
+	if free.CostBasis != "free" || free.CostUSDMicro == nil || *free.CostUSDMicro != 0 {
+		t.Fatalf("free basis: %+v", free)
+	}
+	if free.CostAPIEquivMicro == nil || *free.CostAPIEquivMicro <= 0 {
+		t.Fatalf("API-equivalent missing for resolvable free model: %v", free.CostAPIEquivMicro)
+	}
+	var detail struct {
+		EquivSource string `json:"equiv_source"`
+		EquivRates  *Rates `json:"equiv_rates"`
+	}
+	if err := json.Unmarshal(free.PriceRates, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.EquivSource != "model" || detail.EquivRates == nil {
+		t.Fatalf("equiv derivation not recorded: %+v", detail)
+	}
+
+	// Family-derived equivalent: variant key absent, family resolves.
+	fam := free
+	fam.ID, fam.Model, fam.ModelFamily = "f2", "gpt-5.5-free-routing", "gpt-5.5"
+	if err := Apply(&fam, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(fam.PriceRates, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if fam.CostBasis != "free" || detail.EquivSource != "family" {
+		t.Fatalf("family-derived equiv not flagged: basis=%s detail=%+v", fam.CostBasis, detail)
+	}
+
+	// Unresolvable free model: still free, no equivalent.
+	none := free
+	none.ID, none.Model, none.ModelFamily = "f3", "deepseek-v4-flash-free", "deepseek-v4-flash"
+	if err := Apply(&none, nil); err != nil {
+		t.Fatal(err)
+	}
+	if none.CostBasis != "free" || none.CostAPIEquivMicro != nil {
+		t.Fatalf("unresolvable free model: %+v", none)
+	}
+
+	// Source billed > $0: NOT free (normal resolution → unknown here).
+	paid := free
+	paid.ID, paid.Model, paid.ModelFamily = "f4", "deepseek-v4-pro", "deepseek-v4-pro"
+	paid.Meta = map[string]any{"source_cost": json.Number("0.05")}
+	if err := Apply(&paid, nil); err != nil {
+		t.Fatal(err)
+	}
+	if paid.CostBasis != "unknown" || paid.CostUSDMicro != nil {
+		t.Fatalf("paid source cost must not turn free: %+v", paid)
+	}
+
+	// Absent source cost: never free, even with a "-free" name.
+	named := free
+	named.ID, named.Model, named.ModelFamily = "f5", "deepseek-v4-flash-free", "deepseek-v4-flash"
+	named.Meta = nil
+	if err := Apply(&named, nil); err != nil {
+		t.Fatal(err)
+	}
+	if named.CostBasis == "free" {
+		t.Fatalf("-free name alone must never mean basis free: %+v", named)
+	}
+
+	// Local providers stay local even at source $0 (vllm rows record 0).
+	local := free
+	local.ID, local.Provider, local.Model, local.ModelFamily = "f6", "vllm", "qwen3.6-27b", "qwen3.6-27b"
+	if err := Apply(&local, nil); err != nil {
+		t.Fatal(err)
+	}
+	if local.CostBasis != "local" {
+		t.Fatalf("local provider lost to free rule: %+v", local)
+	}
+
+	// A database meta round-trip turns the number into float64 — the
+	// presence/zero detection must survive it.
+	rt := free
+	rt.ID = "f7"
+	rt.Meta = map[string]any{"source_cost": float64(0)}
+	if err := Apply(&rt, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rt.CostBasis != "free" {
+		t.Fatalf("float64 zero source cost not detected: %+v", rt)
 	}
 }

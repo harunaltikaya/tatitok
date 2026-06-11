@@ -178,11 +178,13 @@ func TestCostCalibrationOpencodeBlended(t *testing.T) {
 		t.Fatal("no source costs stored — meta.source_cost extraction broken")
 	}
 
-	// Per-event blend: source cost, or our computed cost when the source
-	// recorded zero.
+	// Per-event blend: source cost, or — when the source recorded zero —
+	// our stored API-equivalent (free basis, owner ruling) standing in
+	// for ccusage's computed value.
 	got := map[string]int64{}
 	rows, err := st.DB().QueryContext(context.Background(), `SELECT
-			tatitok_day(ts, ?), meta, COALESCE(cost_usd_micro, 0)
+			tatitok_day(ts, ?), meta,
+			COALESCE(cost_api_equiv_micro, cost_usd_micro, 0)
 		FROM usage_events
 		WHERE meta IS NOT NULL AND instr(meta, '"source_cost"') > 0`, tz.String())
 	if err != nil {

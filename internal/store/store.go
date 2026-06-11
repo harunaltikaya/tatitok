@@ -153,6 +153,11 @@ var migrations = []string{
 		CHECK (cost_basis IN ('api_price','plan_included','local','free','unknown'));
 	ALTER TABLE usage_events ADD COLUMN price_snapshot TEXT;
 	ALTER TABLE usage_events ADD COLUMN price_rates TEXT;`,
+	// Owner ruling 2026-06-11 (migration 8): free-basis events (source
+	// reported exactly $0) bill 0 but ALWAYS carry the computed
+	// API-equivalent value when the snapshot can price the model —
+	// mirroring the local-basis design (FR-9.3). Derived column.
+	`ALTER TABLE usage_events ADD COLUMN cost_api_equiv_micro INTEGER;`,
 }
 
 // migrationHooks run inside the migration's transaction, after its SQL —
@@ -364,8 +369,9 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 		 project, session_id, request_id,
 		 tokens_input, tokens_output, tokens_cache_write, tokens_cache_read,
 		 tokens_reasoning, accuracy, meta, raw, adapter_version, source_id,
-		 map_version, cost_usd_micro, cost_basis, price_snapshot, price_rates)
-		VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)`)
+		 map_version, cost_usd_micro, cost_basis, price_snapshot, price_rates,
+		 cost_api_equiv_micro)
+		VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return nil, err
@@ -386,7 +392,8 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 		tokens_input=?12, tokens_output=?13, tokens_cache_write=?14,
 		tokens_cache_read=?15, tokens_reasoning=?16, accuracy=?17, meta=?18,
 		raw=?19, adapter_version=?20, source_id=?21, map_version=?22,
-		cost_usd_micro=?23, cost_basis=?24, price_snapshot=?25, price_rates=?26
+		cost_usd_micro=?23, cost_basis=?24, price_snapshot=?25, price_rates=?26,
+		cost_api_equiv_micro=?27
 		WHERE id=?1 AND (
 			ts IS NOT ?2 OR machine IS NOT ?3 OR source_kind IS NOT ?4 OR
 			harness IS NOT ?5 OR provider IS NOT ?6 OR model IS NOT ?7 OR
@@ -450,13 +457,16 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Pro
 		if len(e.PriceRates) > 0 {
 			rates = string(e.PriceRates)
 		}
-		var cost any
+		var cost, equiv any
 		if e.CostUSDMicro != nil {
 			cost = *e.CostUSDMicro
 		}
+		if e.CostAPIEquivMicro != nil {
+			equiv = *e.CostAPIEquivMicro
+		}
 		args = append(args, nullVersion(prov.AdapterVersion),
 			nullStr(prov.SourceID), nullVersion(prov.MapVersion),
-			cost, nullStr(e.CostBasis), nullStr(e.PriceSnapshot), rates)
+			cost, nullStr(e.CostBasis), nullStr(e.PriceSnapshot), rates, equiv)
 		res, err := f.ins.ExecContext(ctx, args...)
 		if err != nil {
 			return fmt.Errorf("insert %s: %w", e.ID, err)

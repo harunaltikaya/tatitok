@@ -1,14 +1,18 @@
 package pricing
 
-// User price overrides (FR-9.2): a local file layered over the embedded
-// snapshot. Rates are decimal USD per MILLION tokens (the unit people
-// quote prices in), parsed exactly into integer micro-USD — a malformed
-// price is an error, never a silent zero.
+// User price overrides (FR-9.2): a local file LAYERED OVER the embedded
+// snapshot — each entry is a partial patch, so a single-field entry
+// (e.g. only the 1h cache-write rate the upstream snapshot is missing)
+// keeps the snapshot's other components. Rates are decimal USD per
+// MILLION tokens (the unit people quote prices in), parsed exactly into
+// integer micro-USD — a malformed price is an error, never a silent
+// zero.
 //
 // File: $XDG_CONFIG_HOME/tatitok/prices.json (default ~/.config/...):
 //
 //	{
 //	  "prices": {
+//	    "claude-sonnet-4-6": { "cache_write_1h_usd_per_mtok": "6.00" },
 //	    "deepseek-v4-flash": {
 //	      "input_usd_per_mtok": "0.28",
 //	      "output_usd_per_mtok": "0.42",
@@ -18,7 +22,7 @@ package pricing
 //	  }
 //	}
 //
-// Keys match raw model first, then model_family (see Resolve).
+// Keys match raw model first, then model_family (see Apply/Resolve).
 
 import (
 	"encoding/json"
@@ -28,11 +32,38 @@ import (
 	"path/filepath"
 )
 
+// overridePatch is one parsed entry: nil fields were absent and fall
+// back to the snapshot-resolved component.
+type overridePatch struct {
+	free                                              bool
+	input, output, cacheWrite, cacheWrite1h, cacheRead *int64
+}
+
+// apply layers the patch over base.
+func (p overridePatch) apply(base Rates) Rates {
+	if p.input != nil {
+		base.Input = *p.input
+	}
+	if p.output != nil {
+		base.Output = *p.output
+	}
+	if p.cacheWrite != nil {
+		base.CacheWrite = *p.cacheWrite
+	}
+	if p.cacheWrite1h != nil {
+		base.CacheWrite1h = *p.cacheWrite1h
+	}
+	if p.cacheRead != nil {
+		base.CacheRead = *p.cacheRead
+	}
+	return base
+}
+
 // Overrides is the parsed override file; the zero value (or nil) means
 // no overrides.
 type Overrides struct {
-	rates map[string]Rates
-	path  string
+	patches map[string]overridePatch
+	path    string
 }
 
 // Path returns the file the overrides were read from ("" when none).
@@ -48,7 +79,19 @@ func (o *Overrides) Len() int {
 	if o == nil {
 		return 0
 	}
-	return len(o.rates)
+	return len(o.patches)
+}
+
+func (o *Overrides) lookup(keys ...string) (overridePatch, bool) {
+	if o == nil {
+		return overridePatch{}, false
+	}
+	for _, k := range keys {
+		if p, ok := o.patches[k]; ok {
+			return p, true
+		}
+	}
+	return overridePatch{}, false
 }
 
 type overrideEntry struct {
@@ -89,29 +132,30 @@ func LoadOverrides(path string) (*Overrides, error) {
 	if err := json.Unmarshal(body, &f); err != nil {
 		return nil, fmt.Errorf("price overrides %s: %w", path, err)
 	}
-	ov := &Overrides{rates: make(map[string]Rates, len(f.Prices)), path: path}
+	ov := &Overrides{patches: make(map[string]overridePatch, len(f.Prices)), path: path}
 	for model, e := range f.Prices {
 		if model == "" {
 			return nil, fmt.Errorf("price overrides %s: empty model key", path)
 		}
-		var r Rates
-		if !e.Free {
-			for _, c := range []struct {
-				n   json.Number
-				dst *int64
-			}{
-				{e.Input, &r.Input}, {e.Output, &r.Output},
-				{e.CacheWrite, &r.CacheWrite}, {e.CacheWrite1h, &r.CacheWrite1h},
-				{e.CacheRead, &r.CacheRead},
-			} {
-				v, err := usdPerMtokToMicro(c.n)
-				if err != nil {
-					return nil, fmt.Errorf("price overrides %s: model %q: %w", path, model, err)
-				}
-				*c.dst = v
+		p := overridePatch{free: e.Free}
+		for _, c := range []struct {
+			n   json.Number
+			dst **int64
+		}{
+			{e.Input, &p.input}, {e.Output, &p.output},
+			{e.CacheWrite, &p.cacheWrite}, {e.CacheWrite1h, &p.cacheWrite1h},
+			{e.CacheRead, &p.cacheRead},
+		} {
+			if c.n == "" {
+				continue
 			}
+			v, err := usdPerMtokToMicro(c.n)
+			if err != nil {
+				return nil, fmt.Errorf("price overrides %s: model %q: %w", path, model, err)
+			}
+			*c.dst = &v
 		}
-		ov.rates[model] = r
+		ov.patches[model] = p
 	}
 	return ov, nil
 }

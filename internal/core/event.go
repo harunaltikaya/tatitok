@@ -81,8 +81,15 @@ type Event struct {
 	// priced this event (FR-9.5).
 	PriceSnapshot string `json:"price_snapshot,omitempty"`
 	// PriceRates is the JSON-encoded unit rates used, integer micro-USD
-	// per million tokens per component (FR-9.5).
+	// per million tokens per component (FR-9.5); for free-basis events it
+	// additionally carries the API-equivalent rates and their derivation
+	// ("model" or "family").
 	PriceRates json.RawMessage `json:"price_rates,omitempty"`
+	// CostAPIEquivMicro is the computed API-equivalent value of a
+	// free-basis event (owner ruling, mirroring FR-9.3) — what the same
+	// tokens would have cost at the model's API price. Nil unless basis
+	// is free and the model (or its family) resolves in the snapshot.
+	CostAPIEquivMicro *int64 `json:"cost_api_equiv_micro,omitempty"`
 
 	Accuracy Accuracy `json:"accuracy"`
 	// Meta holds source-specific extras (cwd, branch, client version,

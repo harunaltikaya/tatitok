@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,15 @@ import (
 	"github.com/harunaltikaya/tatitok/internal/adapters/opencode"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
+
+// TestMain silences per-event slog noise in test output (the per-event
+// AS-4 replacement lines stay in real ingest; tests summarize replaced
+// counts per ingest instead — owner note, M3).
+func TestMain(m *testing.M) {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr,
+		&slog.HandlerOptions{Level: slog.LevelWarn})))
+	os.Exit(m.Run())
+}
 
 const fixtureRoot = "../../testdata/fixtures/claude-code"
 
@@ -73,7 +83,8 @@ func ingestIntoWith(t *testing.T, a adapters.Adapter, srcs []adapters.Source) *s
 	if err != nil {
 		t.Fatalf("ingest: %v", err)
 	}
-	t.Logf("ingested %d files, %d events emitted, %d rows", sum.Files, sum.Emitted, sum.Inserted)
+	t.Logf("ingested %d files, %d events emitted, %d rows, %d replaced (in-file streaming updates)",
+		sum.Files, sum.Emitted, sum.Inserted, sum.Replaced)
 	return s
 }
 

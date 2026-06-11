@@ -202,49 +202,69 @@ func isLocalProvider(provider string) bool {
 	return provider == "vllm" || strings.HasPrefix(provider, "vllm-")
 }
 
-// isFreeTier: gateway billing-tier suffixes that mean "this routing of
-// the model is not billed". A billing rule on the model STRING, not a
-// token heuristic.
-func isFreeTier(model string) bool {
-	return strings.HasSuffix(model, "-free") || strings.HasSuffix(model, ":free")
+// snapshotLookup resolves rates from the embedded snapshot: model,
+// provider/model, family, provider/family — first hit wins.
+func snapshotLookup(provider, model, family string) (Rates, bool) {
+	for _, key := range []string{model, provider + "/" + model, family, provider + "/" + family} {
+		if r, ok := snapRates[key]; ok {
+			return r, true
+		}
+	}
+	return Rates{}, false
 }
 
 // Resolve picks the price for one event. Resolution order (documented in
 // the milestone report):
-//  1. user override file — raw model first, then family (owner's word
+//  1. user override file — raw model first, then family; each entry is a
+//     PARTIAL patch layered over the snapshot resolution (owner's word
 //     beats everything, including local-provider zeroing)
 //  2. local provider (vllm*) → basis local, cost 0
-//  3. free billing tier (-free/:free suffix) → basis free, cost 0
-//  4. snapshot — model, provider/model, family, provider/family
-//  5. unknown (cost stays NULL; never guessed)
+//  3. snapshot — model, provider/model, family, provider/family
+//  4. unknown (cost stays NULL; never guessed)
+//
+// Basis `free` is NOT resolved here: per the owner's ruling it requires
+// a source-reported cost of exactly $0, which only Apply can see (it
+// lives in event meta) — never inferred from a "-free" model name.
 func Resolve(provider, model, family string, ov *Overrides) (Quote, error) {
 	loadOnce.Do(load)
 	if loadErr != nil {
 		return Quote{}, loadErr
 	}
-	if ov != nil {
-		for _, key := range []string{model, family} {
-			if r, ok := ov.rates[key]; ok {
-				basis := BasisAPIPrice
-				if r.IsZero() {
-					basis = BasisFree
-				}
-				return Quote{Basis: basis, Rates: &r, Snapshot: "override"}, nil
-			}
+	if p, ok := ov.lookup(model, family); ok {
+		if p.free {
+			return Quote{Basis: BasisFree, Rates: &Rates{}, Snapshot: "override"}, nil
 		}
+		base, _ := snapshotLookup(provider, model, family)
+		r := p.apply(base)
+		return Quote{Basis: BasisAPIPrice, Rates: &r, Snapshot: "override"}, nil
 	}
 	if isLocalProvider(provider) {
 		return Quote{Basis: BasisLocal, Rates: &Rates{}, Snapshot: snapVersion}, nil
 	}
-	if isFreeTier(model) {
-		return Quote{Basis: BasisFree, Rates: &Rates{}, Snapshot: snapVersion}, nil
-	}
-	for _, key := range []string{model, provider + "/" + model, family, provider + "/" + family} {
-		if r, ok := snapRates[key]; ok {
-			return Quote{Basis: BasisAPIPrice, Rates: &r, Snapshot: snapVersion}, nil
-		}
+	if r, ok := snapshotLookup(provider, model, family); ok {
+		return Quote{Basis: BasisAPIPrice, Rates: &r, Snapshot: snapVersion}, nil
 	}
 	return Quote{Basis: BasisUnknown, Snapshot: snapVersion}, nil
+}
+
+// EquivalentRates resolves the API-equivalent rates for a free-basis
+// event (owner ruling, mirroring FR-9.3): the exact model key first,
+// then the base-family key — the latter flagged "family" so the
+// derivation is visible per event.
+func EquivalentRates(model, family string) (Rates, string, bool) {
+	loadOnce.Do(load)
+	if loadErr != nil {
+		return Rates{}, "", false
+	}
+	if r, ok := snapRates[model]; ok {
+		return r, "model", true
+	}
+	if family != model {
+		if r, ok := snapRates[family]; ok {
+			return r, "family", true
+		}
+	}
+	return Rates{}, "", false
 }
 
 // ReferenceRates resolves a user-chosen reference model for the

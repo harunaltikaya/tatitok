@@ -227,13 +227,18 @@ func doctorPricing(ctx context.Context, st *store.Store) error {
 		fmt.Println("no events carry a source-reported cost — ingest an opencode store first")
 		return nil
 	}
-	fmt.Printf("%-22s %-30s %8s %14s %14s %14s  %s\n",
-		"PROVIDER", "MODEL", "EVENTS", "OURS", "SOURCE", "DELTA", "VERDICT")
+	fmt.Printf("%-22s %-30s %-10s %8s %14s %14s %14s  %s\n",
+		"PROVIDER", "MODEL", "BASIS", "EVENTS", "OURS", "SOURCE", "DELTA", "VERDICT")
 	violations, gaps := 0, 0
 	for _, r := range rows {
 		delta := r.OursMicro - r.SourceMicro
 		verdict := "ok"
 		switch {
+		case r.Basis == "free":
+			// Owner ruling 2026-06-11: free groups (source billed exactly
+			// $0) are informational, never findings; the stored
+			// API-equivalent is the comparison value of interest.
+			verdict = fmt.Sprintf("free — API-equivalent %s stored", formatMicroUSD(r.EquivMicro))
 		case r.Unpriced > 0:
 			verdict = fmt.Sprintf("COVERAGE GAP — %d events unpriced (model missing from snapshot/overrides)", r.Unpriced)
 			gaps++
@@ -241,8 +246,8 @@ func doctorPricing(ctx context.Context, st *store.Store) error {
 			verdict = "OUT OF TOLERANCE (>1% and >$0.001)"
 			violations++
 		}
-		fmt.Printf("%-22s %-30s %8s %14s %14s %14s  %s\n",
-			r.Provider, r.Model, formatTokens(r.Events),
+		fmt.Printf("%-22s %-30s %-10s %8s %14s %14s %14s  %s\n",
+			r.Provider, r.Model, r.Basis, formatTokens(r.Events),
 			formatMicroUSD(r.OursMicro), formatMicroUSD(r.SourceMicro),
 			formatMicroUSD(delta), verdict)
 	}
