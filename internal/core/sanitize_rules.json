@@ -90,8 +90,8 @@
       ".codex", ".agents", ".local", "share", ".cache", ".bun",
       "node_modules", "opencode", "Desktop", "Downloads", "Documents"
     ],
-    "owner_approved_segments_doc": "OWNER-APPROVED EXCEPTIONS, distinct from structural names: owner-CREATED directory names default to aliasing and stay verbatim only after an explicit owner ruling reviewing that the name carries no project identity. NTFY: ruled harmless 2026-06-11 (ntfy push-notification tooling directory). Decision rule: structural (OS/tool-created) names go in path_segment_allowlist without a ruling; owner-created names go here ONLY with a recorded ruling.",
-    "owner_approved_segments": ["NTFY"],
+    "owner_approved_segments_doc": "OWNER-APPROVED EXCEPTIONS, distinct from structural names: owner-CREATED directory names default to aliasing and stay verbatim only after an explicit owner ruling reviewing that the name carries no project identity. NTFY: ruled harmless 2026-06-11 (ntfy push-notification tooling directory). serve: ruled harmless 2026-06-11 (common dictionary word, zero identity content; collided with prose in docs/milestone-3.md). Decision rule: structural (OS/tool-created) names go in path_segment_allowlist without a ruling; owner-created names go here ONLY with a recorded ruling — common-dictionary-word segments may be owner-approved on collision, distinctive/coined names default to aliasing.",
+    "owner_approved_segments": ["NTFY", "serve"],
     "owner_approved_values_doc": "owner rulings on VALUES kept verbatim (these pass the sanitizer via the short-string/safe-key rules; the entry records the explicit review, same category as owner_approved_segments). 2026-06-11: all OpenCode provider/model identifiers — vllm-* including vllm-tecnigmaai-nvfp4 — reviewed as vLLM serving-recipe names, not personal identity.",
     "owner_approved_values": ["vllm-*"],
     "path_segment_allowlist_regexes_doc": "segment patterns that are structural wherever they appear: purely numeric segments are date-tree components (Codex stores sessions under sessions/YYYY/MM/DD), never project identity.",
