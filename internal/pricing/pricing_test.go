@@ -295,6 +295,7 @@ func TestApplyFreeBasis(t *testing.T) {
 		t.Fatalf("API-equivalent missing for resolvable free model: %v", free.CostAPIEquivMicro)
 	}
 	var detail struct {
+		FreeSource  string `json:"free_source"`
 		EquivSource string `json:"equiv_source"`
 		EquivRates  *Rates `json:"equiv_rates"`
 	}
@@ -303,6 +304,9 @@ func TestApplyFreeBasis(t *testing.T) {
 	}
 	if detail.EquivSource != "model" || detail.EquivRates == nil {
 		t.Fatalf("equiv derivation not recorded: %+v", detail)
+	}
+	if detail.FreeSource != "source" {
+		t.Fatalf("source-reported free not flagged: %+v", detail)
 	}
 
 	// Family-derived equivalent: variant key absent, family resolves.
@@ -370,5 +374,61 @@ func TestApplyFreeBasis(t *testing.T) {
 	}
 	if rt.CostBasis != "free" {
 		t.Fatalf("float64 zero source cost not detected: %+v", rt)
+	}
+}
+
+// M3.1 finding 5: the free-basis zero test compares the UNROUNDED source
+// value. A tiny-but-real source cost rounds to 0 micro-USD — it must
+// price normally, never as free.
+func TestApplySubMicroSourceCostIsNotFree(t *testing.T) {
+	for name, cost := range map[string]any{
+		"json.Number": json.Number("4e-7"),
+		"string":      "0.0000001",
+		"float64":     float64(4e-7),
+	} {
+		e := core.Event{ID: "t", Harness: "claude-code", Provider: "anthropic",
+			Model: "claude-fable-5", ModelFamily: "claude-fable-5",
+			TokensInput: 1000, TokensOutput: 100,
+			Meta: map[string]any{"source_cost": cost}}
+		if err := Apply(&e, nil); err != nil {
+			t.Fatal(err)
+		}
+		if e.CostBasis != "api_price" || e.CostUSDMicro == nil || *e.CostUSDMicro != 15_000 {
+			t.Errorf("%s: sub-micro source cost misclassified: basis=%s cost=%v",
+				name, e.CostBasis, e.CostUSDMicro)
+		}
+	}
+}
+
+// M3.1 finding 5 (owner ruling): free:true overrides stay an
+// owner-declared basis, with provenance distinct from source-reported $0
+// — price_rates carries free_source "override" vs "source".
+func TestApplyFreeOverrideProvenance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prices.json")
+	if err := os.WriteFile(path,
+		[]byte(`{"prices": {"gx10": {"free": true}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := LoadOverrides(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := core.Event{ID: "o1", Harness: "opencode", Provider: "vllm-delegate",
+		Model: "gx10", ModelFamily: "gx10", TokensInput: 100}
+	if err := Apply(&e, ov); err != nil {
+		t.Fatal(err)
+	}
+	if e.CostBasis != "free" || e.PriceSnapshot != "override" ||
+		e.CostUSDMicro == nil || *e.CostUSDMicro != 0 {
+		t.Fatalf("override-free basis wrong: %+v", e)
+	}
+	var detail struct {
+		FreeSource string `json:"free_source"`
+	}
+	if err := json.Unmarshal(e.PriceRates, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.FreeSource != "override" {
+		t.Fatalf("owner-declared free not flagged distinctly: %+v", detail)
 	}
 }

@@ -12,8 +12,15 @@ import (
 // event was BILLED at, plus — for free-basis events — the
 // API-equivalent rates and how they were derived ("model" exact key or
 // "family" fallback, flagged per the owner's ruling).
+//
+// FreeSource distinguishes the two ways basis `free` arises (M3.1
+// finding 5, owner ruling): "override" — the owner DECLARED the model
+// free in the price-override file (free:true, owner's word, no source
+// evidence needed) — vs "source" — the source itself reported exactly
+// $0 for the event. Same basis, different provenance, visible per event.
 type priceDetail struct {
 	Rates
+	FreeSource  string `json:"free_source,omitempty"`
 	EquivRates  *Rates `json:"equiv_rates,omitempty"`
 	EquivSource string `json:"equiv_source,omitempty"`
 }
@@ -45,11 +52,14 @@ func Apply(e *core.Event, ov *Overrides) error {
 
 	// Free interception: a source-reported $0 beats snapshot pricing and
 	// unknown — but never an explicit override or the local-provider rule.
+	// The zero test is on the UNROUNDED source value (M3.1 finding 5): a
+	// tiny-but-real cost like $4e-7 rounds to 0 micro-USD and must NOT be
+	// misclassified as free.
 	e.CostAPIEquivMicro = nil
 	if q.Snapshot != "override" && q.Basis != BasisLocal {
-		if src, present := sourceCostMicro(e.Meta); present && src == 0 {
+		if src, present := sourceCostRat(e.Meta); present && src.Sign() == 0 {
 			q.Basis, q.Rates = BasisFree, &Rates{}
-			detail := priceDetail{Rates: Rates{}}
+			detail := priceDetail{Rates: Rates{}, FreeSource: "source"}
 			if equiv, derivedFrom, ok := EquivalentRates(e.Model, e.ModelFamily); ok {
 				ev := equiv.CostMicroUSD(in, out, cw, 0, cr)
 				e.CostAPIEquivMicro = &ev
@@ -77,7 +87,13 @@ func Apply(e *core.Event, ov *Overrides) error {
 		cw, cw1h = five, oneH
 	}
 	cost := q.Rates.CostMicroUSD(in, out, cw, cw1h, cr)
-	return stamp(e, q, cost, priceDetail{Rates: *q.Rates})
+	detail := priceDetail{Rates: *q.Rates}
+	if q.Basis == BasisFree {
+		// Owner-declared free (override file free:true): kept as its own
+		// basis source, distinct from source-reported $0 (M3.1 ruling).
+		detail.FreeSource = "override"
+	}
+	return stamp(e, q, cost, detail)
 }
 
 func stamp(e *core.Event, q Quote, cost int64, detail priceDetail) error {
@@ -92,43 +108,30 @@ func stamp(e *core.Event, q Quote, cost int64, detail priceDetail) error {
 	return nil
 }
 
-// sourceCostMicro reads the source-reported cost out of event meta
+// sourceCostRat reads the source-reported cost out of event meta
 // (meta.source_cost — exact decimal text from the adapter, float64
-// after a database meta round-trip).
-func sourceCostMicro(meta map[string]any) (int64, bool) {
+// after a database meta round-trip) as an EXACT rational, no rounding:
+// the free-basis rule compares it to zero, and rounding first would
+// misclassify sub-micro real costs as $0 (M3.1 finding 5). Negative or
+// unparseable values read as absent — normal resolution stays in charge.
+func sourceCostRat(meta map[string]any) (*big.Rat, bool) {
 	v, present := meta["source_cost"]
 	if !present {
-		return 0, false
+		return nil, false
 	}
+	var r *big.Rat
 	switch n := v.(type) {
 	case json.Number:
-		micro, err := USDToMicro(n.String())
-		if err != nil {
-			return 0, false
-		}
-		return micro, true
+		r, _ = new(big.Rat).SetString(n.String())
 	case string:
-		micro, err := USDToMicro(n)
-		if err != nil {
-			return 0, false
-		}
-		return micro, true
+		r, _ = new(big.Rat).SetString(n)
 	case float64:
-		r := new(big.Rat).SetFloat64(n)
-		if r == nil || r.Sign() < 0 {
-			return 0, false
-		}
-		r.Mul(r, new(big.Rat).SetInt64(1_000_000))
-		num := new(big.Int).Lsh(r.Num(), 1)
-		num.Add(num, r.Denom())
-		den := new(big.Int).Lsh(r.Denom(), 1)
-		q := num.Div(num, den)
-		if !q.IsInt64() {
-			return 0, false
-		}
-		return q.Int64(), true
+		r = new(big.Rat).SetFloat64(n)
 	}
-	return 0, false
+	if r == nil || r.Sign() < 0 {
+		return nil, false
+	}
+	return r, true
 }
 
 // cacheWriteSplit extracts the per-TTL cache-write counts from

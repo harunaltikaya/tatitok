@@ -23,6 +23,13 @@ package pricing
 //	}
 //
 // Keys match raw model first, then model_family (see Apply/Resolve).
+//
+// "free": true is the OWNER-DECLARED free basis: the model bills $0 by
+// the owner's word, no source evidence needed, and it beats every other
+// resolution rule (including local-provider zeroing). It is recorded
+// distinctly from source-reported $0 free events: price_rates carries
+// free_source "override" vs "source" (price_snapshot likewise reads
+// "override"), so the two origins stay distinguishable per event.
 
 import (
 	"encoding/json"
