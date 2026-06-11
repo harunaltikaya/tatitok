@@ -9,7 +9,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
 	"github.com/harunaltikaya/tatitok/internal/pricing"
@@ -34,6 +36,69 @@ func (s *Store) PlanPricing(ctx context.Context, snapshotVersion string) (Pricin
 		Scan(&p.Events, &p.Unpriced, &p.OnCurrent)
 	p.OnOther = p.Events - p.Unpriced - p.OnCurrent
 	return p, err
+}
+
+// PricingReconRow is one (provider, model) group of the opencode
+// store-and-compare lane: OUR computed cost vs the source-reported cost
+// kept in meta.source_cost, both in integer micro-USD.
+type PricingReconRow struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Events   int64  `json:"events"`
+	// Unpriced counts events whose OUR cost is NULL (snapshot gap) —
+	// reported as coverage findings, not tolerance violations.
+	Unpriced    int64 `json:"events_unpriced"`
+	OursMicro   int64 `json:"ours_usd_micro"`
+	SourceMicro int64 `json:"source_usd_micro"`
+}
+
+// PricingReconciliation aggregates ours-vs-source costs per
+// (provider, model) over every event carrying meta.source_cost.
+// usdToMicro converts the source's decimal cost text exactly (the
+// caller passes pricing.USDToMicro — the store stays float-free).
+func (s *Store) PricingReconciliation(ctx context.Context, usdToMicro func(text string) (int64, error)) ([]PricingReconRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT provider, model,
+			cost_usd_micro, meta
+		FROM usage_events
+		WHERE meta IS NOT NULL AND instr(meta, '"source_cost"') > 0
+		ORDER BY provider, model`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []PricingReconRow
+	for rows.Next() {
+		var provider, model, meta string
+		var ours sql.NullInt64
+		if err := rows.Scan(&provider, &model, &ours, &meta); err != nil {
+			return nil, err
+		}
+		var m struct {
+			SourceCost json.Number `json:"source_cost"`
+		}
+		dec := json.NewDecoder(strings.NewReader(meta))
+		dec.UseNumber()
+		if err := dec.Decode(&m); err != nil || m.SourceCost == "" {
+			continue // no parseable source cost on this row
+		}
+		src, err := usdToMicro(m.SourceCost.String())
+		if err != nil {
+			return nil, fmt.Errorf("source_cost %q: %w", m.SourceCost, err)
+		}
+		if n := len(out); n == 0 || out[n-1].Provider != provider || out[n-1].Model != model {
+			out = append(out, PricingReconRow{Provider: provider, Model: model})
+		}
+		r := &out[len(out)-1]
+		r.Events++
+		r.SourceMicro += src
+		if ours.Valid {
+			r.OursMicro += ours.Int64
+		} else {
+			r.Unpriced++
+		}
+	}
+	return out, rows.Err()
 }
 
 // PricingResult summarizes one pricing recompute.
@@ -63,7 +128,7 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(harness,''),
 			provider, model, model_family,
 			tokens_input, tokens_output, tokens_cache_write, tokens_cache_read,
-			tokens_reasoning,
+			tokens_reasoning, COALESCE(meta,''),
 			cost_usd_micro, COALESCE(cost_basis,''), COALESCE(price_snapshot,''),
 			COALESCE(price_rates,'')
 		FROM usage_events`)
@@ -71,12 +136,12 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 		return res, err
 	}
 	for rows.Next() {
-		var id, harness, provider, model, family, oldBasis, oldSnap, oldRates string
+		var id, harness, provider, model, family, meta, oldBasis, oldSnap, oldRates string
 		var in, out, cw, cr int64
 		var reasoning sql.NullInt64
 		var oldCost sql.NullInt64
 		if err := rows.Scan(&id, &harness, &provider, &model, &family,
-			&in, &out, &cw, &cr, &reasoning, &oldCost, &oldBasis, &oldSnap, &oldRates); err != nil {
+			&in, &out, &cw, &cr, &reasoning, &meta, &oldCost, &oldBasis, &oldSnap, &oldRates); err != nil {
 			_ = rows.Close()
 			return res, err
 		}
@@ -88,6 +153,11 @@ func (s *Store) RecomputePricing(ctx context.Context, ov *pricing.Overrides) (Pr
 		if reasoning.Valid {
 			v := reasoning.Int64
 			e.TokensReasoning = &v
+		}
+		if meta != "" {
+			// meta feeds pricing detail (cache-write TTL split); a decode
+			// failure only loses that refinement, never the row.
+			_ = json.Unmarshal([]byte(meta), &e.Meta)
 		}
 		if err := pricing.Apply(&e, ov); err != nil {
 			_ = rows.Close()

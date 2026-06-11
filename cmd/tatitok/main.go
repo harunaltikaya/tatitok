@@ -497,11 +497,18 @@ func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	scan := fs.Bool("scan-content", false, "verify no prompt/response text is stored")
 	provenance := fs.Bool("provenance", false, "list row counts by adapter@version")
+	prices := fs.Bool("pricing", false, "reconcile our computed costs against source-reported costs (opencode)")
 	asJSON := fs.Bool("json", false, "JSON output (with --provenance)")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	_ = fs.Parse(args)
-	if *scan == *provenance {
-		return fmt.Errorf("pass exactly one of --scan-content or --provenance")
+	modes := 0
+	for _, m := range []bool{*scan, *provenance, *prices} {
+		if m {
+			modes++
+		}
+	}
+	if modes != 1 {
+		return fmt.Errorf("pass exactly one of --scan-content, --provenance or --pricing")
 	}
 	st, err := openStore(*dbPath)
 	if err != nil {
@@ -511,6 +518,9 @@ func cmdDoctor(args []string) error {
 
 	if *provenance {
 		return doctorProvenance(context.Background(), st, *asJSON)
+	}
+	if *prices {
+		return doctorPricing(context.Background(), st)
 	}
 	return doctorScanContent(context.Background(), st, fs.Args())
 }

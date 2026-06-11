@@ -9,6 +9,7 @@ import (
 
 	"github.com/harunaltikaya/tatitok/internal/adapters"
 	"github.com/harunaltikaya/tatitok/internal/core"
+	"github.com/harunaltikaya/tatitok/internal/pricing"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
@@ -184,6 +185,74 @@ func doctorProvenance(ctx context.Context, st *store.Store, asJSON bool) error {
 		// Legal but worth seeing: codex usage logged before the first
 		// turn_context carries no model (pricing cannot attribute these).
 		fmt.Printf("events with empty model: %s\n", formatTokens(emptyModel))
+	}
+	return nil
+}
+
+// pricingTolerance is the documented reconciliation tolerance: a
+// (provider, model) group passes when |ours − source| is within 1% of
+// the source total or within 1000 micro-USD ($0.001) absolute —
+// whichever is larger. Small enough to catch a wrong rate or a wrong
+// component mapping, large enough to absorb the per-event rounding the
+// two implementations do independently.
+func pricingTolerance(sourceMicro int64) int64 {
+	tol := sourceMicro / 100
+	if tol < 0 {
+		tol = -tol
+	}
+	if tol < 1000 {
+		tol = 1000
+	}
+	return tol
+}
+
+func formatMicroUSD(micro int64) string {
+	sign := ""
+	if micro < 0 {
+		sign, micro = "-", -micro
+	}
+	return fmt.Sprintf("%s$%d.%06d", sign, micro/1_000_000, micro%1_000_000)
+}
+
+// doctorPricing is the opencode store-and-compare lane (milestone-3
+// Task 2): OUR computed cost vs the source-reported cost, per
+// (provider, model). Deltas are a report, never an auto-correction;
+// out-of-tolerance groups where both sides are priced → exit 1.
+func doctorPricing(ctx context.Context, st *store.Store) error {
+	rows, err := st.PricingReconciliation(ctx, pricing.USDToMicro)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		fmt.Println("no events carry a source-reported cost — ingest an opencode store first")
+		return nil
+	}
+	fmt.Printf("%-22s %-30s %8s %14s %14s %14s  %s\n",
+		"PROVIDER", "MODEL", "EVENTS", "OURS", "SOURCE", "DELTA", "VERDICT")
+	violations, gaps := 0, 0
+	for _, r := range rows {
+		delta := r.OursMicro - r.SourceMicro
+		verdict := "ok"
+		switch {
+		case r.Unpriced > 0:
+			verdict = fmt.Sprintf("COVERAGE GAP — %d events unpriced (model missing from snapshot/overrides)", r.Unpriced)
+			gaps++
+		case delta > pricingTolerance(r.SourceMicro) || -delta > pricingTolerance(r.SourceMicro):
+			verdict = "OUT OF TOLERANCE (>1% and >$0.001)"
+			violations++
+		}
+		fmt.Printf("%-22s %-30s %8s %14s %14s %14s  %s\n",
+			r.Provider, r.Model, formatTokens(r.Events),
+			formatMicroUSD(r.OursMicro), formatMicroUSD(r.SourceMicro),
+			formatMicroUSD(delta), verdict)
+	}
+	if gaps > 0 {
+		fmt.Printf("\n%d coverage gap(s): the source priced models our snapshot cannot — add override-file entries or refresh the snapshot, then run: tatitok recompute --pricing\n", gaps)
+	}
+	if violations > 0 {
+		return exitError{code: 1, msg: fmt.Sprintf(
+			"pricing reconciliation: %d (provider, model) group(s) out of tolerance — investigate rates/component mapping (stored costs were NOT modified)",
+			violations)}
 	}
 	return nil
 }

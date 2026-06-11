@@ -42,19 +42,24 @@ func TestUSDPerTokenConversionExact(t *testing.T) {
 func TestCostMicroUSDRounding(t *testing.T) {
 	r := Rates{Input: 3_000_000, Output: 15_000_000} // $3 / $15 per Mtok
 	// 1000 input + 100 output = 3000 + 1500 micro = 4500 micro-USD
-	if got := r.CostMicroUSD(1000, 100, 0, 0); got != 4500 {
+	if got := r.CostMicroUSD(1000, 100, 0, 0, 0); got != 4500 {
 		t.Errorf("cost = %d, want 4500", got)
 	}
 	// One input token at $3/Mtok = 3 micro-USD exactly.
-	if got := r.CostMicroUSD(1, 0, 0, 0); got != 3 {
+	if got := r.CostMicroUSD(1, 0, 0, 0, 0); got != 3 {
 		t.Errorf("cost = %d, want 3", got)
 	}
 	// Rounding: 1 token at 0.4 micro rounds to 0; at 0.5 micro rounds to 1.
-	if got := (Rates{Input: 400_000}).CostMicroUSD(1, 0, 0, 0); got != 0 {
+	if got := (Rates{Input: 400_000}).CostMicroUSD(1, 0, 0, 0, 0); got != 0 {
 		t.Errorf("0.4 micro rounded to %d, want 0", got)
 	}
-	if got := (Rates{Input: 500_000}).CostMicroUSD(1, 0, 0, 0); got != 1 {
+	if got := (Rates{Input: 500_000}).CostMicroUSD(1, 0, 0, 0, 0); got != 1 {
 		t.Errorf("0.5 micro rounded to %d, want 1", got)
+	}
+	// 1h-TTL cache writes bill at their own rate.
+	split := Rates{CacheWrite: 12_500_000, CacheWrite1h: 20_000_000}
+	if got := split.CostMicroUSD(0, 0, 1000, 2000, 0); got != 12_500+40_000 {
+		t.Errorf("split cache write cost = %d, want 52500", got)
 	}
 }
 
@@ -67,7 +72,7 @@ func TestResolveSnapshotEntry(t *testing.T) {
 		t.Fatalf("claude-fable-5: %+v, want api_price with rates", q)
 	}
 	want := Rates{Input: 10_000_000, Output: 50_000_000,
-		CacheWrite: 12_500_000, CacheRead: 1_000_000}
+		CacheWrite: 12_500_000, CacheWrite1h: 20_000_000, CacheRead: 1_000_000}
 	if *q.Rates != want {
 		t.Fatalf("claude-fable-5 rates = %+v, want %+v (snapshot changed? run the refresh ceremony)", *q.Rates, want)
 	}
@@ -207,6 +212,32 @@ func TestApplyEndToEnd(t *testing.T) {
 	}
 	if e.CostBasis != "api_price" || e.PriceSnapshot == "" || len(e.PriceRates) == 0 {
 		t.Fatalf("derived fields incomplete: %+v", e)
+	}
+
+	// With the per-TTL split in meta, 1h writes bill at the 1h rate:
+	// 200 cache-write tokens as 50×$12.50 + 150×$20 per Mtok
+	// = 625 + 3000 micro, replacing the flat 200×$12.50 = 2500 micro.
+	s := e
+	s.Meta = map[string]any{"cache_creation": map[string]any{
+		"ephemeral_5m_input_tokens": float64(50),
+		"ephemeral_1h_input_tokens": float64(150),
+	}}
+	if err := Apply(&s, nil); err != nil {
+		t.Fatal(err)
+	}
+	if *s.CostUSDMicro != 22500-2500+625+3000 {
+		t.Fatalf("split cost = %d, want %d", *s.CostUSDMicro, 22500-2500+625+3000)
+	}
+	// A split that does not sum to the stored count falls back to flat.
+	s.Meta = map[string]any{"cache_creation": map[string]any{
+		"ephemeral_5m_input_tokens": float64(50),
+		"ephemeral_1h_input_tokens": float64(9),
+	}}
+	if err := Apply(&s, nil); err != nil {
+		t.Fatal(err)
+	}
+	if *s.CostUSDMicro != 22500 {
+		t.Fatalf("inconsistent split must price flat: %d, want 22500", *s.CostUSDMicro)
 	}
 
 	// Unpriceable: NULL cost, basis unknown, no rates.

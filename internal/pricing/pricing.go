@@ -46,20 +46,29 @@ type Rates struct {
 	Output     int64 `json:"output"`
 	CacheWrite int64 `json:"cache_write"`
 	CacheRead  int64 `json:"cache_read"`
+	// CacheWrite1h is the 1-hour-TTL cache-write rate (anthropic bills 5m
+	// and 1h writes differently). Zero when the snapshot has none; used
+	// only when the event carries the per-TTL split in
+	// meta.cache_creation.
+	CacheWrite1h int64 `json:"cache_write_1h,omitempty"`
 }
 
 // IsZero reports whether every component rate is zero.
 func (r Rates) IsZero() bool {
-	return r.Input == 0 && r.Output == 0 && r.CacheWrite == 0 && r.CacheRead == 0
+	return r.Input == 0 && r.Output == 0 && r.CacheWrite == 0 &&
+		r.CacheWrite1h == 0 && r.CacheRead == 0
 }
 
-// CostMicroUSD prices the four token components in integer arithmetic:
-// the four products accumulate in micro-USD-per-Mtok × tokens, and ONE
-// division at the end converts to micro-USD, rounding half up. tokens
-// per component are int64; products stay far below int64 range.
-func (r Rates) CostMicroUSD(input, output, cacheWrite, cacheRead int64) int64 {
+// CostMicroUSD prices the token components in integer arithmetic: the
+// products accumulate in micro-USD-per-Mtok × tokens, and ONE division
+// at the end converts to micro-USD, rounding half up. cacheWrite1h is
+// the 1h-TTL portion of cache writes (0 when the split is unknown —
+// then cacheWrite carries the full count at the 5m rate). tokens per
+// component are int64; products stay far below int64 range.
+func (r Rates) CostMicroUSD(input, output, cacheWrite, cacheWrite1h, cacheRead int64) int64 {
 	sum := input*r.Input + output*r.Output +
-		cacheWrite*r.CacheWrite + cacheRead*r.CacheRead
+		cacheWrite*r.CacheWrite + cacheWrite1h*r.CacheWrite1h +
+		cacheRead*r.CacheRead
 	return (sum + 500_000) / 1_000_000
 }
 
@@ -82,10 +91,11 @@ type snapshotMeta struct {
 // are deliberately ignored in M3 — standard-tier pricing, documented in
 // the milestone report.
 type snapshotEntry struct {
-	Input      json.Number `json:"input_cost_per_token"`
-	Output     json.Number `json:"output_cost_per_token"`
-	CacheWrite json.Number `json:"cache_creation_input_token_cost"`
-	CacheRead  json.Number `json:"cache_read_input_token_cost"`
+	Input        json.Number `json:"input_cost_per_token"`
+	Output       json.Number `json:"output_cost_per_token"`
+	CacheWrite   json.Number `json:"cache_creation_input_token_cost"`
+	CacheWrite1h json.Number `json:"cache_creation_input_token_cost_above_1hr"`
+	CacheRead    json.Number `json:"cache_read_input_token_cost"`
 }
 
 var (
@@ -161,6 +171,10 @@ func load() {
 			return
 		}
 		if r.CacheWrite, err = usdPerTokenToMicroPerMtok(e.CacheWrite); err != nil {
+			loadErr = fmt.Errorf("pricing: %s: %w", key, err)
+			return
+		}
+		if r.CacheWrite1h, err = usdPerTokenToMicroPerMtok(e.CacheWrite1h); err != nil {
 			loadErr = fmt.Errorf("pricing: %s: %w", key, err)
 			return
 		}
@@ -243,6 +257,28 @@ func ReferenceRates(model string) (Rates, bool, error) {
 	}
 	r, ok := snapRates[model]
 	return r, ok, nil
+}
+
+// USDToMicro converts a decimal USD amount (e.g. an opencode
+// source-reported cost) to integer micro-USD, exactly via big.Rat with
+// half-up rounding at the sub-micro digits float sources carry.
+func USDToMicro(text string) (int64, error) {
+	r, ok := new(big.Rat).SetString(text)
+	if !ok {
+		return 0, fmt.Errorf("unparseable USD amount %q", text)
+	}
+	if r.Sign() < 0 {
+		return 0, fmt.Errorf("negative USD amount %q", text)
+	}
+	r.Mul(r, new(big.Rat).SetInt64(1_000_000))
+	num := new(big.Int).Lsh(r.Num(), 1)
+	num.Add(num, r.Denom())
+	den := new(big.Int).Lsh(r.Denom(), 1)
+	q := num.Div(num, den)
+	if !q.IsInt64() {
+		return 0, fmt.Errorf("USD amount %q out of range", text)
+	}
+	return q.Int64(), nil
 }
 
 // PricedTokens maps an event's stored token columns to the four price

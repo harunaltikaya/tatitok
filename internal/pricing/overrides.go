@@ -52,11 +52,12 @@ func (o *Overrides) Len() int {
 }
 
 type overrideEntry struct {
-	Free       bool        `json:"free"`
-	Input      json.Number `json:"input_usd_per_mtok"`
-	Output     json.Number `json:"output_usd_per_mtok"`
-	CacheWrite json.Number `json:"cache_write_usd_per_mtok"`
-	CacheRead  json.Number `json:"cache_read_usd_per_mtok"`
+	Free         bool        `json:"free"`
+	Input        json.Number `json:"input_usd_per_mtok"`
+	Output       json.Number `json:"output_usd_per_mtok"`
+	CacheWrite   json.Number `json:"cache_write_usd_per_mtok"`
+	CacheWrite1h json.Number `json:"cache_write_1h_usd_per_mtok"`
+	CacheRead    json.Number `json:"cache_read_usd_per_mtok"`
 }
 
 type overrideFile struct {
@@ -100,7 +101,8 @@ func LoadOverrides(path string) (*Overrides, error) {
 				dst *int64
 			}{
 				{e.Input, &r.Input}, {e.Output, &r.Output},
-				{e.CacheWrite, &r.CacheWrite}, {e.CacheRead, &r.CacheRead},
+				{e.CacheWrite, &r.CacheWrite}, {e.CacheWrite1h, &r.CacheWrite1h},
+				{e.CacheRead, &r.CacheRead},
 			} {
 				v, err := usdPerMtokToMicro(c.n)
 				if err != nil {
