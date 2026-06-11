@@ -9,6 +9,7 @@ package adapters
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -70,27 +71,44 @@ func (a *fakeAdapter) Backfill(ctx context.Context, src Source, sink Sink) error
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		a.filesStarted++
-		if err := sink.FileStart(f.path); err != nil {
-			return err
-		}
-		events := 0
-		for _, b := range f.batches {
-			if err := sink.EmitBatch(f.path, b); err != nil {
-				return err
-			}
-			a.batchesSent++
-			events += len(b)
-		}
-		res := FileResult{
-			Path: f.path, MTime: time.Now().UTC(), Size: 1,
-			LineCount: events, Events: events, ReadError: f.readError,
-		}
-		if err := sink.FileDone(res); err != nil {
+		if err := a.emitFile(f, sink); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (a *fakeAdapter) emitFile(f fakeFile, sink Sink) error {
+	a.filesStarted++
+	if err := sink.FileStart(f.path); err != nil {
+		return err
+	}
+	events := 0
+	for _, b := range f.batches {
+		if err := sink.EmitBatch(f.path, b); err != nil {
+			return err
+		}
+		a.batchesSent++
+		events += len(b)
+	}
+	res := FileResult{
+		Path: f.path, MTime: time.Now().UTC(), Size: 1,
+		LineCount: events, Events: events, ReadError: f.readError,
+	}
+	return sink.FileDone(res)
+}
+
+// Watch contract (M4 Task 1) for the fakes: per-file ingest replays the
+// scripted file with that path; no watch spec.
+func (*fakeAdapter) WatchSpec(Source) WatchSpec { return WatchSpec{} }
+
+func (a *fakeAdapter) BackfillFile(_ context.Context, _ Source, path string, sink Sink) error {
+	for _, f := range a.files {
+		if f.path == path {
+			return a.emitFile(f, sink)
+		}
+	}
+	return fmt.Errorf("fake adapter: no scripted file %s", path)
 }
 
 func TestIngestSinkErrorCancelsBackfill(t *testing.T) {

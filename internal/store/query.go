@@ -442,6 +442,40 @@ func (s *Store) Provenance(ctx context.Context) ([]ProvenanceRow, error) {
 	return out, rows.Err()
 }
 
+// SourceState is the (mtime, size) recorded for one source file at its
+// last ingest — the watcher's catch-up baseline (M4 Task 1): at serve
+// start, files whose stat still matches are not re-read.
+type SourceState struct {
+	MTime time.Time
+	Size  int64
+}
+
+// SourceStates returns the recorded state of every known source file,
+// keyed by absolute path.
+func (s *Store) SourceStates(ctx context.Context) (map[string]SourceState, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT path, mtime, size FROM sources`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]SourceState{}
+	for rows.Next() {
+		var path, mtime string
+		var size int64
+		if err := rows.Scan(&path, &mtime, &size); err != nil {
+			return nil, err
+		}
+		ts, err := time.Parse(time.RFC3339Nano, mtime)
+		if err != nil {
+			// A row this handle cannot parse just means "re-read that
+			// file" — never abort the watcher over bookkeeping.
+			continue
+		}
+		out[path] = SourceState{MTime: ts, Size: size}
+	}
+	return out, rows.Err()
+}
+
 // CountEvents returns the total number of stored events (test/diagnostic
 // helper).
 func (s *Store) CountEvents(ctx context.Context) (int64, error) {

@@ -137,23 +137,49 @@ func (Adapter) Backfill(ctx context.Context, src adapters.Source, sink adapters.
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := sink.FileStart(f); err != nil {
-			return err
-		}
-		res, readErr, sinkErr := backfillFile(ctx, src, f, sink)
-		if sinkErr != nil {
-			return sinkErr
-		}
-		if readErr != nil {
-			slog.Warn("skipping unreadable rollout file",
-				"adapter", harnessName, "file", f, "error", readErr)
-			res = adapters.FileResult{Path: f, ReadError: readErr.Error()}
-		}
-		if err := sink.FileDone(res); err != nil {
+		if err := ingestFile(ctx, src, f, sink); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ingestFile is one file's bracketed slice of a backfill — shared by
+// Backfill and BackfillFile so the two paths cannot drift.
+func ingestFile(ctx context.Context, src adapters.Source, f string, sink adapters.Sink) error {
+	if err := sink.FileStart(f); err != nil {
+		return err
+	}
+	res, readErr, sinkErr := backfillFile(ctx, src, f, sink)
+	if sinkErr != nil {
+		return sinkErr
+	}
+	if readErr != nil {
+		slog.Warn("skipping unreadable rollout file",
+			"adapter", harnessName, "file", f, "error", readErr)
+		res = adapters.FileResult{Path: f, ReadError: readErr.Error()}
+	}
+	return sink.FileDone(res)
+}
+
+// BackfillFile is the watcher's incremental path (M4 Task 1): one
+// rollout file, whole-file re-read, replacement semantics verbatim
+// (codex has no cross-record dedup, so per-file order is the only order
+// that matters and it is preserved).
+func (Adapter) BackfillFile(ctx context.Context, src adapters.Source, path string, sink adapters.Sink) error {
+	return ingestFile(ctx, src, path, sink)
+}
+
+// WatchSpec: rollout JSONL files in the sessions/YYYY/MM/DD date tree —
+// fsnotify on the tree (new day directories appear and are picked up),
+// any .jsonl create/append re-ingests that file.
+func (Adapter) WatchSpec(adapters.Source) adapters.WatchSpec {
+	return adapters.WatchSpec{Match: func(path string) string {
+		if strings.HasSuffix(path, ".jsonl") {
+			return path
+		}
+		return ""
+	}}
 }
 
 type skippedSource struct {

@@ -99,6 +99,30 @@ type Sink interface {
 	FileDone(res FileResult) error
 }
 
+// WatchSpec describes how the hub watches one Source for live changes
+// (M4 Task 1 — the live-tail milestone the contract reserved Watch for).
+// The hub owns the machinery (fsnotify, polling, debounce, scheduling);
+// the adapter owns the layout knowledge: which paths matter and what to
+// ingest when one of them changes.
+type WatchSpec struct {
+	// PollOnly marks fsnotify unsuitable for this source. The opencode
+	// store is a live SQLite database written by another process —
+	// polling is the primary mechanism by design (verdict and the WAL
+	// empirical basis recorded in docs/format-notes.md).
+	PollOnly bool
+	// PollPaths lists the exact files the poller stats for a PollOnly
+	// source, so no tree walk is needed (opencode: the database and its
+	// -wal — in WAL mode the main file's mtime only moves at
+	// checkpoint). Empty means the poller walks Root applying Match —
+	// the automatic fallback mode for notify sources.
+	PollPaths []string
+	// Match maps a changed filesystem path to the path BackfillFile
+	// should ingest, or "" when the change is irrelevant. claude-code
+	// and codex map a session/rollout .jsonl to itself; opencode maps
+	// the database and its -wal to the database.
+	Match func(path string) string
+}
+
 // Adapter is the shared contract.
 type Adapter interface {
 	Name() string // "claude-code"
@@ -112,5 +136,14 @@ type Adapter interface {
 	// Backfill parses every log file under src and pushes the normalized
 	// events through sink per the contract v2 semantics above.
 	Backfill(ctx context.Context, src Source, sink Sink) error
-	// Watch(...) — NOT until the milestone that asks for live tail.
+	// WatchSpec describes how the hub watches src (M4 Task 1).
+	WatchSpec(src Source) WatchSpec
+	// BackfillFile ingests exactly ONE file of src through sink, with
+	// the same bracketing, error containment and replacement semantics
+	// Backfill applies to that file. The hub watcher calls it per
+	// changed file: the whole file is re-read — deliberately no offset
+	// tracking, so a pass is idempotent by construction — and re-emitted
+	// rows hit the deterministic-ID replacement path, last occurrence
+	// wins (M4 Task 1; decision recorded in docs/format-notes.md).
+	BackfillFile(ctx context.Context, src Source, path string, sink Sink) error
 }

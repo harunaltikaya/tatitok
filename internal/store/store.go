@@ -20,6 +20,9 @@ import (
 // Store wraps the SQLite handle after migration.
 type Store struct {
 	db *sql.DB
+	// quietReplace turns the per-event AS-4 replacement log line off
+	// for this handle (see QuietReplacements).
+	quietReplace bool
 }
 
 // migrations run in order inside one transaction each; schema_version
@@ -498,8 +501,8 @@ type SourceInfo struct {
 	// Machine is the collecting machine's label (propagated from the
 	// adapter Source); the row's stable source_id is derived from
 	// (Harness, Path) by core.SourceID, never stored here.
-	Machine string
-	MTime   time.Time
+	Machine     string
+	MTime       time.Time
 	Size        int64
 	LineCount   int
 	ParseErrors int
@@ -544,7 +547,16 @@ type FileTx struct {
 	upd   *sql.Stmt
 	stats InsertStats
 	done  bool
+	quiet bool // inherited from Store.quietReplace at BeginFile
 }
+
+// QuietReplacements switches the per-event AS-4 replacement log line
+// off for this handle. The hub watcher sets it (M4 Task 1, owner-ruled):
+// live re-ingest replaces rows on every pass by design, so replacements
+// there are counted into the per-pass summary lines instead — reported,
+// never silent (the M3.1 parity-test summarization precedent). CLI
+// ingest keeps the per-event lines.
+func (s *Store) QuietReplacements() { s.quietReplace = true }
 
 // BeginFile opens the transaction for one source file's events.
 func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
@@ -597,7 +609,7 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 		_ = tx.Rollback()
 		return nil, err
 	}
-	return &FileTx{tx: tx, ins: ins, upd: upd}, nil
+	return &FileTx{tx: tx, ins: ins, upd: upd, quiet: s.quietReplace}, nil
 }
 
 // eventArgs encodes an event's payload into the 19 positional parameters
@@ -676,8 +688,10 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Pro
 		}
 		if n == 1 {
 			f.stats.Replaced++
-			slog.Info("replaced stored event: source row changed since last ingest",
-				"id", e.ID, "harness", e.Harness, "ts", e.TS.UTC())
+			if !f.quiet {
+				slog.Info("replaced stored event: source row changed since last ingest",
+					"id", e.ID, "harness", e.Harness, "ts", e.TS.UTC())
+			}
 		}
 	}
 	return nil

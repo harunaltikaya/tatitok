@@ -186,6 +186,54 @@ func (Adapter) Backfill(ctx context.Context, src adapters.Source, sink adapters.
 	return sink.FileDone(res)
 }
 
+// BackfillFile is the watcher's incremental path (M4 Task 1): the whole
+// message store re-reads (it is ONE source "file"), replacement
+// semantics absorb both unchanged and finalized-in-flight rows. Unlike
+// Backfill it does NOT re-warn about a legacy storage tree — the hub
+// warns once at Detect; a watcher pass every few seconds must not spam.
+func (Adapter) BackfillFile(ctx context.Context, src adapters.Source, path string, sink adapters.Sink) error {
+	dbPath := filepath.Join(src.Root, "opencode.db")
+	if path != dbPath {
+		return fmt.Errorf("opencode: BackfillFile path %s is not the message store %s", path, dbPath)
+	}
+	if err := sink.FileStart(dbPath); err != nil {
+		return err
+	}
+	res, readErr, sinkErr := backfillDB(ctx, src, dbPath, sink)
+	if sinkErr != nil {
+		return sinkErr
+	}
+	if readErr != nil {
+		slog.Warn("skipping unreadable message store",
+			"adapter", harnessName, "db", dbPath, "error", readErr)
+		res = adapters.FileResult{Path: dbPath, ReadError: readErr.Error()}
+	}
+	return sink.FileDone(res)
+}
+
+// WatchSpec: the source is a live SQLite store written by another
+// process — polling is the primary mechanism (no fsnotify), per the
+// milestone-4 strategy and the empirical verdict in format-notes
+// ("opencode watch strategy"): the live store runs WAL, so the poller
+// stats the -wal alongside the database — in WAL mode the main file's
+// mtime/size only move at checkpoint, while every write touches the
+// -wal. A change to either re-ingests the store; mode=ro + busy_timeout
+// reads never block the owning process (WAL readers are
+// snapshot-isolated).
+func (Adapter) WatchSpec(src adapters.Source) adapters.WatchSpec {
+	dbPath := filepath.Join(src.Root, "opencode.db")
+	return adapters.WatchSpec{
+		PollOnly:  true,
+		PollPaths: []string{dbPath, dbPath + "-wal"},
+		Match: func(path string) string {
+			if path == dbPath || path == dbPath+"-wal" {
+				return dbPath
+			}
+			return ""
+		},
+	}
+}
+
 func backfillDB(ctx context.Context, src adapters.Source, dbPath string, sink adapters.Sink) (res adapters.FileResult, readErr, sinkErr error) {
 	st, err := os.Stat(dbPath)
 	if err != nil {

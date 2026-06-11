@@ -3,6 +3,8 @@ package adapters
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
 	"github.com/harunaltikaya/tatitok/internal/modelmap"
@@ -190,6 +192,46 @@ func (k *storeSink) FileDone(res FileResult) error {
 // price-override file (nil = none; tests pass nil so they never read the
 // real config). On error the open file transaction is rolled back; the
 // summary reflects only completed files.
+// IngestFiles is the watcher's incremental ingest (M4 Task 1): exactly
+// the given files of src go through the same per-file-transaction sink
+// as a backfill, so replacement semantics apply verbatim. Paths are
+// deduplicated and sorted for a deterministic pass order. Like
+// IngestBackfill, an error aborts the pass with the open file rolled
+// back; completed files stay committed (idempotent — the next pass or a
+// backfill reconciles).
+func IngestFiles(ctx context.Context, st *store.Store, a Adapter, src Source, paths []string, ov *pricing.Overrides) (IngestSummary, error) {
+	var sum IngestSummary
+	sink := &storeSink{
+		ctx: ctx, st: st, harness: src.Harness, machine: src.Machine,
+		version: a.Version(), overrides: ov, sum: &sum,
+		closed: map[string]bool{},
+	}
+	for _, p := range dedupSorted(paths) {
+		if err := ctx.Err(); err != nil {
+			return sum, err
+		}
+		err := a.BackfillFile(ctx, src, p, sink)
+		if sink.cur != nil {
+			_ = sink.cur.Rollback()
+			sink.cur, sink.started, sink.curEmitted, sink.curEmptyModel = nil, "", 0, 0
+		}
+		if err == nil && sink.started != "" {
+			err = fmt.Errorf("adapter contract violation: BackfillFile returned with %s still open (missing FileDone)",
+				sink.started)
+		}
+		if err != nil {
+			return sum, err
+		}
+	}
+	return sum, nil
+}
+
+func dedupSorted(paths []string) []string {
+	out := append([]string(nil), paths...)
+	sort.Strings(out)
+	return slices.Compact(out)
+}
+
 func IngestBackfill(ctx context.Context, st *store.Store, a Adapter, srcs []Source, ov *pricing.Overrides) (IngestSummary, error) {
 	var sum IngestSummary
 	for _, src := range srcs {
