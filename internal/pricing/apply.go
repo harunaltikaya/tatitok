@@ -80,8 +80,8 @@ func Apply(e *core.Event, ov *Overrides) error {
 	// mirroring the free-basis equivalent design.
 	if q.Basis == BasisLocal {
 		detail := priceDetail{Rates: *q.Rates}
-		if ref, ok := ov.Reference(e.Model, e.ModelFamily); ok {
-			rr, found, err := ReferenceRates(ref, ov)
+		if ref, viaFamily, ok := ov.Reference(e.Model, e.ModelFamily); ok {
+			rr, patched, found, err := ReferenceRates(ref, ov)
 			if err != nil {
 				return err
 			}
@@ -92,7 +92,20 @@ func Apply(e *core.Event, ov *Overrides) error {
 				}
 				e.CostAPIEquivMicro = &ev
 				detail.EquivRates = &rr
-				detail.EquivSource = "reference:" + ref
+				// Full derivation per event (M4 Codex round, finding 4),
+				// matching the equivalents' convention: +family when the
+				// local mapping matched via the family key, +override when
+				// an override patch shaped the target's rates — an
+				// override-defined yardstick reads differently from a
+				// snapshot rate.
+				src := "reference:" + ref
+				if viaFamily {
+					src += "+family"
+				}
+				if patched {
+					src += "+override"
+				}
+				detail.EquivSource = src
 			}
 		}
 		return stamp(e, q, 0, detail)

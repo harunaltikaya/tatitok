@@ -178,16 +178,22 @@ func (o *Overrides) References() int {
 
 // Reference resolves the configured cloud-reference model for a local
 // model — raw model first, then family, mirroring the price lookup.
-func (o *Overrides) Reference(model, family string) (string, bool) {
+// viaFamily reports that the FAMILY key matched (the raw model had no
+// mapping of its own) — recorded in the stored derivation exactly like
+// the equivalents' "family" flag (M4 Codex round, finding 4).
+func (o *Overrides) Reference(model, family string) (ref string, viaFamily bool, ok bool) {
 	if o == nil {
-		return "", false
+		return "", false, false
 	}
-	for _, k := range []string{model, family} {
-		if ref, ok := o.refs[k]; ok {
-			return ref, true
+	if ref, ok := o.refs[model]; ok {
+		return ref, false, true
+	}
+	if family != model {
+		if ref, ok := o.refs[family]; ok {
+			return ref, true, true
 		}
 	}
-	return "", false
+	return "", false, false
 }
 
 type overrideEntry struct {
@@ -270,7 +276,7 @@ func LoadOverrides(path string) (*Overrides, error) {
 		// a model the snapshot lacks but this very file prices (e.g.
 		// deepseek-v4-flash) is a valid target. A free:true-only entry is
 		// NOT — it declares billing, not prices.
-		_, found, err := ReferenceRates(ref, ov)
+		_, _, found, err := ReferenceRates(ref, ov)
 		if err != nil {
 			return nil, fmt.Errorf("price overrides %s: %w", path, err)
 		}

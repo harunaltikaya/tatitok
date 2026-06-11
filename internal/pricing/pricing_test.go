@@ -619,9 +619,13 @@ func TestOverrideDefinedReferenceTargets(t *testing.T) {
 		},
 		"reference_models": { "qwen3.6-27b": "deepseek-v4-flash" }
 	}`)
-	r, found, err := ReferenceRates("deepseek-v4-flash", ov)
-	if err != nil || !found || r.Input != 140_000 {
-		t.Fatalf("override-defined reference target: found=%v rates=%+v err=%v", found, r, err)
+	r, patched, found, err := ReferenceRates("deepseek-v4-flash", ov)
+	if err != nil || !found || !patched || r.Input != 140_000 {
+		t.Fatalf("override-defined reference target: found=%v patched=%v rates=%+v err=%v", found, patched, r, err)
+	}
+	// Snapshot-defined target: no patch involvement reported.
+	if _, patched, found, err := ReferenceRates("claude-fable-5", ov); err != nil || !found || patched {
+		t.Fatalf("snapshot reference target: found=%v patched=%v err=%v", found, patched, err)
 	}
 
 	e := core.Event{ID: "lq", Harness: "opencode", Provider: "vllm",
@@ -639,8 +643,27 @@ func TestOverrideDefinedReferenceTargets(t *testing.T) {
 	if err := json.Unmarshal(e.PriceRates, &detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.EquivSource != "reference:deepseek-v4-flash" {
-		t.Fatalf("reference provenance: %+v", detail)
+	// M4 Codex finding 4: the override-defined yardstick is
+	// distinguishable from a snapshot rate in the stored derivation.
+	if detail.EquivSource != "reference:deepseek-v4-flash+override" {
+		t.Fatalf("reference provenance: %+v, want reference:deepseek-v4-flash+override", detail)
+	}
+
+	// Family-matched local key records +family too.
+	fam := core.Event{ID: "lf", Harness: "opencode", Provider: "vllm",
+		Model: "qwen3.6-27b-nvfp4-recipe", ModelFamily: "qwen3.6-27b",
+		TokensInput: 1_000_000}
+	if err := Apply(&fam, ov); err != nil {
+		t.Fatal(err)
+	}
+	var famDetail struct {
+		EquivSource string `json:"equiv_source"`
+	}
+	if err := json.Unmarshal(fam.PriceRates, &famDetail); err != nil {
+		t.Fatal(err)
+	}
+	if famDetail.EquivSource != "reference:deepseek-v4-flash+family+override" {
+		t.Fatalf("family-matched reference provenance: %+v, want reference:deepseek-v4-flash+family+override", famDetail)
 	}
 
 	// free:true-only target: rejected at load (declares billing, not prices).

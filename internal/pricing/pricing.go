@@ -300,17 +300,21 @@ func EquivalentRates(model, family string, ov *Overrides) (Rates, string, bool) 
 // cloud-equivalent "would have cost" path (FR-9.3) — no basis logic.
 // M4 Task 5: the target may be snapshot-defined, override-defined, or
 // an override patch layered over a snapshot entry (free:true entries
-// excluded — they declare billing, not prices).
-func ReferenceRates(model string, ov *Overrides) (Rates, bool, error) {
+// excluded — they declare billing, not prices). patched reports that an
+// override patch contributed to the rates — stored in the derivation as
+// "+override" exactly like the equivalents path (M4 Codex round,
+// finding 4: an override-defined yardstick must be distinguishable from
+// a snapshot rate per event).
+func ReferenceRates(model string, ov *Overrides) (r Rates, patched, found bool, err error) {
 	loadOnce.Do(load)
 	if loadErr != nil {
-		return Rates{}, false, loadErr
+		return Rates{}, false, false, loadErr
 	}
 	base, snapOK := snapRates[model]
 	if patch, ok := ov.ratesPatch(model); ok {
-		return patch.apply(base), true, nil
+		return patch.apply(base), true, true, nil
 	}
-	return base, snapOK, nil
+	return base, false, snapOK, nil
 }
 
 // USDToMicro converts a decimal USD amount (e.g. an opencode
