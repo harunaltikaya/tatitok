@@ -9,7 +9,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/harunaltikaya/tatitok/internal/adapters"
 	"github.com/harunaltikaya/tatitok/internal/hub"
 )
 
@@ -27,6 +26,8 @@ func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	addr := fs.String("addr", hub.DefaultAddr, "listen address (HOST:PORT; default is loopback-only)")
+	debounce := fs.Duration("debounce", hub.DefaultDebounce, "coalesce window: rapid log changes become one ingest pass")
+	pollEvery := fs.Duration("poll-interval", hub.DefaultPollInterval, "polling interval (opencode store; fsnotify fallback)")
 	_ = fs.Parse(args)
 
 	probe := realProbe()
@@ -34,21 +35,24 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Detect watch roots up front so the startup line reports them; the
-	// Task 1 watchers will consume the same list. No roots is not an
-	// error for a server — sessions may appear after it starts.
-	var roots []adapters.Source
+	// Detect watch targets up front; the startup line reports the roots.
+	// No roots is not an error for a server — sessions may appear after
+	// it starts (and a later serve restart picks the harness up).
+	var targets []hub.WatchTarget
 	for _, a := range allAdapters {
 		srcs, err := a.Detect(probe)
 		if err != nil {
 			return err
 		}
-		roots = append(roots, srcs...)
+		for _, s := range srcs {
+			targets = append(targets, hub.WatchTarget{Adapter: a, Source: s})
+		}
 	}
 
 	h, err := hub.Start(hub.Config{
 		DBPath: *dbPath, Addr: *addr,
-		WatchRoots: roots, Overrides: overrides,
+		WatchTargets: targets, Overrides: overrides,
+		Debounce: *debounce, PollInterval: *pollEvery,
 	})
 	if err != nil {
 		return err

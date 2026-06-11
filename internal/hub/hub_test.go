@@ -3,8 +3,10 @@ package hub
 import (
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
@@ -16,6 +18,15 @@ import (
 	"github.com/harunaltikaya/tatitok/internal/adapters/codex"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
+
+// TestMain silences per-event slog noise (reference backfills emit the
+// AS-4 replacement lines) — the parity-test summarization precedent.
+// The soak test raises the level back when it reports throughput.
+func TestMain(m *testing.M) {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr,
+		&slog.HandlerOptions{Level: slog.LevelWarn})))
+	os.Exit(m.Run())
+}
 
 // TestDefaultAddrIsLoopback pins the milestone-4 ground rule: the
 // default bind is 127.0.0.1 and the default port avoids the ports

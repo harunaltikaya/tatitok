@@ -21,8 +21,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
-	"github.com/harunaltikaya/tatitok/internal/adapters"
 	"github.com/harunaltikaya/tatitok/internal/pricing"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
@@ -41,12 +41,17 @@ const DefaultAddr = "127.0.0.1:8284"
 type Config struct {
 	DBPath string
 	Addr   string
-	// WatchRoots are the log roots detected at startup. Task 0 logs
-	// them; the Task 1 watchers will consume them.
-	WatchRoots []adapters.Source
+	// WatchTargets are the (adapter, source) pairs the watch layer
+	// tails; empty means no watchers (tests, bare hub).
+	WatchTargets []WatchTarget
 	// Overrides is the user's price-override file (nil = none) —
-	// reported at startup, used by ingest from Task 1 on.
+	// reported at startup, applied by watch ingest.
 	Overrides *pricing.Overrides
+	// Debounce coalesces rapid changes into one ingest pass
+	// (0 = DefaultDebounce); PollInterval drives the polling sources
+	// (0 = DefaultPollInterval).
+	Debounce     time.Duration
+	PollInterval time.Duration
 }
 
 // Hub is a started serve process.
@@ -55,6 +60,7 @@ type Hub struct {
 	st  *store.Store
 	ln  net.Listener
 	srv *http.Server
+	w   *watcher // nil when no watch targets
 
 	done     chan struct{} // closed when the serve loop returns
 	serveErr error         // read only after done is closed
@@ -105,9 +111,9 @@ func Start(cfg Config) (*Hub, error) {
 		close(h.done)
 	}()
 
-	roots := make([]string, len(cfg.WatchRoots))
-	for i, s := range cfg.WatchRoots {
-		roots[i] = s.Harness + ":" + s.Root
+	roots := make([]string, len(cfg.WatchTargets))
+	for i, t := range cfg.WatchTargets {
+		roots[i] = t.Source.Harness + ":" + t.Source.Root
 	}
 	slog.Info("hub started",
 		"addr", ln.Addr().String(),
@@ -115,6 +121,23 @@ func Start(cfg Config) (*Hub, error) {
 		"watch_roots", roots,
 		"overrides", cfg.Overrides.Len(),
 		"reference_models", cfg.Overrides.References())
+
+	if len(cfg.WatchTargets) > 0 {
+		// Watch ingest replaces rows on every live pass by design — the
+		// per-event AS-4 line moves into the per-pass summary for this
+		// handle (counted, not spammed; CLI ingest keeps per-event lines).
+		st.QuietReplacements()
+		debounce, poll := cfg.Debounce, cfg.PollInterval
+		if debounce <= 0 {
+			debounce = DefaultDebounce
+		}
+		if poll <= 0 {
+			poll = DefaultPollInterval
+		}
+		h.w = startWatcher(st, cfg.Overrides, cfg.WatchTargets, debounce, poll)
+		slog.Info("watchers started", "targets", len(cfg.WatchTargets),
+			"debounce", debounce.String(), "poll_interval", poll.String())
+	}
 	return h, nil
 }
 
@@ -129,11 +152,14 @@ func (h *Hub) Done() <-chan struct{} { return h.done }
 // nil for a clean Shutdown.
 func (h *Hub) Err() error { return h.serveErr }
 
-// Shutdown drains the hub in dependency order: HTTP server first
-// (in-flight requests complete within ctx), then the store closes.
-// Task 1 inserts "watchers stopped, in-flight ingest batch completes"
-// ahead of the drain.
+// Shutdown drains the hub in dependency order: watchers stop first and
+// the in-flight ingest pass completes (hard-aborted only if ctx expires
+// — its open per-file transaction rolls back), then the HTTP server
+// drains, then the store closes.
 func (h *Hub) Shutdown(ctx context.Context) error {
+	if h.w != nil {
+		h.w.Stop(ctx)
+	}
 	srvErr := h.srv.Shutdown(ctx)
 	<-h.done
 	return errors.Join(srvErr, h.serveErr, h.st.Close())

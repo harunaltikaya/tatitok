@@ -41,7 +41,7 @@ Usage:
   tatitok recompute --provenance [--dry-run] [--db PATH] [--source NAME]
   tatitok recompute --model-map  [--dry-run] [--db PATH]
   tatitok recompute --pricing    [--dry-run] [--db PATH]
-  tatitok serve [--db PATH] [--addr HOST:PORT]
+  tatitok serve [--db PATH] [--addr HOST:PORT] [--debounce DUR] [--poll-interval DUR]
 
 ingest with no --source runs every detected adapter and reports per
 source. stats buckets days in the local timezone by default (ccusage's
