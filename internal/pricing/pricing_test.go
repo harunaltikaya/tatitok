@@ -722,4 +722,24 @@ func TestExplainedDivergences(t *testing.T) {
 	if _, err := LoadOverrides(path); err == nil {
 		t.Fatal("reason-less divergence entry accepted")
 	}
+
+	// A whitespace-only reason is not a reason either (Codex M4
+	// finding 6) — and padded keys must match after trimming.
+	if err := os.WriteFile(path, []byte(`{
+		"explained_divergences": [{"provider": "p", "model": "m", "reason": "   \t  "}]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOverrides(path); err == nil {
+		t.Fatal("whitespace-only divergence reason accepted")
+	}
+	ov = loadOverridesJSON(t, `{
+		"explained_divergences": [
+			{"provider": " deepseek ", "model": " deepseek-v4-pro ", "reason": "  ruled  "}
+		]
+	}`)
+	reason, ok = ov.ExplainedDivergence("deepseek", "deepseek-v4-pro")
+	if !ok || reason != "ruled" {
+		t.Fatalf("trimmed divergence entry not matched: %q %v", reason, ok)
+	}
 }

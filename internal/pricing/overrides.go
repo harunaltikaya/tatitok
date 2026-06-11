@@ -58,6 +58,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // overridePatch is one parsed entry: nil fields were absent and fall
@@ -289,13 +290,20 @@ func LoadOverrides(path string) (*Overrides, error) {
 		ov.refs[local] = ref
 	}
 	for i, d := range f.ExplainedDivergences {
-		if d.Provider == "" || d.Model == "" || d.Reason == "" {
+		// Trimmed validation (M4 Codex round, finding 6): a
+		// whitespace-only reason is not a reason, and padded
+		// provider/model keys would silently never match a
+		// store-and-compare group.
+		provider := strings.TrimSpace(d.Provider)
+		model := strings.TrimSpace(d.Model)
+		reason := strings.TrimSpace(d.Reason)
+		if provider == "" || model == "" || reason == "" {
 			return nil, fmt.Errorf("price overrides %s: explained_divergences[%d] needs provider, model and reason — a divergence without a written reason is not explained", path, i)
 		}
 		if ov.divergences == nil {
 			ov.divergences = make(map[[2]string]string, len(f.ExplainedDivergences))
 		}
-		ov.divergences[[2]string{d.Provider, d.Model}] = d.Reason
+		ov.divergences[[2]string{provider, model}] = reason
 	}
 	return ov, nil
 }
