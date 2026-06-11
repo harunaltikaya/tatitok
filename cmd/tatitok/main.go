@@ -23,6 +23,7 @@ import (
 	"github.com/harunaltikaya/tatitok/internal/adapters/claudecode"
 	"github.com/harunaltikaya/tatitok/internal/adapters/codex"
 	"github.com/harunaltikaya/tatitok/internal/adapters/opencode"
+	"github.com/harunaltikaya/tatitok/internal/modelmap"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
@@ -34,6 +35,7 @@ Usage:
   tatitok doctor --scan-content [--db PATH] [LITERAL...]
   tatitok doctor --provenance [--db PATH] [--json]
   tatitok recompute --provenance [--dry-run] [--db PATH] [--source NAME]
+  tatitok recompute --model-map  [--dry-run] [--db PATH]
 
 ingest with no --source runs every detected adapter and reports per
 source. stats buckets days in the local timezone by default (ccusage's
@@ -47,8 +49,11 @@ doctor --provenance lists stored row counts by adapter@version.
 recompute --provenance re-reads the source files through the current
 adapters and fills NULL adapter_version/source-link columns on stored
 events — after verifying each stored payload is identical to the
-re-parse (differences are reported, never altered). Explicit and logged,
-never a side effect (PRD AS-4). --dry-run prints the plan and changes
+re-parse (differences are reported, never altered). recompute
+--model-map re-normalizes every stored model_family under the current
+model map — the ONLY operation that ever changes a historical
+model_family (raw model stays immutable). Both are explicit and logged,
+never a side effect (PRD AS-4); --dry-run prints the plan and changes
 nothing.`
 
 func main() { os.Exit(run(os.Args[1:])) }
@@ -283,12 +288,16 @@ func cmdStats(args []string) error {
 func cmdRecompute(args []string) error {
 	fs := flag.NewFlagSet("recompute", flag.ExitOnError)
 	provenance := fs.Bool("provenance", false, "fill NULL adapter_version/source-link columns from the source files")
+	modelMap := fs.Bool("model-map", false, "re-normalize stored model_family under the current model map")
 	dryRun := fs.Bool("dry-run", false, "print the plan and change nothing")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	source := fs.String("source", "", "restrict to one adapter (claude-code, codex, opencode)")
 	_ = fs.Parse(args)
-	if !*provenance {
-		return fmt.Errorf("recompute requires --provenance (--model-map and --rollups arrive later in milestone 3)")
+	if *provenance == *modelMap {
+		return fmt.Errorf("pass exactly one of --provenance or --model-map (--rollups arrives later in milestone 3)")
+	}
+	if *modelMap {
+		return cmdRecomputeModelMap(*dbPath, *dryRun)
 	}
 
 	selected := allAdapters
@@ -365,6 +374,47 @@ func cmdRecompute(args []string) error {
 		return fmt.Errorf("no log roots found for any selected adapter — nothing re-read")
 	}
 	return printRecomputeResults(st, ctx, sum, needy, *source)
+}
+
+// cmdRecomputeModelMap is the explicit model_family re-normalization
+// path (M3 Task 1) — the only operation that ever changes a historical
+// model_family. Raw model strings are untouched by construction.
+func cmdRecomputeModelMap(dbPath string, dryRun bool) error {
+	st, err := openStore(dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+
+	plan, err := st.PlanModelMap(ctx, modelmap.Version())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("model map version: %d\n", plan.CurrentVersion)
+	fmt.Printf("events: %s — not on current map version: %s, model_family values that would change: %s\n",
+		formatTokens(plan.Events), formatTokens(plan.Stale), formatTokens(plan.FamilyChanges))
+	if plan.Stale == 0 && plan.FamilyChanges == 0 {
+		fmt.Println("model_family is current — nothing to recompute")
+		return nil
+	}
+	if dryRun {
+		fmt.Println("\ndry run — no changes made")
+		return nil
+	}
+
+	slog.Info("recompute --model-map starting", "db", dbPath,
+		"map_version", plan.CurrentVersion, "stale_events", plan.Stale,
+		"family_changes", plan.FamilyChanges)
+	restamped, changed, err := st.RecomputeModelMap(ctx, modelmap.Version())
+	if err != nil {
+		return err
+	}
+	slog.Info("recompute --model-map complete",
+		"events_restamped", restamped, "model_family_changed", changed)
+	fmt.Printf("\nre-stamped %s events under map version %d; %s model_family values changed\n",
+		formatTokens(restamped), plan.CurrentVersion, formatTokens(changed))
+	return nil
 }
 
 func cmdDoctor(args []string) error {

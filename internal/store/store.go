@@ -14,6 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
+	"github.com/harunaltikaya/tatitok/internal/modelmap"
 )
 
 // Store wraps the SQLite handle after migration.
@@ -126,6 +127,19 @@ var migrations = []string{
 		SELECT COUNT(*) FROM sources s WHERE s.harness = usage_events.harness
 	) = 1;
 	CREATE INDEX idx_events_source ON usage_events (source_id);`,
+	// Versioned model normalization (M3 Task 1, migration 6). model_map
+	// mirrors the embedded seed (internal/modelmap, synced at Open);
+	// usage_events.map_version records which map normalized each row's
+	// model_family. NO data backfill here: existing rows keep
+	// model_family = model and a NULL map_version until the owner runs
+	// `tatitok recompute --model-map` — historical model_family changes
+	// are ONLY ever explicit (AS-4).
+	`ALTER TABLE usage_events ADD COLUMN map_version INTEGER;
+	CREATE TABLE model_map (
+		model        TEXT PRIMARY KEY,
+		model_family TEXT NOT NULL,
+		map_version  INTEGER NOT NULL
+	);`,
 }
 
 // migrationHooks run inside the migration's transaction, after its SQL —
@@ -177,7 +191,51 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := syncModelMap(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// syncModelMap mirrors the embedded seed into the model_map table when
+// the stored version differs. This refreshes only the LOOKUP table —
+// stored events keep the model_family/map_version they were stamped
+// with until `tatitok recompute --model-map` (AS-4: re-normalization is
+// never a side effect of opening the database).
+func syncModelMap(db *sql.DB) error {
+	var stored sql.NullInt64
+	if err := db.QueryRow(`SELECT MAX(map_version) FROM model_map`).Scan(&stored); err != nil {
+		return fmt.Errorf("model_map version: %w", err)
+	}
+	cur := int64(modelmap.Version())
+	if stored.Valid && stored.Int64 == cur {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM model_map`); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	for _, e := range modelmap.Entries() {
+		if _, err := tx.Exec(`INSERT INTO model_map (model, model_family, map_version)
+			VALUES (?, ?, ?)`, e.Model, e.Family, cur); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("seed model_map %q: %w", e.Model, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if stored.Valid {
+		slog.Info("model_map table refreshed from embedded seed",
+			"from_version", stored.Int64, "to_version", cur,
+			"note", "stored events keep their stamped model_family until: tatitok recompute --model-map")
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -249,6 +307,18 @@ type SourceInfo struct {
 	// parsed this file (provenance); stamped onto every event row inserted
 	// through the file's transaction and onto the sources row.
 	AdapterVersion int
+	// MapVersion is the model-normalization map version the file's events
+	// were normalized under (provenance; events only).
+	MapVersion int
+}
+
+// Provenance carries the derived/provenance stamps for inserted events.
+// None of these are payload: they are stamped on insert and on genuine
+// replacements, but never trigger a replacement by themselves.
+type Provenance struct {
+	AdapterVersion int
+	SourceID       string
+	MapVersion     int
 }
 
 // InsertStats reports one file transaction's effect on usage_events.
@@ -280,8 +350,9 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 		(id, ts, machine, source_kind, harness, provider, model, model_family,
 		 project, session_id, request_id,
 		 tokens_input, tokens_output, tokens_cache_write, tokens_cache_read,
-		 tokens_reasoning, accuracy, meta, raw, adapter_version, source_id)
-		VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)`)
+		 tokens_reasoning, accuracy, meta, raw, adapter_version, source_id,
+		 map_version)
+		VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return nil, err
@@ -290,19 +361,22 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 	// a message row while the turn is in flight), so an event ID can come
 	// back with a different payload. The DB mirrors the latest source read:
 	// on conflict, update iff the payload differs (NULL-safe IS NOT).
-	// adapter_version and source_id are provenance, not payload — they are
-	// stamped when a replacement happens but never trigger one by
-	// themselves. Replacements are counted and logged, never silent (AS-4).
+	// adapter_version, source_id, model_family and map_version are
+	// derived/provenance, not payload — they are stamped when a
+	// replacement happens but never trigger one by themselves (a model-map
+	// bump must never rewrite history through re-ingest; that is
+	// `recompute --model-map`, explicit). Replacements are counted and
+	// logged, never silent (AS-4).
 	upd, err := tx.PrepareContext(ctx, `UPDATE usage_events SET
 		ts=?2, machine=?3, source_kind=?4, harness=?5, provider=?6, model=?7,
 		model_family=?8, project=?9, session_id=?10, request_id=?11,
 		tokens_input=?12, tokens_output=?13, tokens_cache_write=?14,
 		tokens_cache_read=?15, tokens_reasoning=?16, accuracy=?17, meta=?18,
-		raw=?19, adapter_version=?20, source_id=?21
+		raw=?19, adapter_version=?20, source_id=?21, map_version=?22
 		WHERE id=?1 AND (
 			ts IS NOT ?2 OR machine IS NOT ?3 OR source_kind IS NOT ?4 OR
 			harness IS NOT ?5 OR provider IS NOT ?6 OR model IS NOT ?7 OR
-			model_family IS NOT ?8 OR project IS NOT ?9 OR
+			project IS NOT ?9 OR
 			session_id IS NOT ?10 OR request_id IS NOT ?11 OR
 			tokens_input IS NOT ?12 OR tokens_output IS NOT ?13 OR
 			tokens_cache_write IS NOT ?14 OR tokens_cache_read IS NOT ?15 OR
@@ -347,10 +421,8 @@ func eventArgs(e *core.Event) ([]any, error) {
 // The deterministic ID is the primary key: a duplicate with an identical
 // payload is a no-op (idempotent re-ingest); a duplicate whose payload
 // differs replaces the stored row to mirror the source (see BeginFile).
-// sourceID is the file's stable lineage ID (core.SourceID of the file the
-// batch came from). An error leaves the transaction unusable; the caller
-// must Rollback.
-func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, adapterVersion int, sourceID string) error {
+// An error leaves the transaction unusable; the caller must Rollback.
+func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Provenance) error {
 	for i := range events {
 		e := &events[i]
 		if err := e.Validate(); err != nil {
@@ -360,7 +432,8 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, adapterV
 		if err != nil {
 			return err
 		}
-		args = append(args, nullVersion(adapterVersion), nullStr(sourceID))
+		args = append(args, nullVersion(prov.AdapterVersion),
+			nullStr(prov.SourceID), nullVersion(prov.MapVersion))
 		res, err := f.ins.ExecContext(ctx, args...)
 		if err != nil {
 			return fmt.Errorf("insert %s: %w", e.ID, err)
@@ -458,8 +531,11 @@ func (s *Store) InsertBatch(ctx context.Context, events []core.Event, src Source
 	if err != nil {
 		return InsertStats{}, err
 	}
-	if err := f.InsertEvents(ctx, events, src.AdapterVersion,
-		core.SourceID(src.Harness, src.Path)); err != nil {
+	if err := f.InsertEvents(ctx, events, Provenance{
+		AdapterVersion: src.AdapterVersion,
+		SourceID:       core.SourceID(src.Harness, src.Path),
+		MapVersion:     src.MapVersion,
+	}); err != nil {
 		_ = f.Rollback()
 		return InsertStats{}, fmt.Errorf("%s: %w", src.Path, err)
 	}

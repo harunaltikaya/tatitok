@@ -108,10 +108,13 @@ type Verifier struct{ stmt *sql.Stmt }
 
 // NewVerifier prepares the probe; callers must Close it.
 func (s *Store) NewVerifier(ctx context.Context) (*Verifier, error) {
+	// model_family (?8) is deliberately absent: it is derived via the
+	// model map, not payload — a stored row normalized under an older map
+	// still verifies (recompute --model-map is the explicit catch-up).
 	stmt, err := s.db.PrepareContext(ctx, `SELECT (
 			ts IS NOT ?2 OR machine IS NOT ?3 OR source_kind IS NOT ?4 OR
 			harness IS NOT ?5 OR provider IS NOT ?6 OR model IS NOT ?7 OR
-			model_family IS NOT ?8 OR project IS NOT ?9 OR
+			project IS NOT ?9 OR
 			session_id IS NOT ?10 OR request_id IS NOT ?11 OR
 			tokens_input IS NOT ?12 OR tokens_output IS NOT ?13 OR
 			tokens_cache_write IS NOT ?14 OR tokens_cache_read IS NOT ?15 OR
@@ -179,6 +182,68 @@ func (s *Store) StampSourceMachine(ctx context.Context, path, machine string) (b
 type ProvenanceStamp struct {
 	ID       string
 	SourceID string
+}
+
+// ModelMapPlan is the `recompute --model-map` plan: how many events sit
+// on an older (or NULL) map_version and how many model_family values
+// would actually change under the current map.
+type ModelMapPlan struct {
+	CurrentVersion int   `json:"current_map_version"`
+	Events         int64 `json:"events"`
+	Stale          int64 `json:"events_not_on_current_version"`
+	FamilyChanges  int64 `json:"model_family_changes"`
+}
+
+// currentFamilyExpr resolves a row's model through the model_map table
+// with verbatim passthrough — the same rule modelmap.Family applies.
+const currentFamilyExpr = `COALESCE(
+	(SELECT m.model_family FROM model_map m WHERE m.model = usage_events.model),
+	usage_events.model)`
+
+// PlanModelMap reports what RecomputeModelMap would do.
+func (s *Store) PlanModelMap(ctx context.Context, currentVersion int) (ModelMapPlan, error) {
+	p := ModelMapPlan{CurrentVersion: currentVersion}
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),
+			COALESCE(SUM(map_version IS NOT ?1), 0),
+			COALESCE(SUM(model_family IS NOT `+currentFamilyExpr+`), 0)
+		FROM usage_events`, currentVersion).
+		Scan(&p.Events, &p.Stale, &p.FamilyChanges)
+	return p, err
+}
+
+// RecomputeModelMap re-normalizes every stored event's model_family under
+// the current model map and stamps map_version — the ONLY path that ever
+// changes a historical model_family (explicit, logged; AS-4). The raw
+// model column is untouched by construction. Returns how many rows were
+// re-stamped and how many family values actually changed.
+func (s *Store) RecomputeModelMap(ctx context.Context, currentVersion int) (restamped, changed int64, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE usage_events SET
+			model_family = `+currentFamilyExpr+`
+		WHERE model_family IS NOT `+currentFamilyExpr, // counts real changes
+	)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, 0, fmt.Errorf("recompute model_family: %w", err)
+	}
+	if changed, err = res.RowsAffected(); err != nil {
+		_ = tx.Rollback()
+		return 0, 0, err
+	}
+	res, err = tx.ExecContext(ctx, `UPDATE usage_events SET map_version = ?1
+		WHERE map_version IS NOT ?1`, currentVersion)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, 0, fmt.Errorf("stamp map_version: %w", err)
+	}
+	if restamped, err = res.RowsAffected(); err != nil {
+		_ = tx.Rollback()
+		return 0, 0, err
+	}
+	return restamped, changed, tx.Commit()
 }
 
 // StampProvenance fills NULL provenance columns on the given verified

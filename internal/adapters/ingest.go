@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
+	"github.com/harunaltikaya/tatitok/internal/modelmap"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
@@ -90,7 +91,17 @@ func (k *storeSink) EmitBatch(path string, events []core.Event) error {
 		}
 		k.cur = tx
 	}
-	if err := k.cur.InsertEvents(k.ctx, events, k.version, k.curSourceID); err != nil {
+	// Normalization point (M3 Task 1): adapters emit model_family = model
+	// verbatim; the ingest layer derives the family through the versioned
+	// map. Unknown models pass through unchanged.
+	for i := range events {
+		events[i].ModelFamily = modelmap.Family(events[i].Model)
+	}
+	if err := k.cur.InsertEvents(k.ctx, events, store.Provenance{
+		AdapterVersion: k.version,
+		SourceID:       k.curSourceID,
+		MapVersion:     modelmap.Version(),
+	}); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	k.curEmitted += len(events)
