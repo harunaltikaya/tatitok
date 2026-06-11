@@ -4,7 +4,7 @@ DIST      := dist
 
 export CGO_ENABLED := 0
 
-.PHONY: test leakcheck lint build build-all parity-full parity-full-codex parity-full-opencode clean
+.PHONY: test leakcheck lint build build-all parity-full parity-full-codex parity-full-opencode soak clean
 
 test: leakcheck
 	go test ./...
@@ -42,3 +42,10 @@ parity-full-codex:
 
 parity-full-opencode:
 	TATITOK_PARITY_FULL_OPENCODE=1 go test -v -run TestParityFullOpencode ./internal/parity
+
+# Watcher soak (M4 Task 1): replays the fixture corpus as live appends
+# against a running watcher, asserts the rollup property afterwards, and
+# reports throughput. Owner flavor: TATITOK_SOAK_DB=<copy-of-live-db>
+# starts from real history (the given file is copied, never touched).
+soak:
+	TATITOK_SOAK=1 go test -v -timeout 10m -run 'TestWatcherSoak$$' ./internal/hub
