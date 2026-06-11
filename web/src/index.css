@@ -1,0 +1,4 @@
+@import "tailwindcss";
+
+/* System font stack only — nothing is fetched at runtime (the
+   no-external-origins rule; assets are embedded in the Go binary). */

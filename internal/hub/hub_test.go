@@ -86,12 +86,14 @@ func TestLifecycle(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET / = %d, want 200 (body %q)", resp.StatusCode, body)
+	// 200 with the embedded dashboard, 503 explainer when the bundle is
+	// not built (clean checkout without `make web`) — both are alive.
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET / = %d, want 200 (dashboard) or 503 (bundle not built) (body %q)", resp.StatusCode, body)
 	}
-	if resp, err := http.Get("http://" + h.Addr() + "/nope"); err == nil {
+	if resp, err := http.Get("http://" + h.Addr() + "/definitely-not-a-route"); err == nil {
 		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("GET /nope = %d, want 404 (nothing but / is served in Task 0)", resp.StatusCode)
+			t.Errorf("GET /definitely-not-a-route = %d, want 404", resp.StatusCode)
 		}
 		_ = resp.Body.Close()
 	}

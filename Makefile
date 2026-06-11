@@ -4,7 +4,7 @@ DIST      := dist
 
 export CGO_ENABLED := 0
 
-.PHONY: test leakcheck lint build build-all parity-full parity-full-codex parity-full-opencode soak clean
+.PHONY: test leakcheck lint web build build-all parity-full parity-full-codex parity-full-opencode soak clean
 
 test: leakcheck
 	go test ./...
@@ -18,11 +18,19 @@ lint:
 	go vet ./...
 	golangci-lint run
 
-build:
+# Dashboard bundle (M4 Task 4): pinned toolchain (web/.nvmrc,
+# package-lock.json), embedded via go:embed. The origin check runs after
+# every bundle build — the served dashboard makes no external requests.
+web:
+	cd web && npm ci && npm run build
+	go test -count=1 -run 'TestDistNoExternalOrigins$$' ./web
+
+build: web
 	go build -o $(DIST)/$(BINARY) ./cmd/$(BINARY)
 
-# Cross-compile all four supported targets (CLAUDE.md stack rules).
-build-all:
+# Cross-compile all four supported targets (CLAUDE.md stack rules); the
+# embedded web bundle is platform-independent, built once.
+build-all: web
 	GOOS=linux   GOARCH=arm64 go build -o $(DIST)/$(BINARY)-linux-arm64       ./cmd/$(BINARY)
 	GOOS=linux   GOARCH=amd64 go build -o $(DIST)/$(BINARY)-linux-amd64       ./cmd/$(BINARY)
 	GOOS=darwin  GOARCH=arm64 go build -o $(DIST)/$(BINARY)-darwin-arm64      ./cmd/$(BINARY)

@@ -153,10 +153,7 @@ func Start(cfg Config) (*Hub, error) {
 		done:       make(chan struct{}),
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = fmt.Fprintln(w, "tatitok hub running — API at /api/v1, dashboard arrives in M4 Task 4")
-	})
+	h.registerDashboard(mux)
 	h.registerAPI(mux)
 	h.srv = &http.Server{Handler: mux}
 	go func() {

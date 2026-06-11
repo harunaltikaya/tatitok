@@ -48,3 +48,10 @@ Thumbs.db
 # `make parity-full` recaptures from live logs and never reads them.
 # Must also stay BELOW the fixtures re-include (later rules win).
 testdata/**/expected/*-full.json
+
+# web build (M4 Task 4): sources are committed, artifacts are not —
+# leakcheck scans git-visible files, so node_modules/dist must not enter
+# its scope (or the tree).
+web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
