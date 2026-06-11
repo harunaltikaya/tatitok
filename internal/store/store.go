@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -374,8 +375,14 @@ func reportLineageBackfill(tx *sql.Tx) error {
 // transactions are writers, and a deferred BEGIN that upgrades to a write
 // lock mid-transaction can deadlock or interleave with a concurrent
 // writer (two Opens migrating, recompute racing an ingest replacement).
+// busy_timeout is FIRST in the pragma list deliberately (M4 Codex
+// round, finding 1): pragmas apply in order at connection setup, and
+// journal_mode(WAL) on a fresh database is itself a locking write — two
+// connections racing the WAL conversion before any busy handler exists
+// fail instantly with SQLITE_BUSY. With the timeout set first, every
+// later pragma and statement waits like any other writer.
 func dsn(path string) string {
-	return fmt.Sprintf("file:%s?_txlock=immediate&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
+	return fmt.Sprintf("file:%s?_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", path)
 }
 
 // Open opens (creating if needed) the database at path, enables WAL, and
@@ -410,13 +417,13 @@ func syncModelMap(db *sql.DB) error {
 	if stored.Valid && stored.Int64 == cur {
 		return nil
 	}
-	tx, err := db.Begin()
+	tx, err := beginWrite(db)
 	if err != nil {
-		return err
+		return fmt.Errorf("begin model_map sync: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM model_map`); err != nil {
 		_ = tx.Rollback()
-		return err
+		return fmt.Errorf("clear model_map: %w", err)
 	}
 	for _, e := range modelmap.Entries() {
 		if _, err := tx.Exec(`INSERT INTO model_map (model, model_family, map_version)
@@ -426,7 +433,7 @@ func syncModelMap(db *sql.DB) error {
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return fmt.Errorf("commit model_map sync: %w", err)
 	}
 	if stored.Valid {
 		slog.Info("model_map table refreshed from embedded seed",
@@ -438,28 +445,61 @@ func syncModelMap(db *sql.DB) error {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// beginWrite starts an immediate (write) transaction for the Open path,
+// retrying SQLITE_BUSY with backoff up to a 5s deadline — matching the
+// busy_timeout every other statement gets. The driver's busy handler
+// covers contention on an ESTABLISHED database (ingest-time writers
+// wait correctly), but during bootstrap — concurrent first opens
+// converting a fresh file to WAL — BEGIN IMMEDIATE can return
+// SQLITE_BUSY instantly without consulting the handler (the
+// mixed-journal transition window; reproduced by TestOpenConcurrent
+// under -count=200 -race, M4 Codex round finding 1). A BUSY here always
+// means "another opener holds the write lock", which always resolves,
+// so the retry makes bootstrap serialization deterministic rather than
+// timing-dependent.
+func beginWrite(db *sql.DB) (*sql.Tx, error) {
+	deadline := time.Now().Add(5 * time.Second)
+	wait := time.Millisecond
+	for {
+		tx, err := db.Begin()
+		if err == nil || !strings.Contains(err.Error(), "SQLITE_BUSY") || time.Now().After(deadline) {
+			return tx, err
+		}
+		time.Sleep(wait)
+		if wait < 50*time.Millisecond {
+			wait *= 2
+		}
+	}
+}
+
 func migrate(db *sql.DB) error { return migrateTo(db, len(migrations)) }
 
 // migrateTo applies pending migrations up to (and excluding) index target.
 // Split out so the upgrade tests can build a database frozen at an older
 // schema version and then let Open finish the job.
 //
-// Concurrency (M3.1 finding 3): schema_version is read INSIDE each
-// immediate transaction (the dsn's _txlock=immediate takes the write
-// lock at BEGIN), and re-read per migration. Two processes opening the
-// same database serialize on that lock; whoever enters second sees the
-// version the first committed and applies nothing twice. A version read
-// outside the lock let both see the same stale version and race to
-// apply the same migration.
+// Concurrency (M3.1 finding 3; bootstrap moved inside the lock in the
+// M4 Codex round, finding 1): EVERYTHING — including creating the
+// schema_version table itself on a brand-new database — happens inside
+// the immediate transactions (the dsn's _txlock=immediate takes the
+// write lock at BEGIN), and the version is re-read per migration. Two
+// processes opening the same database serialize on that lock; whoever
+// enters second sees what the first committed and applies nothing
+// twice. The bootstrap CREATE used to run as a bare autocommit Exec
+// before the loop: under concurrent Opens that statement could surface
+// SQLITE_BUSY despite the busy timeout (a write racing the serialized
+// writers without holding the immediate lock) — race made
+// unconstructible, not unlikely, by moving it under the same lock.
 func migrateTo(db *sql.DB, target int) error {
-	if _, err := db.Exec(
-		`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
-		return fmt.Errorf("create schema_version: %w", err)
-	}
 	for {
-		tx, err := db.Begin()
+		tx, err := beginWrite(db)
 		if err != nil {
-			return err
+			return fmt.Errorf("begin migration tx: %w", err)
+		}
+		if _, err := tx.Exec(
+			`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("create schema_version: %w", err)
 		}
 		var version int
 		if err := tx.QueryRow(
