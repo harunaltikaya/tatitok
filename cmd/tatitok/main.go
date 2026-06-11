@@ -35,8 +35,10 @@ Usage:
   tatitok stats  --daily|--session [--json] [--db PATH] [--timezone TZ] [--harness NAME]
   tatitok doctor --scan-content [--db PATH] [LITERAL...]
   tatitok doctor --provenance [--db PATH] [--json]
+  tatitok doctor --pricing [--db PATH]
   tatitok recompute --provenance [--dry-run] [--db PATH] [--source NAME]
   tatitok recompute --model-map  [--dry-run] [--db PATH]
+  tatitok recompute --pricing    [--dry-run] [--db PATH]
 
 ingest with no --source runs every detected adapter and reports per
 source. stats buckets days in the local timezone by default (ccusage's
@@ -47,15 +49,19 @@ doctor --scan-content re-checks every stored record against the
 sanitizer invariants; extra LITERAL arguments are also grepped for and
 must not appear anywhere in stored raw/meta.
 doctor --provenance lists stored row counts by adapter@version.
+doctor --pricing reconciles our computed costs against source-reported
+costs (opencode store-and-compare) — a report, never a correction.
 recompute --provenance re-reads the source files through the current
 adapters and fills NULL adapter_version/source-link columns on stored
 events — after verifying each stored payload is identical to the
 re-parse (differences are reported, never altered). recompute
 --model-map re-normalizes every stored model_family under the current
 model map — the ONLY operation that ever changes a historical
-model_family (raw model stays immutable). Both are explicit and logged,
-never a side effect (PRD AS-4); --dry-run prints the plan and changes
-nothing.`
+model_family (raw model stays immutable). recompute --pricing
+re-derives every cost column under the current price snapshot +
+overrides — the ONLY operation that ever changes a historical cost.
+All are explicit and logged, never a side effect (PRD AS-4); --dry-run
+prints the plan and changes nothing.`
 
 func main() { os.Exit(run(os.Args[1:])) }
 
