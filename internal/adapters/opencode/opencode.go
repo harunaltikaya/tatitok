@@ -57,7 +57,9 @@ import (
 )
 
 // AdapterVersion is bumped whenever format handling changes.
-const AdapterVersion = 1
+// v2 (M3 Task 2): source-reported cost extracted into meta.source_cost
+// for the pricing store-and-compare lane.
+const AdapterVersion = 2
 
 const harnessName = "opencode"
 
@@ -106,7 +108,13 @@ type messageData struct {
 	ProviderID string  `json:"providerID"`
 	ModelID    string  `json:"modelID"`
 	Tokens     *tokens `json:"tokens"`
-	Path       *struct {
+	// Cost is OpenCode's own per-message cost in USD (float in the
+	// source). Kept as json.Number so the source's exact decimal text
+	// survives into meta.source_cost — the M3 store-and-compare lane
+	// (`doctor --pricing`) reconciles it against OUR computed cost; it is
+	// never used to price anything.
+	Cost json.Number `json:"cost"`
+	Path *struct {
 		Cwd string `json:"cwd"`
 	} `json:"path"`
 }
@@ -249,6 +257,13 @@ func buildEvent(r *row, src adapters.Source) (core.Event, bool, error) {
 		project = data.Path.Cwd
 	}
 	reasoning := u.Reasoning
+	var meta map[string]any
+	if data.Cost != "" {
+		// Source-reported cost (store-and-compare, milestone-3 Task 2):
+		// stored verbatim under meta, INCLUDING zero — a zero is OpenCode
+		// saying "free/local", which the reconciliation must see.
+		meta = map[string]any{"source_cost": data.Cost}
+	}
 
 	return core.Event{
 		// message id is the table PK; session id is its parent — both
@@ -268,6 +283,7 @@ func buildEvent(r *row, src adapters.Source) (core.Event, bool, error) {
 		TokensCacheRead:  u.Cache.Read,
 		TokensReasoning:  &reasoning,
 		Accuracy:         core.AccuracyExact,
+		Meta:             meta,
 		Raw:              raw,
 	}, true, nil
 }
