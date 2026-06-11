@@ -111,12 +111,13 @@ type DailyRow struct {
 	HarnessBreakdowns []HarnessSums `json:"harnessBreakdowns"`
 }
 
-// SessionRow is one harness session. Identity is (harness, session_id):
-// session ids are native per harness and CAN collide across harnesses
-// (and the empty id is common to several), so session_id alone never
-// keys a row. Full composite identity (machine included) lands with the
-// M3 schema; this is the query-level rule.
+// SessionRow is one harness session. Identity is the composite
+// (machine, harness, session_id) — M3 Task 0: session ids are native per
+// harness and CAN collide across harnesses and across machines (and the
+// empty id is common to several), so neither session_id alone nor
+// (harness, session_id) ever keys a row.
 type SessionRow struct {
+	Machine   string `json:"machine"`
 	Harness   string `json:"harness"`
 	SessionID string `json:"sessionId"`
 	Project   string `json:"projectPath,omitempty"`
@@ -198,28 +199,29 @@ func (s *Store) Daily(ctx context.Context, tz *time.Location, harness string) ([
 }
 
 // Sessions returns per-session token sums, most recent activity last.
-// Rows key on (harness, session_id) — see SessionRow. A non-empty
-// harness restricts the report (`stats --harness`). Aggregation runs in
-// SQL: a GROUP BY (harness, session, model) pass for sums, models and
-// last-activity day (MAX over tatitok_day is sound — day strings are
-// fixed-width, so lexicographic max is chronological max), plus one
-// GROUP BY (harness, session) pass whose bare project column SQLite
-// takes from the MIN(ts) row (the session's first event, matching the
-// legacy scan order).
+// Rows key on (machine, harness, session_id) — see SessionRow. A
+// non-empty harness restricts the report (`stats --harness`).
+// Aggregation runs in SQL: a GROUP BY (machine, harness, session, model)
+// pass for sums, models and last-activity day (MAX over tatitok_day is
+// sound — day strings are fixed-width, so lexicographic max is
+// chronological max), plus one GROUP BY (machine, harness, session) pass
+// whose bare project column SQLite takes from the MIN(ts) row (the
+// session's first event, matching the legacy scan order).
 func (s *Store) Sessions(ctx context.Context, tz *time.Location, harness string) ([]SessionRow, error) {
 	first, err := s.sessionFirstProjects(ctx, harness)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(harness, '') AS h,
+	rows, err := s.db.QueryContext(ctx, `SELECT machine,
+			COALESCE(harness, '') AS h,
 			COALESCE(session_id, '') AS sid,
 			model, MAX(tatitok_day(ts, ?1)),
 			SUM(tokens_input), SUM(tokens_output),
 			SUM(tokens_cache_write), SUM(tokens_cache_read)
 		FROM usage_events
 		WHERE ?2 = '' OR harness = ?2
-		GROUP BY h, sid, model
-		ORDER BY h, sid, model`, tz.String(), harness)
+		GROUP BY machine, h, sid, model
+		ORDER BY machine, h, sid, model`, tz.String(), harness)
 	if err != nil {
 		return nil, err
 	}
@@ -227,15 +229,16 @@ func (s *Store) Sessions(ctx context.Context, tz *time.Location, harness string)
 
 	var out []SessionRow
 	for rows.Next() {
-		var h, sid, model, last string
+		var m, h, sid, model, last string
 		var sums TokenSums
-		if err := rows.Scan(&h, &sid, &model, &last,
+		if err := rows.Scan(&m, &h, &sid, &model, &last,
 			&sums.Input, &sums.Output, &sums.CacheWrite, &sums.CacheRead); err != nil {
 			return nil, err
 		}
-		if n := len(out); n == 0 || out[n-1].Harness != h || out[n-1].SessionID != sid {
-			out = append(out, SessionRow{Harness: h, SessionID: sid,
-				Project: first[sessionKey{h, sid}]})
+		if n := len(out); n == 0 || out[n-1].Machine != m ||
+			out[n-1].Harness != h || out[n-1].SessionID != sid {
+			out = append(out, SessionRow{Machine: m, Harness: h, SessionID: sid,
+				Project: first[sessionKey{m, h, sid}]})
 		}
 		sr := &out[len(out)-1]
 		sr.add(sums)
@@ -254,34 +257,38 @@ func (s *Store) Sessions(ctx context.Context, tz *time.Location, harness string)
 		if out[i].SessionID != out[j].SessionID {
 			return out[i].SessionID < out[j].SessionID
 		}
-		return out[i].Harness < out[j].Harness
+		if out[i].Harness != out[j].Harness {
+			return out[i].Harness < out[j].Harness
+		}
+		return out[i].Machine < out[j].Machine
 	})
 	return out, nil
 }
 
-type sessionKey struct{ harness, sid string }
+type sessionKey struct{ machine, harness, sid string }
 
-// sessionFirstProjects maps each (harness, session) to the project of
-// its earliest event. SQLite's bare-column-with-MIN semantics pin
-// project to the MIN(ts) row.
+// sessionFirstProjects maps each (machine, harness, session) to the
+// project of its earliest event. SQLite's bare-column-with-MIN semantics
+// pin project to the MIN(ts) row.
 func (s *Store) sessionFirstProjects(ctx context.Context, harness string) (map[sessionKey]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(harness, ''),
+	rows, err := s.db.QueryContext(ctx, `SELECT machine,
+			COALESCE(harness, ''),
 			COALESCE(session_id, ''),
 			COALESCE(project, ''), MIN(ts)
 		FROM usage_events
 		WHERE ?1 = '' OR harness = ?1
-		GROUP BY 1, 2`, harness)
+		GROUP BY 1, 2, 3`, harness)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	out := map[sessionKey]string{}
 	for rows.Next() {
-		var h, sid, project, minTS string
-		if err := rows.Scan(&h, &sid, &project, &minTS); err != nil {
+		var m, h, sid, project, minTS string
+		if err := rows.Scan(&m, &h, &sid, &project, &minTS); err != nil {
 			return nil, err
 		}
-		out[sessionKey{h, sid}] = project
+		out[sessionKey{m, h, sid}] = project
 	}
 	return out, rows.Err()
 }

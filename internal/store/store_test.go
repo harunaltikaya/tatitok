@@ -312,10 +312,10 @@ func TestSessions(t *testing.T) {
 	}
 }
 
-// Session identity is (harness, session_id): native ids can collide
-// across harnesses, and the empty session id is common to several — they
-// must never merge into one row (M2.1 review item 3; machine joins the
-// key with the M3 schema).
+// Session identity is (machine, harness, session_id): native ids can
+// collide across harnesses, and the empty session id is common to
+// several — they must never merge into one row (M2.1 review item 3;
+// machine completed the key in M3 Task 0).
 func TestSessionsCrossHarnessCollision(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
@@ -342,18 +342,18 @@ func TestSessionsCrossHarnessCollision(t *testing.T) {
 	}
 	bySession := map[sessionKey]SessionRow{}
 	for _, r := range sessions {
-		bySession[sessionKey{r.Harness, r.SessionID}] = r
+		bySession[sessionKey{r.Machine, r.Harness, r.SessionID}] = r
 	}
-	if r := bySession[sessionKey{"claude-code", "shared"}]; r.Input != 1 || r.Output != 0 {
+	if r := bySession[sessionKey{"test", "claude-code", "shared"}]; r.Input != 1 || r.Output != 0 {
 		t.Errorf("claude-code/shared absorbed foreign tokens: %+v", r)
 	}
-	if r := bySession[sessionKey{"codex", "shared"}]; r.Output != 2 || r.Input != 0 {
+	if r := bySession[sessionKey{"test", "codex", "shared"}]; r.Output != 2 || r.Input != 0 {
 		t.Errorf("codex/shared absorbed foreign tokens: %+v", r)
 	}
-	if r := bySession[sessionKey{"claude-code", ""}]; r.CacheWrite != 3 || r.CacheRead != 0 {
+	if r := bySession[sessionKey{"test", "claude-code", ""}]; r.CacheWrite != 3 || r.CacheRead != 0 {
 		t.Errorf("claude-code/<empty> absorbed foreign tokens: %+v", r)
 	}
-	if r := bySession[sessionKey{"opencode", ""}]; r.CacheRead != 4 || r.CacheWrite != 0 {
+	if r := bySession[sessionKey{"test", "opencode", ""}]; r.CacheRead != 4 || r.CacheWrite != 0 {
 		t.Errorf("opencode/<empty> absorbed foreign tokens: %+v", r)
 	}
 
@@ -364,6 +364,39 @@ func TestSessionsCrossHarnessCollision(t *testing.T) {
 	}
 	if len(only) != 1 || only[0].Harness != "codex" || only[0].Output != 2 {
 		t.Fatalf("harness-restricted sessions wrong: %+v", only)
+	}
+}
+
+// The same (harness, session_id) on two machines is two sessions — the
+// composite identity's machine component (M3 Task 0).
+func TestSessionsCrossMachineCollision(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	a := eventH("claude-code", "m1", "r1", "model-a", "shared", ts, TokenSums{Input: 1})
+	b := eventH("claude-code", "m2", "r2", "model-a", "shared", ts.Add(time.Minute), TokenSums{Output: 2})
+	b.Machine = "mac"
+	if _, err := s.InsertBatch(ctx, []core.Event{a, b}, testSource(2)); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := s.Sessions(ctx, time.UTC, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("got %d sessions, want 2 (cross-machine ids must not merge): %+v",
+			len(sessions), sessions)
+	}
+	bySession := map[sessionKey]SessionRow{}
+	for _, r := range sessions {
+		bySession[sessionKey{r.Machine, r.Harness, r.SessionID}] = r
+	}
+	if r := bySession[sessionKey{"test", "claude-code", "shared"}]; r.Input != 1 || r.Output != 0 {
+		t.Errorf("test/claude-code/shared absorbed foreign tokens: %+v", r)
+	}
+	if r := bySession[sessionKey{"mac", "claude-code", "shared"}]; r.Output != 2 || r.Input != 0 {
+		t.Errorf("mac/claude-code/shared absorbed foreign tokens: %+v", r)
 	}
 }
 
