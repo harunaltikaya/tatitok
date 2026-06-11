@@ -1223,6 +1223,24 @@ def assert_unstageable(path, why):
 
 # --- sanitizer contract vectors ------------------------------------------------
 
+# Mandatory procedure for changing the frozen sanitizer vectors — printed
+# on refusal so it cannot be skipped silently. Kept in sync with
+# vectorCeremony in internal/core/sanitize_vectors_test.go.
+VECTOR_CEREMONY = """\
+regenerating sanitizer vector expectations requires the full ceremony:
+  1. a vector regen means sanitizer output changed by definition — identify the
+     rule-spec / implementation change that caused it; if the shared semantics
+     changed, bump spec_version in sanitize_rules.json (every consumer pins it)
+  2. python scripts/harvest_fixtures.py --update-vectors --confirm-vector-ceremony
+     (the Go side regenerates its vectors with
+      TATITOK_UPDATE_VECTORS=1 TATITOK_CONFIRM_VECTORS=1 go test ./internal/core)
+  3. python scripts/harvest_fixtures.py --check-vectors AND go test ./internal/core
+     must pass afterwards — rule-spec lockstep: both implementations
+     byte-identical on the new bytes
+  4. make test must stay green: sanitized raw feeds the frozen adapter goldens,
+     so a vector change can cascade into the golden ceremony
+commit the vector diff together with the causing change and note the ceremony in the message"""
+
 
 def canonical_json(node):
     """Serialize exactly like Go's json.Marshal (the contract-vector
@@ -1342,8 +1360,12 @@ def main():
                          "(no log access; safe anywhere)")
     ap.add_argument("--update-vectors", action="store_true",
                     help="REGENERATE the expected vector outputs from the "
-                         "current sanitizer, then exit — review the diff "
-                         "deliberately before committing")
+                         "current sanitizer, then exit; refuses without "
+                         "--confirm-vector-ceremony (mirrors the Go golden "
+                         "ceremony)")
+    ap.add_argument("--confirm-vector-ceremony", action="store_true",
+                    help="second flag required by --update-vectors: "
+                         "confirms the vector ceremony steps were followed")
     ap.add_argument("--label", default=None,
                     help="machine label (e.g. macbook, gx10); fixtures and "
                          "expectations go under <out>/<label>/ so harvests "
@@ -1362,6 +1384,12 @@ def main():
     ap.add_argument("--no-expectations", action="store_true",
                     help="skip the ccusage expectation capture (fixtures only)")
     args = ap.parse_args()
+
+    if args.update_vectors and not args.confirm_vector_ceremony:
+        print(VECTOR_CEREMONY, file=sys.stderr)
+        print("error: --update-vectors refused without "
+              "--confirm-vector-ceremony", file=sys.stderr)
+        return 1
 
     if args.check_vectors or args.update_vectors:
         failures, checked = check_vectors(update=args.update_vectors)

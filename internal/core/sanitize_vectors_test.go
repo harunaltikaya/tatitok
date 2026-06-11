@@ -17,11 +17,26 @@ import (
 
 const vectorsDir = "../../testdata/sanitizer-vectors"
 
+// vectorCeremony is the mandatory procedure for changing the frozen
+// sanitizer vectors; it is printed wherever someone could be tempted to
+// skip it (mirrors the adapters' golden ceremony).
+const vectorCeremony = `regenerating sanitizer vector expectations requires the full ceremony:
+  1. a vector regen means sanitizer output changed by definition — identify the
+     rule-spec / implementation change that caused it; if the shared semantics
+     changed, bump spec_version in sanitize_rules.json (every consumer pins it)
+  2. TATITOK_UPDATE_VECTORS=1 TATITOK_CONFIRM_VECTORS=1 go test ./internal/core -run TestSanitizerContractVectors
+     (the Python side regenerates its vectors with
+      harvest_fixtures.py --update-vectors --confirm-vector-ceremony)
+  3. python3 scripts/harvest_fixtures.py --check-vectors must pass afterwards —
+     rule-spec lockstep: both implementations byte-identical on the new bytes
+  4. make test must stay green: sanitized raw feeds the frozen adapter goldens,
+     so a vector change can cascade into the golden ceremony
+commit the vector diff together with the causing change and note the ceremony in the message`
+
 // TestSanitizerContractVectors runs every contract vector through the Go
 // sanitizer and demands byte-equality with the committed expected output.
-// TATITOK_UPDATE_VECTORS=1 regenerates the expected files — review the
-// diff deliberately and re-run scripts/harvest_fixtures.py --check-vectors
-// before committing (both implementations must agree on the new bytes).
+// Regeneration demands the explicit two-flag confirmation of the ceremony
+// above — never regenerate to make a red test green.
 func TestSanitizerContractVectors(t *testing.T) {
 	raws, err := filepath.Glob(filepath.Join(vectorsDir, "contract", "*.raw.json"))
 	if err != nil {
@@ -53,19 +68,26 @@ func TestSanitizerContractVectors(t *testing.T) {
 
 			expPath := strings.TrimSuffix(rawPath, ".raw.json") + ".expected.json"
 			if os.Getenv("TATITOK_UPDATE_VECTORS") == "1" {
+				if os.Getenv("TATITOK_CONFIRM_VECTORS") != "1" {
+					t.Fatalf("TATITOK_UPDATE_VECTORS=1 refused without TATITOK_CONFIRM_VECTORS=1\n%s",
+						vectorCeremony)
+				}
 				if err := os.WriteFile(expPath, append(got, '\n'), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				t.Logf("wrote %s", expPath)
+				t.Logf("wrote %s\n%s", expPath, vectorCeremony)
 				return
 			}
 			want, err := os.ReadFile(expPath)
 			if err != nil {
-				t.Fatalf("missing expected vector (generate via TATITOK_UPDATE_VECTORS=1): %v", err)
+				// A missing expected file FAILS — skipping would let the
+				// cross-implementation contract go unchecked while green.
+				t.Fatalf("frozen vector expectation unreadable: %v\n%s", err, vectorCeremony)
 			}
 			if string(got)+"\n" != string(want) {
-				t.Fatalf("sanitizer output diverges from frozen vector %s:\ngot:  %s\nwant: %s",
-					filepath.Base(expPath), got, strings.TrimSuffix(string(want), "\n"))
+				t.Fatalf("sanitizer output diverges from frozen vector %s:\ngot:  %s\nwant: %s\n%s",
+					filepath.Base(expPath), got, strings.TrimSuffix(string(want), "\n"),
+					vectorCeremony)
 			}
 		})
 	}
