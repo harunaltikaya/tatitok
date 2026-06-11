@@ -85,9 +85,21 @@ type Event struct {
 // the enforcement boundary for hard rule 6: an event whose Raw still
 // carries content-bearing text (non-placeholder strings under content
 // keys, or over-long free text) must never be persisted.
+//
+// Identity fields (id, source kind, harness) and non-negative token
+// counters are required; Model and Provider MAY be empty — codex
+// token_count records before the first turn_context genuinely carry no
+// model — and the ingest layer counts such events as a health signal
+// instead of rejecting real usage.
 func (e *Event) Validate() error {
 	if e.ID == "" {
 		return fmt.Errorf("event has empty id")
+	}
+	if e.SourceKind == "" {
+		return fmt.Errorf("event %s has empty source_kind", e.ID)
+	}
+	if e.Harness == "" {
+		return fmt.Errorf("event %s has empty harness", e.ID)
 	}
 	if e.TS.IsZero() {
 		return fmt.Errorf("event %s has zero timestamp", e.ID)
@@ -97,6 +109,16 @@ func (e *Event) Validate() error {
 	}
 	if !e.Accuracy.Valid() {
 		return fmt.Errorf("event %s has invalid accuracy %q", e.ID, e.Accuracy)
+	}
+	if e.TokensInput < 0 || e.TokensOutput < 0 ||
+		e.TokensCacheWrite < 0 || e.TokensCacheRead < 0 {
+		return fmt.Errorf("event %s has negative token counters (%d/%d/%d/%d)",
+			e.ID, e.TokensInput, e.TokensOutput,
+			e.TokensCacheWrite, e.TokensCacheRead)
+	}
+	if e.TokensReasoning != nil && *e.TokensReasoning < 0 {
+		return fmt.Errorf("event %s has negative reasoning tokens (%d)",
+			e.ID, *e.TokensReasoning)
 	}
 	if len(e.Raw) > 0 {
 		findings, err := CheckRawSanitized(e.Raw)

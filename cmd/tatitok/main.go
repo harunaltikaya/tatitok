@@ -195,6 +195,10 @@ func cmdIngest(args []string) error {
 			fmt.Printf("%-12s %d events replaced (source rows changed since last ingest)\n",
 				a.Name()+":", sum.Replaced)
 		}
+		if sum.EmptyModel > 0 {
+			fmt.Printf("%-12s %d events carry no model (usage before the first turn_context; see doctor --provenance)\n",
+				a.Name()+":", sum.EmptyModel)
+		}
 		if sum.Skipped > 0 {
 			fmt.Printf("%-12s WARNING: %d sources skipped (unreadable) — totals are incomplete\n",
 				a.Name()+":", sum.Skipped)

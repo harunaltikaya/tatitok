@@ -319,6 +319,16 @@ func (s *Store) CountEvents(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+// CountEmptyModel returns how many stored events carry no model — legal
+// (codex usage before the first turn_context) but a health signal
+// (`doctor --provenance` surfaces it; pricing will need these visible).
+func (s *Store) CountEmptyModel(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM usage_events WHERE model = ''`).Scan(&n)
+	return n, err
+}
+
 // ScanRawForContent reports how many stored raw/meta blobs contain the
 // given literal — `doctor --scan-content` uses it to prove no prompt or
 // response text ever reaches the DB.

@@ -71,8 +71,15 @@ func doctorProvenance(ctx context.Context, st *store.Store, asJSON bool) error {
 	if err != nil {
 		return err
 	}
+	emptyModel, err := st.CountEmptyModel(ctx)
+	if err != nil {
+		return err
+	}
 	if asJSON {
-		return printJSON(map[string]any{"provenance": rows})
+		return printJSON(map[string]any{
+			"provenance":         rows,
+			"empty_model_events": emptyModel,
+		})
 	}
 	if len(rows) == 0 {
 		fmt.Println("no events ingested yet — run: tatitok ingest --backfill")
@@ -87,6 +94,11 @@ func doctorProvenance(ctx context.Context, st *store.Store, asJSON bool) error {
 		fmt.Printf("%-24s %15s %14s\n",
 			fmt.Sprintf("%s@%s", r.Harness, version),
 			formatTokens(r.Events), formatTokens(r.SourceFiles))
+	}
+	if emptyModel > 0 {
+		// Legal but worth seeing: codex usage logged before the first
+		// turn_context carries no model (pricing cannot attribute these).
+		fmt.Printf("events with empty model: %s\n", formatTokens(emptyModel))
 	}
 	return nil
 }

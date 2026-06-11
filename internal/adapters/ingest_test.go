@@ -343,6 +343,33 @@ func TestIngestContractViolationsRejected(t *testing.T) {
 	}
 }
 
+// Empty-model events are LEGAL (codex usage before the first
+// turn_context) but counted as a health signal and queryable via doctor
+// (M2.1 item 9).
+func TestIngestCountsEmptyModelEvents(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	noModel := synthEvent(2)
+	noModel.Model, noModel.ModelFamily, noModel.Provider = "", "", ""
+	a := &fakeAdapter{files: []fakeFile{
+		{path: "/fake/a.jsonl", batches: [][]core.Event{{synthEvent(1), noModel}}},
+	}}
+	sum, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}})
+	if err != nil {
+		t.Fatalf("empty-model event rejected: %v", err)
+	}
+	if sum.Inserted != 2 || sum.EmptyModel != 1 {
+		t.Fatalf("summary wrong: %+v", sum)
+	}
+	n, err := s.CountEmptyModel(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("doctor count = %d, want 1", n)
+	}
+}
+
 // Provenance stamping: every event row and sources row carries the
 // adapter's version.
 func TestIngestStampsAdapterVersion(t *testing.T) {

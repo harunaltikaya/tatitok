@@ -39,18 +39,46 @@ func TestEventValidate(t *testing.T) {
 		t.Fatalf("valid event rejected: %v", err)
 	}
 
+	// Model and Provider MAY be empty: codex token_count records before
+	// the first turn_context genuinely carry no model — counted as an
+	// ingest health signal, never rejected (M2.1 item 9).
+	noModel := validEvent()
+	noModel.Model, noModel.ModelFamily, noModel.Provider = "", "", ""
+	if err := noModel.Validate(); err != nil {
+		t.Fatalf("empty model/provider must stay legal: %v", err)
+	}
+
 	noID := validEvent()
 	noID.ID = ""
+	noKind := validEvent()
+	noKind.SourceKind = ""
+	noHarness := validEvent()
+	noHarness.Harness = ""
 	zeroTS := validEvent()
 	zeroTS.TS = time.Time{}
 	localTS := validEvent()
 	localTS.TS = localTS.TS.In(time.FixedZone("X", 3*3600))
 	badAcc := validEvent()
 	badAcc.Accuracy = "approximate"
+	negIn := validEvent()
+	negIn.TokensInput = -1
+	negOut := validEvent()
+	negOut.TokensOutput = -2
+	negCW := validEvent()
+	negCW.TokensCacheWrite = -3
+	negCR := validEvent()
+	negCR.TokensCacheRead = -4
+	minusFive := int64(-5)
+	negReason := validEvent()
+	negReason.TokensReasoning = &minusFive
 
 	for name, e := range map[string]Event{
-		"empty id": noID, "zero ts": zeroTS,
+		"empty id": noID, "empty source_kind": noKind,
+		"empty harness": noHarness, "zero ts": zeroTS,
 		"non-utc ts": localTS, "bad accuracy": badAcc,
+		"negative input": negIn, "negative output": negOut,
+		"negative cache write": negCW, "negative cache read": negCR,
+		"negative reasoning": negReason,
 	} {
 		if err := e.Validate(); err == nil {
 			t.Errorf("%s: expected validation error", name)

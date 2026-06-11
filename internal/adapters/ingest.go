@@ -18,7 +18,11 @@ type IngestSummary struct {
 	// previous ingest and were updated to mirror it (mutable stores —
 	// OpenCode rewrites a message row while the turn is in flight). The
 	// correction mirrors source truth; it is reported, never silent (AS-4).
-	Replaced    int
+	Replaced int
+	// EmptyModel counts committed events that carry no model — legal
+	// (codex token_count records before the first turn_context) but a
+	// health signal worth surfacing; also queryable via doctor.
+	EmptyModel  int
 	ParseErrors int
 	// Skipped counts sources (files or project dirs) the adapter could
 	// not read — recorded in the sources table with their read error,
@@ -45,10 +49,11 @@ type storeSink struct {
 	version int
 	sum     *IngestSummary
 
-	cur        *store.FileTx
-	started    string          // path declared by FileStart; "" when no file is open
-	curEmitted int             // events inserted for the open file (counted into the summary only on commit)
-	closed     map[string]bool // paths already finished this run
+	cur           *store.FileTx
+	started       string          // path declared by FileStart; "" when no file is open
+	curEmitted    int             // events inserted for the open file (counted into the summary only on commit)
+	curEmptyModel int             // empty-model events for the open file (health, counted on commit)
+	closed        map[string]bool // paths already finished this run
 }
 
 func (k *storeSink) FileStart(path string) error {
@@ -86,6 +91,11 @@ func (k *storeSink) EmitBatch(path string, events []core.Event) error {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	k.curEmitted += len(events)
+	for i := range events {
+		if events[i].Model == "" {
+			k.curEmptyModel++
+		}
+	}
 	return nil
 }
 
@@ -122,7 +132,7 @@ func (k *storeSink) FileDone(res FileResult) error {
 			}
 			k.cur = nil
 		}
-		k.started, k.curEmitted = "", 0
+		k.started, k.curEmitted, k.curEmptyModel = "", 0, 0
 		if err := k.st.RecordSource(k.ctx, info); err != nil {
 			return err
 		}
@@ -138,14 +148,15 @@ func (k *storeSink) FileDone(res FileResult) error {
 		}
 	} else {
 		stats, err := k.cur.Commit(k.ctx, info)
-		emitted := k.curEmitted
-		k.cur, k.started, k.curEmitted = nil, "", 0
+		emitted, emptyModel := k.curEmitted, k.curEmptyModel
+		k.cur, k.started, k.curEmitted, k.curEmptyModel = nil, "", 0, 0
 		if err != nil {
 			return err
 		}
 		k.sum.Inserted += stats.Inserted
 		k.sum.Replaced += stats.Replaced
 		k.sum.Emitted += emitted
+		k.sum.EmptyModel += emptyModel
 	}
 	k.sum.Files++
 	k.sum.Lines += res.LineCount
