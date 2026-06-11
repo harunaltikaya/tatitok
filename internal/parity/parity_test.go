@@ -296,6 +296,17 @@ func TestParityFullOpencode(t *testing.T) {
 	for _, s := range srcs {
 		t.Logf("live root: %s", s.Root)
 	}
+	// M3 Task 5 containment: ccusage merges a legacy storage/ tree with
+	// opencode.db; our adapter reads only the db. With a populated legacy
+	// tree the comparison would diverge BY DESIGN — skip explicitly
+	// instead of failing mysteriously. The merge is a fixture-gated task
+	// the day a real legacy tree appears (MacBook candidate).
+	if present, files := opencode.HasLegacyStorageTree(srcs[0].Root); present {
+		t.Skipf("legacy OpenCode storage tree present (%d files under %s) — "+
+			"multi-store merge unsupported (no real fixtures; fabrication forbidden); "+
+			"parity vs ccusage would diverge by design. See docs/format-notes.md.",
+			files, filepath.Join(srcs[0].Root, "storage"))
+	}
 
 	// Snapshot the live store ONCE; everything below reads the snapshot.
 	snapHome := t.TempDir()

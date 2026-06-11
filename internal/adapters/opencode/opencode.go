@@ -81,6 +81,7 @@ func (Adapter) Detect(env adapters.Probe) ([]adapters.Source, error) {
 	st, err := os.Stat(filepath.Join(root, "opencode.db"))
 	switch {
 	case err == nil && !st.IsDir():
+		warnLegacyStorageTree(root) // M3 Task 5 containment
 		return []adapters.Source{{
 			Harness: harnessName, Root: root, Machine: env.Machine,
 		}}, nil
@@ -89,6 +90,38 @@ func (Adapter) Detect(env adapters.Probe) ([]adapters.Source, error) {
 			"adapter", harnessName, "root", root, "error", err)
 	}
 	return nil, nil
+}
+
+// HasLegacyStorageTree reports whether the data root carries a POPULATED
+// pre-database OpenCode store (<root>/storage with at least one regular
+// file). ccusage merges that tree with opencode.db; our adapter reads
+// only the db — the merge cannot be built honestly today because no real
+// legacy tree exists on any owner machine and fixtures are never
+// fabricated (M3 Task 5 containment; full merge becomes a fixture-gated
+// task the day a real tree appears). The file count is returned for the
+// warning.
+func HasLegacyStorageTree(root string) (bool, int) {
+	dir := filepath.Join(root, "storage")
+	files := 0
+	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil //nolint:nilerr // a probe, not an ingest: unreadable parts just don't count
+		}
+		files++
+		return nil
+	})
+	return files > 0, files
+}
+
+// warnLegacyStorageTree is the loud Detect/Backfill-time containment
+// warning — totals may diverge from ccusage while a legacy tree exists.
+func warnLegacyStorageTree(root string) {
+	if present, files := HasLegacyStorageTree(root); present {
+		slog.Warn("legacy OpenCode store present — UNSUPPORTED, totals may diverge from ccusage "+
+			"(ccusage merges the legacy storage/ tree with opencode.db; this adapter reads only the db; "+
+			"the merge is fixture-gated on a real legacy tree)",
+			"adapter", harnessName, "tree", filepath.Join(root, "storage"), "files", files)
+	}
 }
 
 // row mirrors one message-table row; data stays raw for sanitization.
@@ -136,6 +169,7 @@ type tokens struct {
 // bookkeeping: per-row JSON failures are contained as parse errors; a
 // database-level failure reports the store as a skipped source.
 func (Adapter) Backfill(ctx context.Context, src adapters.Source, sink adapters.Sink) error {
+	warnLegacyStorageTree(src.Root) // ingest warns loudly too (M3 Task 5)
 	dbPath := filepath.Join(src.Root, "opencode.db")
 	if err := sink.FileStart(dbPath); err != nil {
 		return err

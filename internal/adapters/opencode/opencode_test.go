@@ -290,6 +290,30 @@ func TestReingestIdempotent(t *testing.T) {
 	}
 }
 
+// M3 Task 5 containment: a populated legacy storage/ tree is detected,
+// an empty or absent one is not. Synthetic DIRECTORIES are fine here —
+// this tests detection plumbing, no log lines are involved at all.
+func TestHasLegacyStorageTree(t *testing.T) {
+	root := t.TempDir()
+	if present, _ := HasLegacyStorageTree(root); present {
+		t.Fatal("absent storage tree reported present")
+	}
+	if err := os.MkdirAll(filepath.Join(root, "storage", "message"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if present, _ := HasLegacyStorageTree(root); present {
+		t.Fatal("EMPTY storage tree reported present — only populated trees contain data")
+	}
+	if err := os.WriteFile(filepath.Join(root, "storage", "message", "x.json"),
+		[]byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	present, files := HasLegacyStorageTree(root)
+	if !present || files != 1 {
+		t.Fatalf("populated tree: present=%v files=%d, want true/1", present, files)
+	}
+}
+
 // assertRollupMatchesDaily: rollup-served daily must equal direct
 // aggregation at UTC (M3 Task 3 consistency property on the replacement
 // path).
