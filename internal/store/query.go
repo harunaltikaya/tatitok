@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"modernc.org/sqlite"
+
+	"github.com/harunaltikaya/tatitok/internal/core"
 )
 
 // tatitok_day(ts, tz) is a deterministic custom SQL function: the local
@@ -37,6 +39,21 @@ func init() {
 				return nil, fmt.Errorf("tatitok_day: %w", err)
 			}
 			return t.In(loc).Format("2006-01-02"), nil
+		})
+	// tatitok_source_id(harness, path) exposes core.SourceID to SQL so the
+	// source-lineage migration can backfill the sources table with the
+	// exact same ID the Go ingest path stamps.
+	sqlite.MustRegisterDeterministicScalarFunction("tatitok_source_id", 2,
+		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			harness, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("tatitok_source_id: harness is %T, want TEXT", args[0])
+			}
+			path, ok := args[1].(string)
+			if !ok {
+				return nil, fmt.Errorf("tatitok_source_id: path is %T, want TEXT", args[1])
+			}
+			return core.SourceID(harness, path), nil
 		})
 }
 

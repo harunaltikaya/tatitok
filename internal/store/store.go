@@ -73,14 +73,103 @@ var migrations = []string{
 	// on rows ingested before this migration.
 	`ALTER TABLE usage_events ADD COLUMN adapter_version INTEGER;
 	ALTER TABLE sources ADD COLUMN adapter_version INTEGER;`,
+	// Source lineage (M3 Task 0, migration 5). sources gains a stable
+	// source_id — core.SourceID(harness, path), exposed to SQL as
+	// tatitok_source_id — and the collecting machine; usage_events gains a
+	// source_id FK (deferred: a file's events insert before its sources row
+	// lands at commit) so stale events are identifiable per file for
+	// recompute and rollup corrections.
+	//
+	// Backfill: every sources row gets its deterministic source_id; machine
+	// fills where the harness has exactly one distinct machine across its
+	// events. Existing events link to a source by path match where
+	// UNAMBIGUOUS — the session id appears in exactly one recorded source
+	// path (claude-code and codex embed it in the filename; codex rollout
+	// backup copies match twice and stay NULL on purpose), else the harness
+	// has exactly one recorded source (opencode's single db file).
+	// Everything else stays NULL and is counted (migration hook log);
+	// `tatitok recompute --provenance` completes those precisely by ID.
+	`ALTER TABLE sources ADD COLUMN machine TEXT;
+	ALTER TABLE sources ADD COLUMN source_id TEXT;
+	UPDATE sources SET source_id = tatitok_source_id(harness, path);
+	CREATE UNIQUE INDEX idx_sources_source_id ON sources (source_id);
+	ALTER TABLE usage_events ADD COLUMN source_id TEXT
+		REFERENCES sources (source_id) DEFERRABLE INITIALLY DEFERRED;
+	UPDATE sources SET machine = (
+		SELECT MIN(e.machine) FROM usage_events e WHERE e.harness = sources.harness
+	) WHERE (
+		SELECT COUNT(DISTINCT e.machine) FROM usage_events e WHERE e.harness = sources.harness
+	) = 1;
+	CREATE TEMP TABLE lineage_match AS
+		SELECT e.harness AS harness, e.session_id AS session_id,
+		       MIN(s.source_id) AS source_id,
+		       COUNT(DISTINCT s.source_id) AS n
+		FROM (SELECT DISTINCT harness, session_id FROM usage_events
+		      WHERE harness IS NOT NULL
+		        AND session_id IS NOT NULL AND session_id <> '') AS e
+		JOIN sources s ON s.harness = e.harness
+		              AND instr(s.path, e.session_id) > 0
+		GROUP BY e.harness, e.session_id;
+	UPDATE usage_events SET source_id = (
+		SELECT m.source_id FROM lineage_match m
+		WHERE m.harness = usage_events.harness
+		  AND m.session_id = usage_events.session_id AND m.n = 1
+	) WHERE source_id IS NULL AND EXISTS (
+		SELECT 1 FROM lineage_match m
+		WHERE m.harness = usage_events.harness
+		  AND m.session_id = usage_events.session_id AND m.n = 1
+	);
+	DROP TABLE lineage_match;
+	UPDATE usage_events SET source_id = (
+		SELECT MIN(s.source_id) FROM sources s WHERE s.harness = usage_events.harness
+	) WHERE source_id IS NULL AND (
+		SELECT COUNT(*) FROM sources s WHERE s.harness = usage_events.harness
+	) = 1;
+	CREATE INDEX idx_events_source ON usage_events (source_id);`,
+}
+
+// migrationHooks run inside the migration's transaction, after its SQL —
+// used to surface backfill outcomes (a migration must never be silent
+// about data it could not link). Keyed by migration index.
+var migrationHooks = map[int]func(*sql.Tx) error{
+	4: reportLineageBackfill,
+}
+
+// reportLineageBackfill logs what migration 5 linked and what it left
+// NULL ("otherwise NULL + counted" — milestone-3 Task 0).
+func reportLineageBackfill(tx *sql.Tx) error {
+	var events, unlinked, srcNoMachine int64
+	if err := tx.QueryRow(`SELECT COUNT(*),
+			COALESCE(SUM(source_id IS NULL), 0) FROM usage_events`).
+		Scan(&events, &unlinked); err != nil {
+		return fmt.Errorf("lineage backfill report: %w", err)
+	}
+	if err := tx.QueryRow(`SELECT COALESCE(SUM(machine IS NULL), 0) FROM sources`).
+		Scan(&srcNoMachine); err != nil {
+		return fmt.Errorf("lineage backfill report: %w", err)
+	}
+	if events == 0 && srcNoMachine == 0 {
+		return nil // fresh database — nothing to backfill
+	}
+	slog.Info("migration 5: source lineage backfill",
+		"events", events,
+		"events_linked", events-unlinked,
+		"events_without_source_link", unlinked,
+		"sources_without_machine", srcNoMachine,
+		"next", "tatitok recompute --provenance completes NULL rows from the source files")
+	return nil
+}
+
+// dsn builds the connection string. _pragma values apply per connection;
+// busy_timeout guards WAL writers.
+func dsn(path string) string {
+	return fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
 }
 
 // Open opens (creating if needed) the database at path, enables WAL, and
 // applies pending migrations.
 func Open(path string) (*Store, error) {
-	// _pragma values apply per connection; busy_timeout guards WAL writers.
-	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)", path)
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", dsn(path))
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
@@ -93,7 +182,12 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func migrate(db *sql.DB) error {
+func migrate(db *sql.DB) error { return migrateTo(db, len(migrations)) }
+
+// migrateTo applies pending migrations up to (and excluding) index target.
+// Split out so the upgrade tests can build a database frozen at an older
+// schema version and then let Open finish the job.
+func migrateTo(db *sql.DB, target int) error {
 	if _, err := db.Exec(
 		`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("create schema_version: %w", err)
@@ -103,7 +197,7 @@ func migrate(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("read schema_version: %w", err)
 	}
-	for i := version; i < len(migrations); i++ {
+	for i := version; i < target; i++ {
 		tx, err := db.Begin()
 		if err != nil {
 			return err
@@ -111,6 +205,12 @@ func migrate(db *sql.DB) error {
 		if _, err := tx.Exec(migrations[i]); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("migration %d: %w", i+1, err)
+		}
+		if hook := migrationHooks[i]; hook != nil {
+			if err := hook(tx); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("migration %d: %w", i+1, err)
+			}
 		}
 		if _, err := tx.Exec(`DELETE FROM schema_version`); err != nil {
 			_ = tx.Rollback()
@@ -129,9 +229,13 @@ func migrate(db *sql.DB) error {
 
 // SourceInfo describes one ingested file for the sources table.
 type SourceInfo struct {
-	Path        string
-	Harness     string
-	MTime       time.Time
+	Path    string
+	Harness string
+	// Machine is the collecting machine's label (propagated from the
+	// adapter Source); the row's stable source_id is derived from
+	// (Harness, Path) by core.SourceID, never stored here.
+	Machine string
+	MTime   time.Time
 	Size        int64
 	LineCount   int
 	ParseErrors int
@@ -176,8 +280,8 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 		(id, ts, machine, source_kind, harness, provider, model, model_family,
 		 project, session_id, request_id,
 		 tokens_input, tokens_output, tokens_cache_write, tokens_cache_read,
-		 tokens_reasoning, accuracy, meta, raw, adapter_version)
-		VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)`)
+		 tokens_reasoning, accuracy, meta, raw, adapter_version, source_id)
+		VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return nil, err
@@ -186,15 +290,15 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 	// a message row while the turn is in flight), so an event ID can come
 	// back with a different payload. The DB mirrors the latest source read:
 	// on conflict, update iff the payload differs (NULL-safe IS NOT).
-	// adapter_version is provenance, not payload — it is stamped when a
-	// replacement happens but never triggers one by itself. Replacements
-	// are counted and logged, never silent (PRD AS-4).
+	// adapter_version and source_id are provenance, not payload — they are
+	// stamped when a replacement happens but never trigger one by
+	// themselves. Replacements are counted and logged, never silent (AS-4).
 	upd, err := tx.PrepareContext(ctx, `UPDATE usage_events SET
 		ts=?2, machine=?3, source_kind=?4, harness=?5, provider=?6, model=?7,
 		model_family=?8, project=?9, session_id=?10, request_id=?11,
 		tokens_input=?12, tokens_output=?13, tokens_cache_write=?14,
 		tokens_cache_read=?15, tokens_reasoning=?16, accuracy=?17, meta=?18,
-		raw=?19, adapter_version=?20
+		raw=?19, adapter_version=?20, source_id=?21
 		WHERE id=?1 AND (
 			ts IS NOT ?2 OR machine IS NOT ?3 OR source_kind IS NOT ?4 OR
 			harness IS NOT ?5 OR provider IS NOT ?6 OR model IS NOT ?7 OR
@@ -213,37 +317,50 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 	return &FileTx{tx: tx, ins: ins, upd: upd}, nil
 }
 
+// eventArgs encodes an event's payload into the 19 positional parameters
+// (?1 id … ?19 raw) shared by the insert statement, the replacement
+// statement's NULL-safe difference predicate, and the recompute verifier —
+// one encoding, so "identical payload" means the same thing everywhere.
+func eventArgs(e *core.Event) ([]any, error) {
+	var meta any
+	if e.Meta != nil {
+		b, err := json.Marshal(e.Meta)
+		if err != nil {
+			return nil, fmt.Errorf("marshal meta for %s: %w", e.ID, err)
+		}
+		meta = string(b)
+	}
+	var raw any
+	if len(e.Raw) > 0 {
+		raw = string(e.Raw)
+	}
+	return []any{
+		e.ID, e.TS.UTC().Format(time.RFC3339Nano), e.Machine, e.SourceKind,
+		nullStr(e.Harness), e.Provider, e.Model, e.ModelFamily,
+		nullStr(e.Project), nullStr(e.SessionID), nullStr(e.RequestID),
+		e.TokensInput, e.TokensOutput, e.TokensCacheWrite, e.TokensCacheRead,
+		e.TokensReasoning, string(e.Accuracy), meta, raw,
+	}, nil
+}
+
 // InsertEvents validates and inserts one batch into the open transaction.
 // The deterministic ID is the primary key: a duplicate with an identical
 // payload is a no-op (idempotent re-ingest); a duplicate whose payload
 // differs replaces the stored row to mirror the source (see BeginFile).
-// An error leaves the transaction unusable; the caller must Rollback.
-func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, adapterVersion int) error {
+// sourceID is the file's stable lineage ID (core.SourceID of the file the
+// batch came from). An error leaves the transaction unusable; the caller
+// must Rollback.
+func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, adapterVersion int, sourceID string) error {
 	for i := range events {
 		e := &events[i]
 		if err := e.Validate(); err != nil {
 			return err
 		}
-		var meta any
-		if e.Meta != nil {
-			b, err := json.Marshal(e.Meta)
-			if err != nil {
-				return fmt.Errorf("marshal meta for %s: %w", e.ID, err)
-			}
-			meta = string(b)
+		args, err := eventArgs(e)
+		if err != nil {
+			return err
 		}
-		var raw any
-		if len(e.Raw) > 0 {
-			raw = string(e.Raw)
-		}
-		args := []any{
-			e.ID, e.TS.UTC().Format(time.RFC3339Nano), e.Machine, e.SourceKind,
-			nullStr(e.Harness), e.Provider, e.Model, e.ModelFamily,
-			nullStr(e.Project), nullStr(e.SessionID), nullStr(e.RequestID),
-			e.TokensInput, e.TokensOutput, e.TokensCacheWrite, e.TokensCacheRead,
-			e.TokensReasoning, string(e.Accuracy), meta, raw,
-			nullVersion(adapterVersion),
-		}
+		args = append(args, nullVersion(adapterVersion), nullStr(sourceID))
 		res, err := f.ins.ExecContext(ctx, args...)
 		if err != nil {
 			return fmt.Errorf("insert %s: %w", e.ID, err)
@@ -309,18 +426,20 @@ type execer interface {
 func recordSource(ctx context.Context, db execer, src SourceInfo) error {
 	if _, err := db.ExecContext(ctx, `INSERT INTO sources
 		(path, harness, mtime, size, line_count, ingested_at, parse_errors,
-		 read_error, incomplete_tail, adapter_version)
-		VALUES (?,?,?,?,?,?,?,?,?,?)
+		 read_error, incomplete_tail, adapter_version, machine, source_id)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(path) DO UPDATE SET
 			harness=excluded.harness, mtime=excluded.mtime, size=excluded.size,
 			line_count=excluded.line_count, ingested_at=excluded.ingested_at,
 			parse_errors=excluded.parse_errors, read_error=excluded.read_error,
 			incomplete_tail=excluded.incomplete_tail,
-			adapter_version=excluded.adapter_version`,
+			adapter_version=excluded.adapter_version,
+			machine=excluded.machine, source_id=excluded.source_id`,
 		src.Path, src.Harness, src.MTime.UTC().Format(time.RFC3339Nano),
 		src.Size, src.LineCount, time.Now().UTC().Format(time.RFC3339Nano),
 		src.ParseErrors, nullStr(src.ReadError), src.IncompleteTail,
-		nullVersion(src.AdapterVersion)); err != nil {
+		nullVersion(src.AdapterVersion), nullStr(src.Machine),
+		core.SourceID(src.Harness, src.Path)); err != nil {
 		return fmt.Errorf("record source %s: %w", src.Path, err)
 	}
 	return nil
@@ -339,7 +458,8 @@ func (s *Store) InsertBatch(ctx context.Context, events []core.Event, src Source
 	if err != nil {
 		return InsertStats{}, err
 	}
-	if err := f.InsertEvents(ctx, events, src.AdapterVersion); err != nil {
+	if err := f.InsertEvents(ctx, events, src.AdapterVersion,
+		core.SourceID(src.Harness, src.Path)); err != nil {
 		_ = f.Rollback()
 		return InsertStats{}, fmt.Errorf("%s: %w", src.Path, err)
 	}

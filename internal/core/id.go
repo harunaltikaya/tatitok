@@ -44,6 +44,17 @@ func EventID(harness, messageID, requestID string) string {
 	return hashID(harness, messageID, requestID)
 }
 
+// SourceID returns the deterministic ID of one ingested source file:
+// sha256 over the length-prefixed components ("src", harness, absolute
+// path), truncated like event IDs. The "src" domain prefix keeps source
+// IDs out of the event-ID preimage space. Machine is deliberately NOT a
+// component: the ID must stay stable across a hostname change (machine is
+// its own column on the sources table), and within one database a path is
+// already unique per harness.
+func SourceID(harness, path string) string {
+	return hashID("src", harness, path)
+}
+
 // FallbackID returns the deterministic ID for a record missing a native
 // message id or request id: sha256 over the length-prefixed components
 // (harness, fileRel, line index, ts), same truncation. fileRel is the

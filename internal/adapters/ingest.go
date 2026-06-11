@@ -46,11 +46,13 @@ type storeSink struct {
 	ctx     context.Context
 	st      *store.Store
 	harness string
+	machine string
 	version int
 	sum     *IngestSummary
 
 	cur           *store.FileTx
 	started       string          // path declared by FileStart; "" when no file is open
+	curSourceID   string          // stable lineage ID of the open file (core.SourceID)
 	curEmitted    int             // events inserted for the open file (counted into the summary only on commit)
 	curEmptyModel int             // empty-model events for the open file (health, counted on commit)
 	closed        map[string]bool // paths already finished this run
@@ -65,6 +67,7 @@ func (k *storeSink) FileStart(path string) error {
 		return fmt.Errorf("adapter contract violation: duplicate path %s in one backfill run", path)
 	}
 	k.started = path
+	k.curSourceID = core.SourceID(k.harness, path)
 	return nil
 }
 
@@ -87,7 +90,7 @@ func (k *storeSink) EmitBatch(path string, events []core.Event) error {
 		}
 		k.cur = tx
 	}
-	if err := k.cur.InsertEvents(k.ctx, events, k.version); err != nil {
+	if err := k.cur.InsertEvents(k.ctx, events, k.version, k.curSourceID); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	k.curEmitted += len(events)
@@ -115,8 +118,8 @@ func (k *storeSink) FileDone(res FileResult) error {
 			res.Path, res.Events, k.curEmitted)
 	}
 	info := store.SourceInfo{
-		Path: res.Path, Harness: k.harness, MTime: res.MTime,
-		Size: res.Size, LineCount: res.LineCount,
+		Path: res.Path, Harness: k.harness, Machine: k.machine,
+		MTime: res.MTime, Size: res.Size, LineCount: res.LineCount,
 		ParseErrors: res.ParseErrors, ReadError: res.ReadError,
 		IncompleteTail: res.IncompleteTail, AdapterVersion: k.version,
 	}
@@ -172,7 +175,7 @@ func IngestBackfill(ctx context.Context, st *store.Store, a Adapter, srcs []Sour
 	var sum IngestSummary
 	for _, src := range srcs {
 		sink := &storeSink{
-			ctx: ctx, st: st, harness: src.Harness,
+			ctx: ctx, st: st, harness: src.Harness, machine: src.Machine,
 			version: a.Version(), sum: &sum,
 			closed: map[string]bool{},
 		}
