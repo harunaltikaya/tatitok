@@ -745,6 +745,65 @@ func TestExplainedDivergences(t *testing.T) {
 	}
 }
 
+// M5 Task 1 addendum (hard stop 0 finding): unknown keys in the
+// override file are loud load errors. The live ceremony's first run —
+// a stale binary silently ignoring the regimes key, repricing nothing,
+// and reporting OUT OF TOLERANCE at doctor — is the failure mode this
+// pins shut: a declaration the binary cannot honor must fail at load,
+// never lie at doctor. "_doc" is the one sanctioned notes key.
+func TestOverridesUnknownKeysAreLoadErrors(t *testing.T) {
+	bad := map[string]string{
+		"unknown top-level key": `{"prices": {}, "plans": {}}`,
+		"unknown key in a price entry": `{"prices": {"m": {
+			"input_usd_per_mtok": "1.00", "regims": []}}}`,
+		"regimes key misspelled (the live-ceremony shape)": `{"prices": {"m": {
+			"input_usd_per_mtok": "1.00",
+			"regime": [{"from": "2026-01-01", "input_usd_per_mtok": "2.00"}]}}}`,
+		"unknown key inside a regime": `{"prices": {"m": {
+			"input_usd_per_mtok": "1.00",
+			"regimes": [{"from": "2026-01-01", "input_usd_per_mtok": "2.00", "label": "old"}]}}}`,
+		"unknown key in a divergence entry": `{"explained_divergences": [
+			{"provider": "p", "model": "m", "reason": "ruled", "severity": "low"}]}`,
+		"trailing data after the object": `{"prices": {}} {"prices": {}}`,
+	}
+	dir := t.TempDir()
+	for name, body := range bad {
+		path := filepath.Join(dir, "prices.json")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadOverrides(path); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+
+	// The sanctioned notes key loads at every level — the live file's
+	// shape (top-level _doc + full entry/regime/divergence structure).
+	ov := loadOverridesJSON(t, `{
+		"_doc": "owner notes",
+		"prices": {
+			"deepseek-v4-pro": {
+				"_doc": "per-entry note",
+				"input_usd_per_mtok": "0.435",
+				"regimes": [{
+					"_doc": "pre-cut regime note",
+					"from": "2026-05-02", "until": "2026-05-20",
+					"input_usd_per_mtok": "1.74"
+				}]
+			},
+			"x-free": {"free": true}
+		},
+		"reference_models": {"q": "deepseek-v4-pro"},
+		"explained_divergences": [
+			{"_doc": "note", "provider": "p", "model": "m", "reason": "ruled"}
+		]
+	}`)
+	if ov.Len() != 2 || ov.References() != 1 || ov.Divergences() != 1 {
+		t.Fatalf("documented file misparsed: len=%d refs=%d div=%d",
+			ov.Len(), ov.References(), ov.Divergences())
+	}
+}
+
 // regimeOverrides is the M5 Task 1 shape: a dated regime (the deepseek
 // pre-cut rates pattern) beside the entry's top-level current/default
 // rates. Synthetic CONFIG, not a log fixture.

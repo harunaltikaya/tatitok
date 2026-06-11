@@ -66,8 +66,11 @@ package pricing
 // untouched either way; this only declassifies the report finding.
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -244,13 +247,16 @@ func (o *Overrides) Reference(model, family string) (ref string, viaFamily bool,
 
 // rateFields are the shared per-entry price fields — the top-level
 // (default-regime) form and each dated regime carry the same set.
+// Doc is the sanctioned notes key (see the strict-parsing rule at
+// LoadOverrides); its content is never interpreted.
 type rateFields struct {
-	Free         bool        `json:"free"`
-	Input        json.Number `json:"input_usd_per_mtok"`
-	Output       json.Number `json:"output_usd_per_mtok"`
-	CacheWrite   json.Number `json:"cache_write_usd_per_mtok"`
-	CacheWrite1h json.Number `json:"cache_write_1h_usd_per_mtok"`
-	CacheRead    json.Number `json:"cache_read_usd_per_mtok"`
+	Doc          json.RawMessage `json:"_doc"`
+	Free         bool            `json:"free"`
+	Input        json.Number     `json:"input_usd_per_mtok"`
+	Output       json.Number     `json:"output_usd_per_mtok"`
+	CacheWrite   json.Number     `json:"cache_write_usd_per_mtok"`
+	CacheWrite1h json.Number     `json:"cache_write_1h_usd_per_mtok"`
+	CacheRead    json.Number     `json:"cache_read_usd_per_mtok"`
 }
 
 // patch parses the rate fields into an overridePatch (free carried,
@@ -302,12 +308,14 @@ func parseUTCBoundary(s string) (time.Time, error) {
 }
 
 type divergenceEntry struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Reason   string `json:"reason"`
+	Doc      json.RawMessage `json:"_doc"`
+	Provider string          `json:"provider"`
+	Model    string          `json:"model"`
+	Reason   string          `json:"reason"`
 }
 
 type overrideFile struct {
+	Doc                  json.RawMessage          `json:"_doc"`
 	Prices               map[string]overrideEntry `json:"prices"`
 	ReferenceModels      map[string]string        `json:"reference_models"`
 	ExplainedDivergences []divergenceEntry        `json:"explained_divergences"`
@@ -326,6 +334,14 @@ func OverridesPath(getenv func(string) string, home string) string {
 // LoadOverrides reads the override file at path. A missing file is no
 // overrides; a malformed file is an error (prices are inputs — failing
 // loudly beats pricing under silently-dropped overrides).
+//
+// Parsing is STRICT (M5 hard stop 0 finding): an unknown key anywhere
+// in the file is a load error, never silently ignored — the live
+// ceremony's first run had a stale binary load a regime-bearing config
+// without error, reprice nothing, and report OUT OF TOLERANCE at
+// doctor. A declaration the binary cannot honor must fail at load,
+// never lie at doctor. "_doc" is the one sanctioned notes key, allowed
+// at every level and never interpreted.
 func LoadOverrides(path string) (*Overrides, error) {
 	body, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -335,8 +351,16 @@ func LoadOverrides(path string) (*Overrides, error) {
 		return nil, fmt.Errorf("price overrides %s: %w", path, err)
 	}
 	var f overrideFile
-	if err := json.Unmarshal(body, &f); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil {
+		if strings.Contains(err.Error(), "unknown field") {
+			return nil, fmt.Errorf("price overrides %s: %w — this binary cannot honor that declaration, so it refuses to price under it (notes go in \"_doc\"; if the key is from a newer tatitok, rebuild first)", path, err)
+		}
 		return nil, fmt.Errorf("price overrides %s: %w", path, err)
+	}
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("price overrides %s: trailing data after the override object", path)
 	}
 	ov := &Overrides{patches: make(map[string]overridePatch, len(f.Prices)), path: path}
 	for model, e := range f.Prices {
