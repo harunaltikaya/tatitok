@@ -23,6 +23,7 @@ import (
 	"github.com/harunaltikaya/tatitok/internal/adapters/claudecode"
 	"github.com/harunaltikaya/tatitok/internal/adapters/codex"
 	"github.com/harunaltikaya/tatitok/internal/adapters/opencode"
+	"github.com/harunaltikaya/tatitok/internal/hub"
 	"github.com/harunaltikaya/tatitok/internal/modelmap"
 	"github.com/harunaltikaya/tatitok/internal/pricing"
 	"github.com/harunaltikaya/tatitok/internal/store"
@@ -40,6 +41,7 @@ Usage:
   tatitok recompute --provenance [--dry-run] [--db PATH] [--source NAME]
   tatitok recompute --model-map  [--dry-run] [--db PATH]
   tatitok recompute --pricing    [--dry-run] [--db PATH]
+  tatitok serve [--db PATH] [--addr HOST:PORT]
 
 ingest with no --source runs every detected adapter and reports per
 source. stats buckets days in the local timezone by default (ccusage's
@@ -64,7 +66,12 @@ whatever order the recomputes run in. recompute --pricing
 re-derives every cost column under the current price snapshot +
 overrides — the ONLY operation that ever changes a historical cost.
 All are explicit and logged, never a side effect (PRD AS-4); --dry-run
-prints the plan and changes nothing.`
+prints the plan and changes nothing.
+serve runs the hub: an HTTP server on loopback (default ` + hub.DefaultAddr + `;
+--addr for another address — non-loopback warns: no auth, no TLS) until
+SIGINT/SIGTERM, shutting down cleanly. Watchers, the JSON API and the
+dashboard join in later M4 tasks. Recompute stays CLI-only and owner-run;
+the hub never rewrites history on its own.`
 
 func main() { os.Exit(run(os.Args[1:])) }
 
@@ -84,6 +91,8 @@ func run(args []string) int {
 		err = cmdDoctor(args[1:])
 	case "recompute":
 		err = cmdRecompute(args[1:])
+	case "serve":
+		err = cmdServe(args[1:])
 	case "help", "-h", "--help":
 		fmt.Println(usageText)
 		return 0
