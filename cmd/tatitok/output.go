@@ -291,6 +291,10 @@ func doctorPricing(ctx context.Context, st *store.Store, ov *pricing.Overrides) 
 				verdict = "OUT OF TOLERANCE (>1% and >$0.001)"
 				violations++
 			}
+		case delta == 0:
+			// The M5 reconciliation ceremony's bar: not merely within
+			// tolerance — exact.
+			verdict = "ok (exact)"
 		}
 		fmt.Printf("%-22s %-30s %-10s %8s %14s %14s %14s  %s\n",
 			r.Provider, r.Model, r.Basis, formatTokens(r.Events),

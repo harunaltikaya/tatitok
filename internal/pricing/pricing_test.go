@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
 )
@@ -89,7 +90,7 @@ func TestCostMicroUSDOverflowIsAnError(t *testing.T) {
 }
 
 func TestResolveSnapshotEntry(t *testing.T) {
-	q, err := Resolve("anthropic", "claude-fable-5", "claude-fable-5", nil)
+	q, err := Resolve("anthropic", "claude-fable-5", "claude-fable-5", time.Time{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +126,7 @@ func TestResolveBases(t *testing.T) {
 		{"openai", "gpt-5.5", "gpt-5.5", BasisAPIPrice, false},
 	}
 	for _, c := range cases {
-		q, err := Resolve(c.provider, c.model, c.family, nil)
+		q, err := Resolve(c.provider, c.model, c.family, time.Time{}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -165,7 +166,7 @@ func TestOverridesResolution(t *testing.T) {
 	}
 
 	// Raw model hit (model absent from the snapshot: patch over zeros).
-	q, err := Resolve("deepseek", "deepseek-v4-flash", "deepseek-v4-flash", ov)
+	q, err := Resolve("deepseek", "deepseek-v4-flash", "deepseek-v4-flash", time.Time{}, ov)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +175,7 @@ func TestOverridesResolution(t *testing.T) {
 		t.Fatalf("override quote: %+v rates %+v, want api_price/override/%+v", q, *q.Rates, want)
 	}
 	// Family hit: the -free variant's FAMILY matches the override key.
-	q, err = Resolve("opencode", "deepseek-v4-flash-free", "deepseek-v4-flash", ov)
+	q, err = Resolve("opencode", "deepseek-v4-flash-free", "deepseek-v4-flash", time.Time{}, ov)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +183,7 @@ func TestOverridesResolution(t *testing.T) {
 		t.Fatalf("family override not applied: %+v", q)
 	}
 	// free:true entry beats the local-provider rule with basis free.
-	q, err = Resolve("vllm-delegate", "gx10", "gx10", ov)
+	q, err = Resolve("vllm-delegate", "gx10", "gx10", time.Time{}, ov)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +203,7 @@ func TestOverridesResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	q, err = Resolve("anthropic", "claude-sonnet-4-6", "claude-sonnet-4-6", ov)
+	q, err = Resolve("anthropic", "claude-sonnet-4-6", "claude-sonnet-4-6", time.Time{}, ov)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +557,7 @@ func TestOverrideAwareEquivalents(t *testing.T) {
 
 	// Snapshot-absent key resolves through the family patch; the exact
 	// model's free:true entry is NOT a rate source.
-	r, derived, ok := EquivalentRates("deepseek-v4-flash-free", "deepseek-v4-flash", ov)
+	r, derived, ok := EquivalentRates("deepseek-v4-flash-free", "deepseek-v4-flash", time.Time{}, ov)
 	want := Rates{Input: 140_000, Output: 280_000, CacheRead: 2_800}
 	if !ok || derived != "family+override" || r != want {
 		t.Fatalf("equiv through patch: ok=%v derived=%q rates=%+v, want family+override %+v", ok, derived, r, want)
@@ -594,13 +595,13 @@ func TestOverrideAwareEquivalents(t *testing.T) {
 	ov = loadOverridesJSON(t, `{
 		"prices": {"claude-sonnet-4-6": {"cache_write_1h_usd_per_mtok": "6.00"}}
 	}`)
-	r, derived, ok = EquivalentRates("claude-sonnet-4-6", "claude-sonnet-4-6", ov)
+	r, derived, ok = EquivalentRates("claude-sonnet-4-6", "claude-sonnet-4-6", time.Time{}, ov)
 	if !ok || derived != "model+override" || r.CacheWrite1h != 6_000_000 || r.Input != 3_000_000 {
 		t.Fatalf("layered equiv: ok=%v derived=%q rates=%+v", ok, derived, r)
 	}
 
 	// No overrides: pure snapshot behavior is unchanged.
-	r, derived, ok = EquivalentRates("claude-sonnet-4-6", "claude-sonnet-4-6", nil)
+	r, derived, ok = EquivalentRates("claude-sonnet-4-6", "claude-sonnet-4-6", time.Time{}, nil)
 	if !ok || derived != "model" || r.CacheWrite1h != 0 {
 		t.Fatalf("snapshot-only equiv changed: ok=%v derived=%q rates=%+v", ok, derived, r)
 	}
@@ -619,13 +620,13 @@ func TestOverrideDefinedReferenceTargets(t *testing.T) {
 		},
 		"reference_models": { "qwen3.6-27b": "deepseek-v4-flash" }
 	}`)
-	r, patched, found, err := ReferenceRates("deepseek-v4-flash", ov)
-	if err != nil || !found || !patched || r.Input != 140_000 {
-		t.Fatalf("override-defined reference target: found=%v patched=%v rates=%+v err=%v", found, patched, r, err)
+	r, suffix, found, err := ReferenceRates("deepseek-v4-flash", time.Time{}, ov)
+	if err != nil || !found || suffix != "+override" || r.Input != 140_000 {
+		t.Fatalf("override-defined reference target: found=%v suffix=%q rates=%+v err=%v", found, suffix, r, err)
 	}
 	// Snapshot-defined target: no patch involvement reported.
-	if _, patched, found, err := ReferenceRates("claude-fable-5", ov); err != nil || !found || patched {
-		t.Fatalf("snapshot reference target: found=%v patched=%v err=%v", found, patched, err)
+	if _, suffix, found, err := ReferenceRates("claude-fable-5", time.Time{}, ov); err != nil || !found || suffix != "" {
+		t.Fatalf("snapshot reference target: found=%v suffix=%q err=%v", found, suffix, err)
 	}
 
 	e := core.Event{ID: "lq", Harness: "opencode", Provider: "vllm",
@@ -741,5 +742,255 @@ func TestExplainedDivergences(t *testing.T) {
 	reason, ok = ov.ExplainedDivergence("deepseek", "deepseek-v4-pro")
 	if !ok || reason != "ruled" {
 		t.Fatalf("trimmed divergence entry not matched: %q %v", reason, ok)
+	}
+}
+
+// regimeOverrides is the M5 Task 1 shape: a dated regime (the deepseek
+// pre-cut rates pattern) beside the entry's top-level current/default
+// rates. Synthetic CONFIG, not a log fixture.
+const regimeOverrides = `{
+	"prices": {
+		"deepseek-v4-pro": {
+			"input_usd_per_mtok": "0.435",
+			"output_usd_per_mtok": "0.87",
+			"cache_read_usd_per_mtok": "0.003625",
+			"regimes": [
+				{
+					"from": "2025-09-01T00:00:00Z",
+					"until": "2026-05-25T00:00:00Z",
+					"input_usd_per_mtok": "1.74",
+					"output_usd_per_mtok": "3.48",
+					"cache_read_usd_per_mtok": "0.145"
+				}
+			]
+		}
+	}
+}`
+
+// M5 Task 1: the override schema learns time. A model entry may carry a
+// `regimes` list ({from, until?, rates…} in UTC); a malformed regime is
+// a load error, never a silently-undated rate.
+func TestRegimeParsing(t *testing.T) {
+	ov := loadOverridesJSON(t, regimeOverrides)
+	if ov.Len() != 1 {
+		t.Fatalf("Len = %d, want 1", ov.Len())
+	}
+
+	// Date-only boundaries parse as UTC midnight.
+	ov = loadOverridesJSON(t, `{
+		"prices": {"m": {
+			"input_usd_per_mtok": "1.00",
+			"regimes": [{"from": "2026-01-01", "until": "2026-02-01",
+				"input_usd_per_mtok": "2.00"}]
+		}}
+	}`)
+	q, err := Resolve("p", "m", "m", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Rates.Input != 2_000_000 || q.Snapshot != "override+regime:2026-01-01T00:00:00Z" {
+		t.Fatalf("date-only from: %+v %q", *q.Rates, q.Snapshot)
+	}
+
+	// Every malformed shape is a loud load error.
+	bad := map[string]string{
+		"missing from": `{"prices": {"m": {"input_usd_per_mtok": "1.00",
+			"regimes": [{"until": "2026-02-01", "input_usd_per_mtok": "2.00"}]}}}`,
+		"unparseable from": `{"prices": {"m": {"input_usd_per_mtok": "1.00",
+			"regimes": [{"from": "last tuesday", "input_usd_per_mtok": "2.00"}]}}}`,
+		"until not after from": `{"prices": {"m": {"input_usd_per_mtok": "1.00",
+			"regimes": [{"from": "2026-02-01", "until": "2026-02-01", "input_usd_per_mtok": "2.00"}]}}}`,
+		"rates-less regime": `{"prices": {"m": {"input_usd_per_mtok": "1.00",
+			"regimes": [{"from": "2026-01-01", "until": "2026-02-01"}]}}}`,
+		"free inside a regime": `{"prices": {"m": {"input_usd_per_mtok": "1.00",
+			"regimes": [{"from": "2026-01-01", "until": "2026-02-01", "free": true}]}}}`,
+		"regimes on a free entry": `{"prices": {"m": {"free": true,
+			"regimes": [{"from": "2026-01-01", "until": "2026-02-01", "input_usd_per_mtok": "2.00"}]}}}`,
+		"overlapping regimes": `{"prices": {"m": {"input_usd_per_mtok": "1.00",
+			"regimes": [
+				{"from": "2026-01-01", "until": "2026-03-01", "input_usd_per_mtok": "2.00"},
+				{"from": "2026-02-01", "until": "2026-04-01", "input_usd_per_mtok": "3.00"}]}}}`,
+		"open-ended regime shadowing a later one": `{"prices": {"m": {"input_usd_per_mtok": "1.00",
+			"regimes": [
+				{"from": "2026-01-01", "input_usd_per_mtok": "2.00"},
+				{"from": "2026-02-01", "until": "2026-04-01", "input_usd_per_mtok": "3.00"}]}}}`,
+		"bad regime price": `{"prices": {"m": {"input_usd_per_mtok": "1.00",
+			"regimes": [{"from": "2026-01-01", "input_usd_per_mtok": "cheap"}]}}}`,
+	}
+	dir := t.TempDir()
+	for name, body := range bad {
+		path := filepath.Join(dir, "prices.json")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadOverrides(path); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// Resolution picks the regime containing the event timestamp ([from,
+// until) — half-open); events outside any dated regime use the
+// top-level default, and the provenance names the regime that priced
+// the event.
+func TestRegimeResolution(t *testing.T) {
+	ov := loadOverridesJSON(t, regimeOverrides)
+	oldRates := Rates{Input: 1_740_000, Output: 3_480_000, CacheRead: 145_000}
+	curRates := Rates{Input: 435_000, Output: 870_000, CacheRead: 3_625}
+	from := time.Date(2025, 9, 1, 0, 0, 0, 0, time.UTC)
+	until := time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		ts   time.Time
+		want Rates
+		snap string
+	}{
+		{"inside regime", time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+			oldRates, "override+regime:2025-09-01T00:00:00Z"},
+		{"at from (inclusive)", from, oldRates, "override+regime:2025-09-01T00:00:00Z"},
+		{"at until (exclusive)", until, curRates, "override"},
+		{"after regime", time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC), curRates, "override"},
+		{"before regime", time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), curRates, "override"},
+		{"zero timestamp", time.Time{}, curRates, "override"},
+	}
+	for _, c := range cases {
+		q, err := Resolve("deepseek", "deepseek-v4-pro", "deepseek-v4-pro", c.ts, ov)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if q.Basis != BasisAPIPrice || *q.Rates != c.want || q.Snapshot != c.snap {
+			t.Errorf("%s: rates %+v snap %q, want %+v %q", c.name, *q.Rates, q.Snapshot, c.want, c.snap)
+		}
+	}
+
+	// Family-key matches carry the regime exactly like raw-model matches.
+	q, err := Resolve("deepseek", "deepseek-v4-pro-beta", "deepseek-v4-pro",
+		time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *q.Rates != oldRates || q.Snapshot != "override+regime:2025-09-01T00:00:00Z" {
+		t.Fatalf("family-key regime: %+v %q", *q.Rates, q.Snapshot)
+	}
+
+	// A regime patch is a SIBLING of the default patch: both layer over
+	// the same snapshot base, so a partial regime entry inherits the
+	// SNAPSHOT's components — not the default patch's.
+	ov = loadOverridesJSON(t, `{
+		"prices": {"claude-sonnet-4-6": {
+			"cache_write_1h_usd_per_mtok": "6.00",
+			"regimes": [{"from": "2026-01-01", "until": "2026-02-01",
+				"input_usd_per_mtok": "6.00"}]
+		}}
+	}`)
+	q, err = Resolve("anthropic", "claude-sonnet-4-6", "claude-sonnet-4-6",
+		time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC), ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Rates{Input: 6_000_000, Output: 15_000_000,
+		CacheWrite: 3_750_000, CacheRead: 300_000} // 1h rate NOT inherited from the default patch
+	if *q.Rates != want {
+		t.Fatalf("regime over snapshot base: %+v, want %+v", *q.Rates, want)
+	}
+	// Outside the regime the default patch applies as before.
+	q, err = Resolve("anthropic", "claude-sonnet-4-6", "claude-sonnet-4-6",
+		time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC), ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Rates.Input != 3_000_000 || q.Rates.CacheWrite1h != 6_000_000 {
+		t.Fatalf("default patch after regime: %+v", *q.Rates)
+	}
+}
+
+// Apply stamps the regime into the stored provenance, so a repriced
+// history remains auditable per event (which regime priced it).
+func TestApplyRegimeProvenance(t *testing.T) {
+	ov := loadOverridesJSON(t, regimeOverrides)
+	old := core.Event{ID: "rg1", Harness: "opencode", Provider: "deepseek",
+		Model: "deepseek-v4-pro", ModelFamily: "deepseek-v4-pro",
+		TS:          time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+		TokensInput: 1_000_000, TokensOutput: 1_000_000}
+	if err := Apply(&old, ov); err != nil {
+		t.Fatal(err)
+	}
+	// 1 Mtok in at $1.74 + 1 Mtok out at $3.48 = $5.22.
+	if old.CostUSDMicro == nil || *old.CostUSDMicro != 5_220_000 ||
+		old.PriceSnapshot != "override+regime:2025-09-01T00:00:00Z" {
+		t.Fatalf("regime-priced event: cost=%v snap=%q", old.CostUSDMicro, old.PriceSnapshot)
+	}
+	var detail struct {
+		Rates
+	}
+	if err := json.Unmarshal(old.PriceRates, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Input != 1_740_000 {
+		t.Fatalf("stored rates are not the regime's: %+v", detail.Rates)
+	}
+
+	cur := old
+	cur.ID, cur.TS = "rg2", time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+	if err := Apply(&cur, ov); err != nil {
+		t.Fatal(err)
+	}
+	// 1 Mtok in at $0.435 + 1 Mtok out at $0.87 = $1.305.
+	if cur.CostUSDMicro == nil || *cur.CostUSDMicro != 1_305_000 || cur.PriceSnapshot != "override" {
+		t.Fatalf("default-priced event: cost=%v snap=%q", cur.CostUSDMicro, cur.PriceSnapshot)
+	}
+}
+
+// Equivalent and reference derivations are regime-aware too: a
+// would-have-cost answer is dated by the event it answers for, and the
+// stored derivation says which regime served it.
+func TestRegimeAwareEquivalentsAndReferences(t *testing.T) {
+	ov := loadOverridesJSON(t, `{
+		"prices": {
+			"deepseek-v4-flash": {
+				"input_usd_per_mtok": "0.14",
+				"output_usd_per_mtok": "0.28",
+				"regimes": [{"from": "2025-09-01", "until": "2026-05-25",
+					"input_usd_per_mtok": "0.28", "output_usd_per_mtok": "0.56"}]
+			}
+		},
+		"reference_models": {"qwen3.6-27b": "deepseek-v4-flash"}
+	}`)
+	inRegime := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	after := time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC)
+
+	r, derived, ok := EquivalentRates("deepseek-v4-flash-free", "deepseek-v4-flash", inRegime, ov)
+	if !ok || derived != "family+override+regime:2025-09-01T00:00:00Z" || r.Input != 280_000 {
+		t.Fatalf("regime equiv: ok=%v derived=%q rates=%+v", ok, derived, r)
+	}
+	r, derived, ok = EquivalentRates("deepseek-v4-flash-free", "deepseek-v4-flash", after, ov)
+	if !ok || derived != "family+override" || r.Input != 140_000 {
+		t.Fatalf("post-regime equiv: ok=%v derived=%q rates=%+v", ok, derived, r)
+	}
+
+	r, suffix, found, err := ReferenceRates("deepseek-v4-flash", inRegime, ov)
+	if err != nil || !found || suffix != "+override+regime:2025-09-01T00:00:00Z" || r.Input != 280_000 {
+		t.Fatalf("regime reference: found=%v suffix=%q rates=%+v err=%v", found, suffix, r, err)
+	}
+
+	e := core.Event{ID: "lr", Harness: "opencode", Provider: "vllm",
+		Model: "qwen3.6-27b", ModelFamily: "qwen3.6-27b",
+		TS:          inRegime,
+		TokensInput: 1_000_000, TokensOutput: 1_000_000}
+	if err := Apply(&e, ov); err != nil {
+		t.Fatal(err)
+	}
+	// 1 Mtok in at $0.28 + 1 Mtok out at $0.56 = $0.84 at the dated regime.
+	if e.CostAPIEquivMicro == nil || *e.CostAPIEquivMicro != 840_000 {
+		t.Fatalf("regime reference equivalent = %v, want 840000 micro", e.CostAPIEquivMicro)
+	}
+	var detail struct {
+		EquivSource string `json:"equiv_source"`
+	}
+	if err := json.Unmarshal(e.PriceRates, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.EquivSource != "reference:deepseek-v4-flash+override+regime:2025-09-01T00:00:00Z" {
+		t.Fatalf("reference regime provenance: %q", detail.EquivSource)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
 	"github.com/harunaltikaya/tatitok/internal/pricing"
@@ -30,9 +31,11 @@ type PricingPlan struct {
 // PlanPricing reports the pricing provenance of the stored events.
 func (s *Store) PlanPricing(ctx context.Context, snapshotVersion string) (PricingPlan, error) {
 	p := PricingPlan{SnapshotVersion: snapshotVersion}
+	// 'override%' covers both plain override rows and M5's dated-regime
+	// provenance ("override+regime:<from>") — all current-config rows.
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*),
 			COALESCE(SUM(price_snapshot IS NULL), 0),
-			COALESCE(SUM(price_snapshot = ?1 OR price_snapshot = 'override'), 0)
+			COALESCE(SUM(price_snapshot = ?1 OR price_snapshot LIKE 'override%'), 0)
 		FROM usage_events`, snapshotVersion).
 		Scan(&p.Events, &p.Unpriced, &p.OnCurrent)
 	p.OnOther = p.Events - p.Unpriced - p.OnCurrent
@@ -126,7 +129,7 @@ type PricingResult struct {
 // concurrent ingest replacement can never be clobbered with a cost
 // derived from the payload it replaced.
 type pricingUpdate struct {
-	id                       string
+	id, ts                   string
 	harness, meta, reasoning any // NULL-able payload as read (nil = NULL)
 	provider, model, family  string
 	in, out, cw, cr          int64
@@ -198,14 +201,14 @@ const repriceSQL = `UPDATE usage_events SET
 	  AND model_family IS ?10
 	  AND tokens_input IS ?11 AND tokens_output IS ?12
 	  AND tokens_cache_write IS ?13 AND tokens_cache_read IS ?14
-	  AND tokens_reasoning IS ?15 AND meta IS ?16`
+	  AND tokens_reasoning IS ?15 AND meta IS ?16 AND ts = ?17`
 
 // args orders the update for repriceSQL's positional parameters.
 func (u *pricingUpdate) args() []any {
 	return []any{u.id, u.cost, nullStr(u.basis), nullStr(u.snapshot),
 		u.rates, u.equiv,
 		u.harness, u.provider, u.model, u.family,
-		u.in, u.out, u.cw, u.cr, u.reasoning, u.meta}
+		u.in, u.out, u.cw, u.cr, u.reasoning, u.meta, u.ts}
 }
 
 // collectPricingUpdates is the read pass: price every event (restricted
@@ -213,7 +216,7 @@ func (u *pricingUpdate) args() []any {
 // for the write-time re-verification. Rows already priced identically
 // produce no update.
 func collectPricingUpdates(ctx context.Context, q querier, ov *pricing.Overrides, only map[string]bool) ([]pricingUpdate, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id, harness,
+	rows, err := q.QueryContext(ctx, `SELECT id, ts, harness,
 			provider, model, model_family,
 			tokens_input, tokens_output, tokens_cache_write, tokens_cache_read,
 			tokens_reasoning, meta,
@@ -226,11 +229,11 @@ func collectPricingUpdates(ctx context.Context, q querier, ov *pricing.Overrides
 	defer func() { _ = rows.Close() }()
 	var updates []pricingUpdate
 	for rows.Next() {
-		var id, provider, model, family, oldBasis, oldSnap, oldRates string
+		var id, ts, provider, model, family, oldBasis, oldSnap, oldRates string
 		var harness, meta sql.NullString
 		var in, out, cw, cr int64
 		var reasoning, oldCost, oldEquiv sql.NullInt64
-		if err := rows.Scan(&id, &harness, &provider, &model, &family,
+		if err := rows.Scan(&id, &ts, &harness, &provider, &model, &family,
 			&in, &out, &cw, &cr, &reasoning, &meta, &oldCost, &oldBasis, &oldSnap,
 			&oldRates, &oldEquiv); err != nil {
 			return nil, err
@@ -238,8 +241,16 @@ func collectPricingUpdates(ctx context.Context, q querier, ov *pricing.Overrides
 		if only != nil && !only[id] {
 			continue
 		}
+		// ts feeds regime resolution (M5 Task 1) and joins the write-time
+		// re-verification. The column is validated RFC 3339 UTC at ingest;
+		// a row that no longer parses is corruption — loud, never repriced
+		// under a guessed date.
+		eventTS, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			return nil, fmt.Errorf("event %s: unparseable ts %q: %w", id, ts, err)
+		}
 		e := core.Event{
-			ID: id, Harness: harness.String, Provider: provider, Model: model,
+			ID: id, TS: eventTS.UTC(), Harness: harness.String, Provider: provider, Model: model,
 			ModelFamily: family, TokensInput: in, TokensOutput: out,
 			TokensCacheWrite: cw, TokensCacheRead: cr,
 		}
@@ -265,7 +276,7 @@ func collectPricingUpdates(ctx context.Context, q querier, ov *pricing.Overrides
 			continue // already priced identically — nothing to write
 		}
 		u := pricingUpdate{
-			id: id, provider: provider, model: model, family: family,
+			id: id, ts: ts, provider: provider, model: model, family: family,
 			in: in, out: out, cw: cw, cr: cr,
 			harness: nullable(harness), meta: nullable(meta),
 			reasoning: nullableInt(reasoning),

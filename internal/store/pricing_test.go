@@ -6,6 +6,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -122,6 +124,92 @@ func TestRecomputePricing(t *testing.T) {
 
 	// Idempotent.
 	res, err = s.RecomputePricing(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Repriced != 0 {
+		t.Fatalf("second run repriced %d, want 0", res.Repriced)
+	}
+}
+
+// M5 Task 1: recompute threads each event's timestamp into resolution,
+// so effective-dated regimes restamp history per event date — two events
+// of one model price differently across a regime boundary, provenance
+// names the regime, the trigger-maintained rollup follows, and a second
+// run is a no-op.
+func TestRecomputePricingRegimes(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	old := eventH("opencode", "m1", "r1", "deepseek-v4-pro", "s1",
+		time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC), TokenSums{Input: 1_000_000})
+	old.Provider = "deepseek"
+	cur := eventH("opencode", "m2", "r2", "deepseek-v4-pro", "s1",
+		time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC), TokenSums{Input: 1_000_000})
+	cur.Provider = "deepseek"
+	if _, err := s.InsertBatch(ctx, []core.Event{old, cur}, testSource(2)); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prices.json")
+	if err := os.WriteFile(path, []byte(`{
+		"prices": {
+			"deepseek-v4-pro": {
+				"input_usd_per_mtok": "0.435",
+				"regimes": [{"from": "2025-09-01", "until": "2026-05-25",
+					"input_usd_per_mtok": "1.74"}]
+			}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := pricing.LoadOverrides(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.RecomputePricing(ctx, ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Repriced != 2 {
+		t.Fatalf("repriced %d, want 2", res.Repriced)
+	}
+	wants := map[string]struct {
+		cost int64
+		snap string
+	}{
+		old.ID: {1_740_000, "override+regime:2025-09-01T00:00:00Z"},
+		cur.ID: {435_000, "override"},
+	}
+	for id, w := range wants {
+		var cost int64
+		var snap string
+		if err := s.db.QueryRowContext(ctx, `SELECT cost_usd_micro, price_snapshot
+			FROM usage_events WHERE id = ?`, id).Scan(&cost, &snap); err != nil {
+			t.Fatal(err)
+		}
+		if cost != w.cost || snap != w.snap {
+			t.Errorf("%s: cost=%d snap=%q, want %d %q", id, cost, snap, w.cost, w.snap)
+		}
+	}
+
+	// The rollup property holds after the restamp (AS-4: triggers keep the
+	// derived sums consistent through the reprice UPDATE).
+	var evSum, ruSum int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(cost_usd_micro),0) FROM usage_events`).Scan(&evSum); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(cost_usd_micro),0) FROM rollup_daily`).Scan(&ruSum); err != nil {
+		t.Fatal(err)
+	}
+	if evSum != ruSum || evSum != 2_175_000 {
+		t.Fatalf("rollup property broken after regime restamp: events=%d rollups=%d, want 2175000", evSum, ruSum)
+	}
+
+	// Idempotent under the same config.
+	res, err = s.RecomputePricing(ctx, ov)
 	if err != nil {
 		t.Fatal(err)
 	}

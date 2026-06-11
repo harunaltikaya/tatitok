@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"strings"
 	"sync"
+	"time"
 )
 
 //go:embed prices_snapshot.json
@@ -235,7 +236,10 @@ func snapshotLookup(provider, model, family string) (Rates, bool) {
 // the milestone report):
 //  1. user override file — raw model first, then family; each entry is a
 //     PARTIAL patch layered over the snapshot resolution (owner's word
-//     beats everything, including local-provider zeroing)
+//     beats everything, including local-provider zeroing). With dated
+//     regimes (M5 Task 1), ts picks the regime: the one containing the
+//     event timestamp, else the entry's top-level default — provenance
+//     "override+regime:<from>" vs plain "override".
 //  2. local provider (vllm*) → basis local, cost 0
 //  3. snapshot — model, provider/model, family, provider/family
 //  4. unknown (cost stays NULL; never guessed)
@@ -243,7 +247,7 @@ func snapshotLookup(provider, model, family string) (Rates, bool) {
 // Basis `free` is NOT resolved here: per the owner's ruling it requires
 // a source-reported cost of exactly $0, which only Apply can see (it
 // lives in event meta) — never inferred from a "-free" model name.
-func Resolve(provider, model, family string, ov *Overrides) (Quote, error) {
+func Resolve(provider, model, family string, ts time.Time, ov *Overrides) (Quote, error) {
 	loadOnce.Do(load)
 	if loadErr != nil {
 		return Quote{}, loadErr
@@ -252,9 +256,10 @@ func Resolve(provider, model, family string, ov *Overrides) (Quote, error) {
 		if p.free {
 			return Quote{Basis: BasisFree, Rates: &Rates{}, Snapshot: "override"}, nil
 		}
+		eff, suffix := p.patchAt(ts)
 		base, _ := snapshotLookup(provider, model, family)
-		r := p.apply(base)
-		return Quote{Basis: BasisAPIPrice, Rates: &r, Snapshot: "override"}, nil
+		r := eff.apply(base)
+		return Quote{Basis: BasisAPIPrice, Rates: &r, Snapshot: "override" + suffix}, nil
 	}
 	if isLocalProvider(provider) {
 		return Quote{Basis: BasisLocal, Rates: &Rates{}, Snapshot: snapVersion}, nil
@@ -272,9 +277,11 @@ func Resolve(provider, model, family string, ov *Overrides) (Quote, error) {
 // the override patches (snapshot-only was a recorded known gap) — a key
 // the snapshot lacks but the override file prices resolves, and a patch
 // over a snapshot entry layers exactly like billing resolution. When a
-// patch contributed, the derivation says so ("+override"). free:true
+// patch contributed, the derivation says so ("+override"). M5 Task 1:
+// the would-have-cost answer is dated by the event it answers for — ts
+// picks the patch's regime, recorded as "+regime:<from>". free:true
 // entries never serve as rate sources (see ratesPatch).
-func EquivalentRates(model, family string, ov *Overrides) (Rates, string, bool) {
+func EquivalentRates(model, family string, ts time.Time, ov *Overrides) (Rates, string, bool) {
 	loadOnce.Do(load)
 	if loadErr != nil {
 		return Rates{}, "", false
@@ -285,10 +292,10 @@ func EquivalentRates(model, family string, ov *Overrides) (Rates, string, bool) 
 	}
 	for _, k := range keys {
 		base, snapOK := snapRates[k[0]]
-		patch, patchOK := ov.ratesPatch(k[0])
+		patch, regimeTag, patchOK := ov.ratesPatch(k[0], ts)
 		switch {
 		case patchOK:
-			return patch.apply(base), k[1] + "+override", true
+			return patch.apply(base), k[1] + "+override" + regimeTag, true
 		case snapOK:
 			return base, k[1], true
 		}
@@ -300,21 +307,21 @@ func EquivalentRates(model, family string, ov *Overrides) (Rates, string, bool) 
 // cloud-equivalent "would have cost" path (FR-9.3) — no basis logic.
 // M4 Task 5: the target may be snapshot-defined, override-defined, or
 // an override patch layered over a snapshot entry (free:true entries
-// excluded — they declare billing, not prices). patched reports that an
-// override patch contributed to the rates — stored in the derivation as
-// "+override" exactly like the equivalents path (M4 Codex round,
-// finding 4: an override-defined yardstick must be distinguishable from
-// a snapshot rate per event).
-func ReferenceRates(model string, ov *Overrides) (r Rates, patched, found bool, err error) {
+// excluded — they declare billing, not prices). suffix is the
+// derivation provenance the caller appends to "reference:<model>": ""
+// when the snapshot alone served, "+override" when an override patch
+// shaped the rates (M4 Codex round, finding 4), plus "+regime:<from>"
+// when ts fell in a dated regime (M5 Task 1).
+func ReferenceRates(model string, ts time.Time, ov *Overrides) (r Rates, suffix string, found bool, err error) {
 	loadOnce.Do(load)
 	if loadErr != nil {
-		return Rates{}, false, false, loadErr
+		return Rates{}, "", false, loadErr
 	}
 	base, snapOK := snapRates[model]
-	if patch, ok := ov.ratesPatch(model); ok {
-		return patch.apply(base), true, true, nil
+	if patch, regimeTag, ok := ov.ratesPatch(model, ts); ok {
+		return patch.apply(base), "+override" + regimeTag, true, nil
 	}
-	return base, false, snapOK, nil
+	return base, "", snapOK, nil
 }
 
 // USDToMicro converts a decimal USD amount (e.g. an opencode

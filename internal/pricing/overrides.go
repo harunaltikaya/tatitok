@@ -43,6 +43,19 @@ package pricing
 // free_source "override" vs "source" (price_snapshot likewise reads
 // "override"), so the two origins stay distinguishable per event.
 //
+// "regimes" (M5 Task 1, effective-dated rates): a model entry may carry
+// a list of {from, until?, rates…} objects — boundaries in UTC (RFC 3339
+// or YYYY-MM-DD = midnight UTC), intervals half-open [from, until), no
+// overlaps. Resolution picks the regime containing the event timestamp;
+// events outside any dated regime use the entry's top-level rates (the
+// current/default regime). Each regime is a SIBLING of the default
+// patch: it layers over the same snapshot base, never over the default's
+// fields. Provenance records which regime priced the event
+// ("override+regime:<from>"). The snapshot-pinning principle is
+// unchanged — regimes are an owner-declared override feature, not
+// reconstructed historical snapshots. free is a billing rule, not a
+// price: it cannot be dated (neither inside a regime nor beside one).
+//
 // "explained_divergences" (M4 Task 5, the dead-check ruling): a list of
 // {provider, model, reason} entries naming store-and-compare groups
 // whose divergence from source-reported costs is UNDERSTOOD and ruled
@@ -58,7 +71,9 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 )
 
 // overridePatch is one parsed entry: nil fields were absent and fall
@@ -66,6 +81,31 @@ import (
 type overridePatch struct {
 	free                                               bool
 	input, output, cacheWrite, cacheWrite1h, cacheRead *int64
+	regimes                                            []regime
+}
+
+// regime is one effective-dated rate period (M5 Task 1): patch applies
+// to events with from ≤ ts < until (zero until = open-ended).
+type regime struct {
+	from, until time.Time
+	patch       overridePatch
+}
+
+// patchAt picks the effective patch for an event at ts: the dated
+// regime containing ts, else the entry itself (the current/default
+// regime). suffix is the provenance tag joined onto "override"
+// ("" for the default, "+regime:<from>" for a dated regime).
+func (p overridePatch) patchAt(ts time.Time) (overridePatch, string) {
+	for _, r := range p.regimes {
+		if ts.Before(r.from) {
+			continue
+		}
+		if !r.until.IsZero() && !ts.Before(r.until) {
+			continue
+		}
+		return r.patch, "+regime:" + r.from.Format(time.RFC3339)
+	}
+	return p, ""
 }
 
 // apply layers the patch over base.
@@ -106,20 +146,25 @@ func (p overridePatch) hasRates() bool {
 		p.cacheWrite1h != nil || p.cacheRead != nil
 }
 
-// ratesPatch returns the patch for key when it can serve as a RATE
-// source: present, not owner-declared free, and carrying at least one
-// rate field. The free exclusion is deliberate — free means "bills $0",
-// which is a billing rule, not a price; equivalents derived from it
-// would be silently meaningless zeros.
-func (o *Overrides) ratesPatch(key string) (overridePatch, bool) {
+// ratesPatch returns the patch effective at ts for key when it can
+// serve as a RATE source: present, not owner-declared free, and
+// carrying at least one rate field. The free exclusion is deliberate —
+// free means "bills $0", which is a billing rule, not a price;
+// equivalents derived from it would be silently meaningless zeros.
+// suffix is the regime provenance tag from patchAt ("" for the default).
+func (o *Overrides) ratesPatch(key string, ts time.Time) (overridePatch, string, bool) {
 	if o == nil {
-		return overridePatch{}, false
+		return overridePatch{}, "", false
 	}
 	p, ok := o.patches[key]
-	if !ok || p.free || !p.hasRates() {
-		return overridePatch{}, false
+	if !ok || p.free {
+		return overridePatch{}, "", false
 	}
-	return p, true
+	eff, suffix := p.patchAt(ts)
+	if !eff.hasRates() {
+		return overridePatch{}, "", false
+	}
+	return eff, suffix, true
 }
 
 // ExplainedDivergence reports the owner-recorded reason a
@@ -197,13 +242,63 @@ func (o *Overrides) Reference(model, family string) (ref string, viaFamily bool,
 	return "", false, false
 }
 
-type overrideEntry struct {
+// rateFields are the shared per-entry price fields — the top-level
+// (default-regime) form and each dated regime carry the same set.
+type rateFields struct {
 	Free         bool        `json:"free"`
 	Input        json.Number `json:"input_usd_per_mtok"`
 	Output       json.Number `json:"output_usd_per_mtok"`
 	CacheWrite   json.Number `json:"cache_write_usd_per_mtok"`
 	CacheWrite1h json.Number `json:"cache_write_1h_usd_per_mtok"`
 	CacheRead    json.Number `json:"cache_read_usd_per_mtok"`
+}
+
+// patch parses the rate fields into an overridePatch (free carried,
+// regimes left to the caller).
+func (rf rateFields) patch() (overridePatch, error) {
+	p := overridePatch{free: rf.Free}
+	for _, c := range []struct {
+		n   json.Number
+		dst **int64
+	}{
+		{rf.Input, &p.input}, {rf.Output, &p.output},
+		{rf.CacheWrite, &p.cacheWrite}, {rf.CacheWrite1h, &p.cacheWrite1h},
+		{rf.CacheRead, &p.cacheRead},
+	} {
+		if c.n == "" {
+			continue
+		}
+		v, err := usdPerMtokToMicro(c.n)
+		if err != nil {
+			return overridePatch{}, err
+		}
+		*c.dst = &v
+	}
+	return p, nil
+}
+
+type overrideEntry struct {
+	rateFields
+	Regimes []regimeEntry `json:"regimes"`
+}
+
+type regimeEntry struct {
+	rateFields
+	From  string `json:"from"`
+	Until string `json:"until"`
+}
+
+// parseUTCBoundary reads a regime boundary: RFC 3339 (normalized to
+// UTC) or a bare YYYY-MM-DD date (midnight UTC).
+func parseUTCBoundary(s string) (time.Time, error) {
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("boundary %q is neither YYYY-MM-DD nor RFC 3339", s)
+	}
+	return t.UTC(), nil
 }
 
 type divergenceEntry struct {
@@ -248,23 +343,51 @@ func LoadOverrides(path string) (*Overrides, error) {
 		if model == "" {
 			return nil, fmt.Errorf("price overrides %s: empty model key", path)
 		}
-		p := overridePatch{free: e.Free}
-		for _, c := range []struct {
-			n   json.Number
-			dst **int64
-		}{
-			{e.Input, &p.input}, {e.Output, &p.output},
-			{e.CacheWrite, &p.cacheWrite}, {e.CacheWrite1h, &p.cacheWrite1h},
-			{e.CacheRead, &p.cacheRead},
-		} {
-			if c.n == "" {
-				continue
-			}
-			v, err := usdPerMtokToMicro(c.n)
+		p, err := e.patch()
+		if err != nil {
+			return nil, fmt.Errorf("price overrides %s: model %q: %w", path, model, err)
+		}
+		if p.free && len(e.Regimes) > 0 {
+			return nil, fmt.Errorf("price overrides %s: model %q: free is a billing rule, not a price — it cannot carry dated regimes", path, model)
+		}
+		for i, re := range e.Regimes {
+			rp, err := re.patch()
 			if err != nil {
-				return nil, fmt.Errorf("price overrides %s: model %q: %w", path, model, err)
+				return nil, fmt.Errorf("price overrides %s: model %q regimes[%d]: %w", path, model, i, err)
 			}
-			*c.dst = &v
+			if rp.free {
+				return nil, fmt.Errorf("price overrides %s: model %q regimes[%d]: free cannot be dated", path, model, i)
+			}
+			if !rp.hasRates() {
+				return nil, fmt.Errorf("price overrides %s: model %q regimes[%d]: a regime without rates prices nothing", path, model, i)
+			}
+			if re.From == "" {
+				return nil, fmt.Errorf("price overrides %s: model %q regimes[%d]: from is required", path, model, i)
+			}
+			from, err := parseUTCBoundary(re.From)
+			if err != nil {
+				return nil, fmt.Errorf("price overrides %s: model %q regimes[%d]: from: %w", path, model, i, err)
+			}
+			var until time.Time
+			if re.Until != "" {
+				if until, err = parseUTCBoundary(re.Until); err != nil {
+					return nil, fmt.Errorf("price overrides %s: model %q regimes[%d]: until: %w", path, model, i, err)
+				}
+				if !until.After(from) {
+					return nil, fmt.Errorf("price overrides %s: model %q regimes[%d]: until %s is not after from %s", path, model, i, re.Until, re.From)
+				}
+			}
+			p.regimes = append(p.regimes, regime{from: from, until: until, patch: rp})
+		}
+		sort.Slice(p.regimes, func(a, b int) bool {
+			return p.regimes[a].from.Before(p.regimes[b].from)
+		})
+		for i := 1; i < len(p.regimes); i++ {
+			prev, cur := p.regimes[i-1], p.regimes[i]
+			if prev.until.IsZero() || prev.until.After(cur.from) {
+				return nil, fmt.Errorf("price overrides %s: model %q: regimes starting %s and %s overlap — one timestamp must price one way",
+					path, model, prev.from.Format(time.RFC3339), cur.from.Format(time.RFC3339))
+			}
 		}
 		ov.patches[model] = p
 	}
@@ -276,8 +399,9 @@ func LoadOverrides(path string) (*Overrides, error) {
 		// target resolves through the override patches parsed above, so
 		// a model the snapshot lacks but this very file prices (e.g.
 		// deepseek-v4-flash) is a valid target. A free:true-only entry is
-		// NOT — it declares billing, not prices.
-		_, _, found, err := ReferenceRates(ref, ov)
+		// NOT — it declares billing, not prices. The zero timestamp checks
+		// the DEFAULT regime: a target must be priced undated to qualify.
+		_, _, found, err := ReferenceRates(ref, time.Time{}, ov)
 		if err != nil {
 			return nil, fmt.Errorf("price overrides %s: %w", path, err)
 		}

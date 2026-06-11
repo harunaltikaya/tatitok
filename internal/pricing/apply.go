@@ -41,7 +41,7 @@ type priceDetail struct {
 // Adapters never call this — the ingest layer (and explicit pricing
 // recompute) do.
 func Apply(e *core.Event, ov *Overrides) error {
-	q, err := Resolve(e.Provider, e.Model, e.ModelFamily, ov)
+	q, err := Resolve(e.Provider, e.Model, e.ModelFamily, e.TS, ov)
 	if err != nil {
 		return err
 	}
@@ -60,7 +60,7 @@ func Apply(e *core.Event, ov *Overrides) error {
 		if src, present := sourceCostRat(e.Meta); present && src.Sign() == 0 {
 			q.Basis, q.Rates = BasisFree, &Rates{}
 			detail := priceDetail{Rates: Rates{}, FreeSource: "source"}
-			if equiv, derivedFrom, ok := EquivalentRates(e.Model, e.ModelFamily, ov); ok {
+			if equiv, derivedFrom, ok := EquivalentRates(e.Model, e.ModelFamily, e.TS, ov); ok {
 				ev, err := equiv.CostMicroUSD(in, out, cw, 0, cr)
 				if err != nil {
 					return fmt.Errorf("%s: %w", e.ID, err)
@@ -81,7 +81,7 @@ func Apply(e *core.Event, ov *Overrides) error {
 	if q.Basis == BasisLocal {
 		detail := priceDetail{Rates: *q.Rates}
 		if ref, viaFamily, ok := ov.Reference(e.Model, e.ModelFamily); ok {
-			rr, patched, found, err := ReferenceRates(ref, ov)
+			rr, suffix, found, err := ReferenceRates(ref, e.TS, ov)
 			if err != nil {
 				return err
 			}
@@ -94,17 +94,15 @@ func Apply(e *core.Event, ov *Overrides) error {
 				detail.EquivRates = &rr
 				// Full derivation per event (M4 Codex round, finding 4),
 				// matching the equivalents' convention: +family when the
-				// local mapping matched via the family key, +override when
-				// an override patch shaped the target's rates — an
-				// override-defined yardstick reads differently from a
-				// snapshot rate.
+				// local mapping matched via the family key, +override (and
+				// +regime:<from>, M5 Task 1) when an override patch shaped
+				// the target's rates — an override-defined yardstick reads
+				// differently from a snapshot rate.
 				src := "reference:" + ref
 				if viaFamily {
 					src += "+family"
 				}
-				if patched {
-					src += "+override"
-				}
+				src += suffix
 				detail.EquivSource = src
 			}
 		}
@@ -141,7 +139,7 @@ func Apply(e *core.Event, ov *Overrides) error {
 		// override patch ("family+override"), where it used to store NULL
 		// for both missing pieces at once.
 		detail.FreeSource = "override"
-		if equiv, derivedFrom, ok := EquivalentRates(e.Model, e.ModelFamily, ov); ok {
+		if equiv, derivedFrom, ok := EquivalentRates(e.Model, e.ModelFamily, e.TS, ov); ok {
 			ev, err := equiv.CostMicroUSD(in, out, cw, 0, cr)
 			if err != nil {
 				return fmt.Errorf("%s: %w", e.ID, err)
