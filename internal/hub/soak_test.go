@@ -171,12 +171,18 @@ func TestWatcherSoak(t *testing.T) {
 	replayDone := time.Since(start)
 
 	// Expected end state: the starting DB plus a CLI backfill of both
-	// fully-replayed roots.
+	// fully-replayed roots. Quiet the per-event replacement lines on
+	// THIS handle too: it is a test harness, not real CLI ingest, and
+	// against a live-DB copy the fixture corpus collides with the real
+	// history it was harvested from (721 IDs on the 2026-06-11 owner
+	// run) — thousands of per-event lines drowning the soak output
+	// (owner finding, hard stop 1; the hub handle was already quiet).
 	ref, err := store.Open(refPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = ref.Close() }()
+	ref.QuietReplacements()
 	if _, err := adapters.IngestBackfill(ctx, ref, claudecode.Adapter{}, []adapters.Source{ccSrc}, nil); err != nil {
 		t.Fatal(err)
 	}
