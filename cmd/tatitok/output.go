@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/harunaltikaya/tatitok/internal/adapters"
 	"github.com/harunaltikaya/tatitok/internal/core"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
@@ -61,6 +62,90 @@ func printSessionTable(rows []store.SessionRow) {
 			formatTokens(r.Output), formatTokens(r.CacheWrite),
 			formatTokens(r.CacheRead), r.Project)
 	}
+}
+
+// printRecomputePlan renders the provenance-gap table (the recompute
+// plan listing) and reports whether any selected harness has work.
+func printRecomputePlan(gaps []store.LineageGapRow, sourceFilter string) bool {
+	fmt.Printf("%-12s %12s %18s %16s %9s %16s\n", "HARNESS", "EVENTS",
+		"MISSING VERSION", "MISSING SOURCE", "SOURCES", "MISSING MACHINE")
+	work := false
+	for _, g := range gaps {
+		note := ""
+		if sourceFilter != "" && g.Harness != sourceFilter {
+			note = "  (not selected)"
+		} else if !g.Empty() {
+			work = true
+		}
+		fmt.Printf("%-12s %12s %18s %16s %9s %16s%s\n", g.Harness,
+			formatTokens(g.Events), formatTokens(g.EventsNoVersion),
+			formatTokens(g.EventsNoSource), formatTokens(g.Sources),
+			formatTokens(g.SourcesNoMachine), note)
+	}
+	return work
+}
+
+// printRecomputeResults renders the run summary and the post-run state.
+// Payload mismatches make the run exit non-zero: stored history disagrees
+// with the current re-parse and a human must look (it is never altered).
+func printRecomputeResults(st *store.Store, ctx context.Context, sum adapters.RecomputeSummary, leftover map[string]string, sourceFilter string) error {
+	fmt.Printf("\nrecompute --provenance results:\n")
+	fmt.Printf("  files re-read:               %s (%s lines)\n",
+		formatTokens(int64(sum.Files)), formatTokens(int64(sum.Lines)))
+	fmt.Printf("  events stamped:              %s (payload verified identical first)\n",
+		formatTokens(int64(sum.Stamped)))
+	if sum.StampedNoSource > 0 {
+		fmt.Printf("  …without source link:        %s (file unknown to the sources table)\n",
+			formatTokens(int64(sum.StampedNoSource)))
+	}
+	if sum.SourceMachines > 0 {
+		fmt.Printf("  sources rows gained machine: %s\n", formatTokens(int64(sum.SourceMachines)))
+	}
+	if sum.FilesNotIngested > 0 {
+		fmt.Printf("  files never ingested:        %s (recompute does not ingest — run: tatitok ingest --backfill)\n",
+			formatTokens(int64(sum.FilesNotIngested)))
+	}
+	if sum.FilesSkipped > 0 {
+		fmt.Printf("  files skipped (unreadable):  %s — their events keep NULL provenance\n",
+			formatTokens(int64(sum.FilesSkipped)))
+	}
+
+	if len(leftover) > 0 {
+		byHarness := map[string]int{}
+		for _, h := range leftover {
+			byHarness[h]++
+		}
+		for h, n := range byHarness {
+			note := "source file deleted/rotated, or the current adapter no longer produces its ID"
+			if sourceFilter != "" && h != sourceFilter {
+				note = "harness not selected (--source)"
+			}
+			fmt.Printf("  WARNING %-12s %s events still missing provenance — %s\n",
+				h, formatTokens(int64(n)), note)
+		}
+	}
+
+	if sum.Mismatched > 0 {
+		fmt.Printf("  MISMATCH: %s stored events differ from the current re-parse — NOT altered, NOT stamped:\n",
+			formatTokens(int64(sum.Mismatched)))
+		for _, m := range sum.Mismatches {
+			fmt.Printf("    %s\n", m)
+		}
+		if sum.Mismatched > len(sum.Mismatches) {
+			fmt.Printf("    … and %d more (see log)\n", sum.Mismatched-len(sum.Mismatches))
+		}
+		return exitError{code: 1, msg: fmt.Sprintf(
+			"recompute: %d payload mismatches need investigation (stored history was not modified)",
+			sum.Mismatched)}
+	}
+
+	gaps, err := st.LineageGaps(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Println("\npost-run state:")
+	printRecomputePlan(gaps, sourceFilter)
+	return nil
 }
 
 // doctorProvenance lists stored row counts by adapter@version — the

@@ -33,6 +33,7 @@ Usage:
   tatitok stats  --daily|--session [--json] [--db PATH] [--timezone TZ] [--harness NAME]
   tatitok doctor --scan-content [--db PATH] [LITERAL...]
   tatitok doctor --provenance [--db PATH] [--json]
+  tatitok recompute --provenance [--dry-run] [--db PATH] [--source NAME]
 
 ingest with no --source runs every detected adapter and reports per
 source. stats buckets days in the local timezone by default (ccusage's
@@ -42,7 +43,13 @@ per-harness breakdown.
 doctor --scan-content re-checks every stored record against the
 sanitizer invariants; extra LITERAL arguments are also grepped for and
 must not appear anywhere in stored raw/meta.
-doctor --provenance lists stored row counts by adapter@version.`
+doctor --provenance lists stored row counts by adapter@version.
+recompute --provenance re-reads the source files through the current
+adapters and fills NULL adapter_version/source-link columns on stored
+events — after verifying each stored payload is identical to the
+re-parse (differences are reported, never altered). Explicit and logged,
+never a side effect (PRD AS-4). --dry-run prints the plan and changes
+nothing.`
 
 func main() { os.Exit(run(os.Args[1:])) }
 
@@ -60,6 +67,8 @@ func run(args []string) int {
 		err = cmdStats(args[1:])
 	case "doctor":
 		err = cmdDoctor(args[1:])
+	case "recompute":
+		err = cmdRecompute(args[1:])
 	case "help", "-h", "--help":
 		fmt.Println(usageText)
 		return 0
@@ -265,6 +274,97 @@ func cmdStats(args []string) error {
 	}
 	printSessionTable(rows)
 	return nil
+}
+
+// cmdRecompute is the explicit recompute entrypoint (PRD AS-4: historical
+// numbers never change as a side effect; recompute is a command, logged).
+// M3 Task 0 ships --provenance; --model-map and --rollups join in later
+// M3 tasks.
+func cmdRecompute(args []string) error {
+	fs := flag.NewFlagSet("recompute", flag.ExitOnError)
+	provenance := fs.Bool("provenance", false, "fill NULL adapter_version/source-link columns from the source files")
+	dryRun := fs.Bool("dry-run", false, "print the plan and change nothing")
+	dbPath := fs.String("db", defaultDBPath(), "database path")
+	source := fs.String("source", "", "restrict to one adapter (claude-code, codex, opencode)")
+	_ = fs.Parse(args)
+	if !*provenance {
+		return fmt.Errorf("recompute requires --provenance (--model-map and --rollups arrive later in milestone 3)")
+	}
+
+	selected := allAdapters
+	if *source != "" {
+		a, err := adapterFor(*source)
+		if err != nil {
+			return err
+		}
+		selected = []adapters.Adapter{a}
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+
+	// Plan listing first, in every mode.
+	gaps, err := st.LineageGaps(ctx)
+	if err != nil {
+		return err
+	}
+	work := printRecomputePlan(gaps, *source)
+	if !work {
+		fmt.Println("provenance complete — nothing to recompute")
+		return nil
+	}
+	if *dryRun {
+		fmt.Println("\ndry run — no changes made")
+		return nil
+	}
+
+	needy, err := st.NullProvenanceIDs(ctx)
+	if err != nil {
+		return err
+	}
+	slog.Info("recompute --provenance starting", "db", *dbPath,
+		"events_missing_provenance", len(needy))
+
+	// Only adapters whose harness actually has gaps re-read their logs.
+	hasWork := map[string]bool{}
+	for _, g := range gaps {
+		if !g.Empty() {
+			hasWork[g.Harness] = true
+		}
+	}
+
+	probe := realProbe()
+	var sum adapters.RecomputeSummary
+	ran := 0
+	for _, a := range selected {
+		if !hasWork[a.Name()] {
+			fmt.Printf("%-12s no provenance gaps — not re-read\n", a.Name()+":")
+			continue
+		}
+		srcs, err := a.Detect(probe)
+		if err != nil {
+			return err
+		}
+		if len(srcs) == 0 {
+			fmt.Printf("%-12s no log roots detected — skipped\n", a.Name()+":")
+			continue
+		}
+		for _, s := range srcs {
+			slog.Info("recompute re-reading", "adapter", a.Name(), "root", s.Root)
+		}
+		if err := adapters.RecomputeProvenance(ctx, st, a, srcs, needy, &sum); err != nil {
+			return fmt.Errorf("%s: %w", a.Name(), err)
+		}
+		ran++
+	}
+	if ran == 0 {
+		return fmt.Errorf("no log roots found for any selected adapter — nothing re-read")
+	}
+	return printRecomputeResults(st, ctx, sum, needy, *source)
 }
 
 func cmdDoctor(args []string) error {
