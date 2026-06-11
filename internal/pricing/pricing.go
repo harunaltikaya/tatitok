@@ -59,17 +59,29 @@ func (r Rates) IsZero() bool {
 		r.CacheWrite1h == 0 && r.CacheRead == 0
 }
 
-// CostMicroUSD prices the token components in integer arithmetic: the
-// products accumulate in micro-USD-per-Mtok × tokens, and ONE division
-// at the end converts to micro-USD, rounding half up. cacheWrite1h is
-// the 1h-TTL portion of cache writes (0 when the split is unknown —
-// then cacheWrite carries the full count at the 5m rate). tokens per
-// component are int64; products stay far below int64 range.
-func (r Rates) CostMicroUSD(input, output, cacheWrite, cacheWrite1h, cacheRead int64) int64 {
-	sum := input*r.Input + output*r.Output +
-		cacheWrite*r.CacheWrite + cacheWrite1h*r.CacheWrite1h +
-		cacheRead*r.CacheRead
-	return (sum + 500_000) / 1_000_000
+// CostMicroUSD prices the token components exactly: every
+// tokens × (micro-USD per Mtok) product joins the sum as a big.Rat —
+// arbitrary precision through the whole expression, so an extreme
+// override rate fails the SINGLE final range check instead of wrapping
+// int64 somewhere mid-sum (M3.1 finding 7) — and ONE half-up rounding
+// converts to micro-USD. cacheWrite1h is the 1h-TTL portion of cache
+// writes (0 when the split is unknown — then cacheWrite carries the
+// full count at the 5m rate).
+func (r Rates) CostMicroUSD(input, output, cacheWrite, cacheWrite1h, cacheRead int64) (int64, error) {
+	sum := new(big.Rat)
+	term := func(tokens, rate int64) {
+		if tokens == 0 || rate == 0 {
+			return
+		}
+		product := new(big.Int).Mul(big.NewInt(tokens), big.NewInt(rate))
+		sum.Add(sum, new(big.Rat).SetFrac(product, big.NewInt(1_000_000)))
+	}
+	term(input, r.Input)
+	term(output, r.Output)
+	term(cacheWrite, r.CacheWrite)
+	term(cacheWrite1h, r.CacheWrite1h)
+	term(cacheRead, r.CacheRead)
+	return ratMicroHalfUp(sum, "event cost")
 }
 
 // Quote is one event's price resolution.
@@ -105,6 +117,20 @@ var (
 	snapRates   map[string]Rates
 )
 
+// ratMicroHalfUp rounds a non-negative rational micro-USD amount half up
+// to int64 — the shared money-math exit: one rounding, one range check.
+func ratMicroHalfUp(r *big.Rat, what string) (int64, error) {
+	// round(num/den) half up, exactly: (2*num + den) / (2*den)
+	num := new(big.Int).Lsh(r.Num(), 1)
+	num.Add(num, r.Denom())
+	den := new(big.Int).Lsh(r.Denom(), 1)
+	q := num.Div(num, den)
+	if !q.IsInt64() {
+		return 0, fmt.Errorf("%s out of int64 micro-USD range", what)
+	}
+	return q.Int64(), nil
+}
+
 // usdPerTokenToMicroPerMtok converts a decimal USD-per-token price to
 // integer micro-USD per million tokens: value × 1e12, rounded half up
 // to the nearest micro. The rounding absorbs float dirt in the source
@@ -123,15 +149,7 @@ func usdPerTokenToMicroPerMtok(n json.Number) (int64, error) {
 		return 0, fmt.Errorf("negative price %q", n)
 	}
 	r.Mul(r, new(big.Rat).SetInt64(1_000_000_000_000))
-	// round(num/den) half up, exactly: (2*num + den) / (2*den)
-	num := new(big.Int).Lsh(r.Num(), 1)
-	num.Add(num, r.Denom())
-	den := new(big.Int).Lsh(r.Denom(), 1)
-	q := num.Div(num, den)
-	if !q.IsInt64() {
-		return 0, fmt.Errorf("price %q out of range", n)
-	}
-	return q.Int64(), nil
+	return ratMicroHalfUp(r, fmt.Sprintf("price %q", n))
 }
 
 func load() {
@@ -291,14 +309,7 @@ func USDToMicro(text string) (int64, error) {
 		return 0, fmt.Errorf("negative USD amount %q", text)
 	}
 	r.Mul(r, new(big.Rat).SetInt64(1_000_000))
-	num := new(big.Int).Lsh(r.Num(), 1)
-	num.Add(num, r.Denom())
-	den := new(big.Int).Lsh(r.Denom(), 1)
-	q := num.Div(num, den)
-	if !q.IsInt64() {
-		return 0, fmt.Errorf("USD amount %q out of range", text)
-	}
-	return q.Int64(), nil
+	return ratMicroHalfUp(r, fmt.Sprintf("USD amount %q", text))
 }
 
 // PricedTokens maps an event's stored token columns to the four price

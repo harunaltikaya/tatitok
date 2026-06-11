@@ -61,7 +61,10 @@ func Apply(e *core.Event, ov *Overrides) error {
 			q.Basis, q.Rates = BasisFree, &Rates{}
 			detail := priceDetail{Rates: Rates{}, FreeSource: "source"}
 			if equiv, derivedFrom, ok := EquivalentRates(e.Model, e.ModelFamily); ok {
-				ev := equiv.CostMicroUSD(in, out, cw, 0, cr)
+				ev, err := equiv.CostMicroUSD(in, out, cw, 0, cr)
+				if err != nil {
+					return fmt.Errorf("%s: %w", e.ID, err)
+				}
 				e.CostAPIEquivMicro = &ev
 				detail.EquivRates = &equiv
 				detail.EquivSource = derivedFrom
@@ -83,7 +86,10 @@ func Apply(e *core.Event, ov *Overrides) error {
 				return err
 			}
 			if found { // guaranteed by the LoadOverrides validation
-				ev := rr.CostMicroUSD(in, out, cw, 0, cr)
+				ev, err := rr.CostMicroUSD(in, out, cw, 0, cr)
+				if err != nil {
+					return fmt.Errorf("%s: %w", e.ID, err)
+				}
 				e.CostAPIEquivMicro = &ev
 				detail.EquivRates = &rr
 				detail.EquivSource = "reference:" + ref
@@ -108,7 +114,10 @@ func Apply(e *core.Event, ov *Overrides) error {
 	if five, oneH, ok := cacheWriteSplit(e.Meta, cw); ok && q.Rates.CacheWrite1h > 0 {
 		cw, cw1h = five, oneH
 	}
-	cost := q.Rates.CostMicroUSD(in, out, cw, cw1h, cr)
+	cost, err := q.Rates.CostMicroUSD(in, out, cw, cw1h, cr)
+	if err != nil {
+		return fmt.Errorf("%s: %w", e.ID, err)
+	}
 	detail := priceDetail{Rates: *q.Rates}
 	if q.Basis == BasisFree {
 		// Owner-declared free (override file free:true): kept as its own

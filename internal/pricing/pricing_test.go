@@ -8,6 +8,7 @@ package pricing
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,26 +41,50 @@ func TestUSDPerTokenConversionExact(t *testing.T) {
 }
 
 func TestCostMicroUSDRounding(t *testing.T) {
+	cost := func(r Rates, in, out, cw, cw1h, cr int64) int64 {
+		t.Helper()
+		got, err := r.CostMicroUSD(in, out, cw, cw1h, cr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
 	r := Rates{Input: 3_000_000, Output: 15_000_000} // $3 / $15 per Mtok
 	// 1000 input + 100 output = 3000 + 1500 micro = 4500 micro-USD
-	if got := r.CostMicroUSD(1000, 100, 0, 0, 0); got != 4500 {
+	if got := cost(r, 1000, 100, 0, 0, 0); got != 4500 {
 		t.Errorf("cost = %d, want 4500", got)
 	}
 	// One input token at $3/Mtok = 3 micro-USD exactly.
-	if got := r.CostMicroUSD(1, 0, 0, 0, 0); got != 3 {
+	if got := cost(r, 1, 0, 0, 0, 0); got != 3 {
 		t.Errorf("cost = %d, want 3", got)
 	}
 	// Rounding: 1 token at 0.4 micro rounds to 0; at 0.5 micro rounds to 1.
-	if got := (Rates{Input: 400_000}).CostMicroUSD(1, 0, 0, 0, 0); got != 0 {
+	if got := cost(Rates{Input: 400_000}, 1, 0, 0, 0, 0); got != 0 {
 		t.Errorf("0.4 micro rounded to %d, want 0", got)
 	}
-	if got := (Rates{Input: 500_000}).CostMicroUSD(1, 0, 0, 0, 0); got != 1 {
+	if got := cost(Rates{Input: 500_000}, 1, 0, 0, 0, 0); got != 1 {
 		t.Errorf("0.5 micro rounded to %d, want 1", got)
 	}
 	// 1h-TTL cache writes bill at their own rate.
 	split := Rates{CacheWrite: 12_500_000, CacheWrite1h: 20_000_000}
-	if got := split.CostMicroUSD(0, 0, 1000, 2000, 0); got != 12_500+40_000 {
+	if got := cost(split, 0, 0, 1000, 2000, 0); got != 12_500+40_000 {
 		t.Errorf("split cache write cost = %d, want 52500", got)
+	}
+}
+
+// M3.1 finding 7: the sum is carried in big.Rat — an extreme (override)
+// rate whose products would wrap int64 mid-sum instead computes exactly
+// and fails the single final range check, loudly.
+func TestCostMicroUSDOverflowIsAnError(t *testing.T) {
+	huge := Rates{Input: math.MaxInt64, Output: math.MaxInt64}
+	if _, err := huge.CostMicroUSD(math.MaxInt64, math.MaxInt64, 0, 0, 0); err == nil {
+		t.Fatal("int64-wrapping cost accepted silently")
+	}
+	// Just inside range still computes exactly: MaxInt64 micro/Mtok on one
+	// million tokens = MaxInt64 micro-USD.
+	got, err := (Rates{Input: math.MaxInt64}).CostMicroUSD(1_000_000, 0, 0, 0, 0)
+	if err != nil || got != math.MaxInt64 {
+		t.Fatalf("boundary cost = %d, %v; want MaxInt64, nil", got, err)
 	}
 }
 
