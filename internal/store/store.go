@@ -386,21 +386,34 @@ func migrate(db *sql.DB) error { return migrateTo(db, len(migrations)) }
 // migrateTo applies pending migrations up to (and excluding) index target.
 // Split out so the upgrade tests can build a database frozen at an older
 // schema version and then let Open finish the job.
+//
+// Concurrency (M3.1 finding 3): schema_version is read INSIDE each
+// immediate transaction (the dsn's _txlock=immediate takes the write
+// lock at BEGIN), and re-read per migration. Two processes opening the
+// same database serialize on that lock; whoever enters second sees the
+// version the first committed and applies nothing twice. A version read
+// outside the lock let both see the same stale version and race to
+// apply the same migration.
 func migrateTo(db *sql.DB, target int) error {
 	if _, err := db.Exec(
 		`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
 		return fmt.Errorf("create schema_version: %w", err)
 	}
-	var version int
-	err := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&version)
-	if err != nil {
-		return fmt.Errorf("read schema_version: %w", err)
-	}
-	for i := version; i < target; i++ {
+	for {
 		tx, err := db.Begin()
 		if err != nil {
 			return err
 		}
+		var version int
+		if err := tx.QueryRow(
+			`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&version); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("read schema_version: %w", err)
+		}
+		if version >= target {
+			return tx.Rollback() // up to date — nothing was written
+		}
+		i := version
 		if _, err := tx.Exec(migrations[i]); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("migration %d: %w", i+1, err)
@@ -423,7 +436,6 @@ func migrateTo(db *sql.DB, target int) error {
 			return fmt.Errorf("migration %d: %w", i+1, err)
 		}
 	}
-	return nil
 }
 
 // SourceInfo describes one ingested file for the sources table.

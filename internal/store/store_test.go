@@ -400,6 +400,46 @@ func TestSessionsCrossMachineCollision(t *testing.T) {
 	}
 }
 
+// Two processes opening the same database at once must both succeed and
+// migrate it exactly once (M3.1 finding 3): the schema_version read
+// happens inside BEGIN IMMEDIATE, so concurrent migrators serialize on
+// the write lock instead of both reading a stale version and racing to
+// apply the same migration ("table already exists").
+func TestOpenConcurrent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	const openers = 8
+	errs := make(chan error, openers)
+	for i := 0; i < openers; i++ {
+		go func() {
+			s, err := Open(path)
+			if err == nil {
+				_ = s.Close()
+			}
+			errs <- err
+		}()
+	}
+	for i := 0; i < openers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent open: %v", err)
+		}
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	var rows, version int
+	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(MAX(version),0)
+		FROM schema_version`).Scan(&rows, &version); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || version != len(migrations) {
+		t.Fatalf("schema_version after concurrent opens: %d rows @ v%d, want 1 @ v%d",
+			rows, version, len(migrations))
+	}
+}
+
 func TestMigrateIsIdempotentAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")
