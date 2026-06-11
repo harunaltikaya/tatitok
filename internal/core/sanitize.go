@@ -28,6 +28,11 @@ import (
 	"strings"
 )
 
+// builtForSpecVersion is the sanitize_rules.json spec_version this
+// implementation was written against (asserted at init; the harvest
+// script and the leak checker pin their own copies).
+const builtForSpecVersion = 1
+
 //go:embed sanitize_rules.json
 var sanitizeRulesJSON []byte
 
@@ -75,8 +80,11 @@ func init() {
 	if err := json.Unmarshal(sanitizeRulesJSON, &r); err != nil {
 		panic(fmt.Sprintf("sanitize_rules.json: %v", err))
 	}
-	if r.SpecVersion != 1 {
-		panic(fmt.Sprintf("sanitize_rules.json: unsupported spec_version %d", r.SpecVersion))
+	// Built for exactly ONE spec_version: sanitizing under semantics this
+	// code was not written against could leak content while looking green.
+	if r.SpecVersion != builtForSpecVersion {
+		panic(fmt.Sprintf("sanitize_rules.json: this sanitizer is built for spec_version %d but the embedded spec is %d — update sanitize.go for the new rule-spec semantics",
+			builtForSpecVersion, r.SpecVersion))
 	}
 	toSet := func(keys []string) map[string]bool {
 		m := make(map[string]bool, len(keys))

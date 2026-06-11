@@ -105,9 +105,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RULES_PATH = REPO_ROOT / "internal" / "core" / "sanitize_rules.json"
 RULES = json.loads(RULES_PATH.read_text(encoding="utf-8"))
-if RULES["spec_version"] != 1:
-    raise SystemExit("unsupported sanitize_rules.json spec_version %r"
-                     % RULES["spec_version"])
+# Built for exactly ONE spec_version: harvesting under semantics this
+# script was not written against could publish content while looking green.
+BUILT_FOR_SPEC_VERSION = 1
+if RULES["spec_version"] != BUILT_FOR_SPEC_VERSION:
+    raise SystemExit(
+        "error: harvest_fixtures.py is built for sanitize_rules.json "
+        "spec_version %d but the repo's spec is %r — update this script's "
+        "sanitizer for the new rule-spec semantics before harvesting"
+        % (BUILT_FOR_SPEC_VERSION, RULES["spec_version"]))
 
 # Keys whose values are content by definition: always stripped, any length.
 CONTENT_KEYS = set(RULES["content_keys"])

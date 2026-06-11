@@ -85,6 +85,20 @@ UUID_RE = re.compile(
 _RULES = json.loads(
     (Path(__file__).resolve().parent.parent
      / "internal" / "core" / "sanitize_rules.json").read_text(encoding="utf-8"))
+
+# The checker derives its scan patterns from the rule-spec and is built
+# for exactly ONE spec_version: scanning with semantics it was not written
+# against could wave a leak through while looking green. Mismatch = cannot
+# run (exit 2), never a silent best-effort scan.
+BUILT_FOR_SPEC_VERSION = 1
+if _RULES["spec_version"] != BUILT_FOR_SPEC_VERSION:
+    print("error: check_fixture_leaks.py is built for sanitize_rules.json "
+          "spec_version %d but the repo's spec is %r — update this "
+          "checker's scans for the new rule-spec semantics before trusting "
+          "its verdict" % (BUILT_FOR_SPEC_VERSION, _RULES["spec_version"]),
+          file=sys.stderr)
+    sys.exit(2)
+
 PREFIX_ID_RE = re.compile(
     r"\b(?:%s)_[A-Za-z0-9]{10,}\b"
     % "|".join(_RULES["id_shapes"]["prefix_id_prefixes"]))
