@@ -158,7 +158,126 @@ var migrations = []string{
 	// API-equivalent value when the snapshot can price the model —
 	// mirroring the local-basis design (FR-9.3). Derived column.
 	`ALTER TABLE usage_events ADD COLUMN cost_api_equiv_micro INTEGER;`,
+	// Rollups (M3 Task 3, migration 9). rollup_daily is maintained by
+	// TRIGGERS inside every write transaction — the one mechanism that
+	// stays correct through ingest inserts, mutable-store replacements
+	// (subtract old, add new) AND the explicit recomputes that move rows
+	// between buckets (model-map changes model_family, pricing changes
+	// cost). Decisions recorded for the milestone report:
+	//   - day_utc = substr(ts,1,10): rollups bucket in UTC; non-UTC
+	//     timezone queries keep exact event-level aggregation (a UTC day
+	//     cannot serve a :30/:45-offset zone); hourly grain DEFERRED to
+	//     the live milestone.
+	//   - raw model joins the grain (and the PK, with model_family —
+	//     mixed-map states are real) so the rollup-served stats path is
+	//     byte-equal to direct aggregation.
+	//   - map_version/snapshot_version record the latest contributing
+	//     event's versions; `recompute --rollups` rebuilds and normalizes.
+	// The backfill at the end constructs rollups for pre-existing events
+	// (new derived data — no historical numbers change).
+	`CREATE TABLE rollup_daily (
+		day_utc              TEXT NOT NULL,
+		machine              TEXT NOT NULL,
+		harness              TEXT NOT NULL,
+		provider             TEXT NOT NULL,
+		model                TEXT NOT NULL,
+		model_family         TEXT NOT NULL,
+		project              TEXT NOT NULL,
+		events               INTEGER NOT NULL DEFAULT 0,
+		tokens_input         INTEGER NOT NULL DEFAULT 0,
+		tokens_output        INTEGER NOT NULL DEFAULT 0,
+		tokens_cache_write   INTEGER NOT NULL DEFAULT 0,
+		tokens_cache_read    INTEGER NOT NULL DEFAULT 0,
+		tokens_reasoning     INTEGER NOT NULL DEFAULT 0,
+		cost_usd_micro       INTEGER NOT NULL DEFAULT 0,
+		cost_api_equiv_micro INTEGER NOT NULL DEFAULT 0,
+		events_unpriced      INTEGER NOT NULL DEFAULT 0,
+		map_version          INTEGER,
+		snapshot_version     TEXT,
+		PRIMARY KEY (day_utc, machine, harness, provider, model, model_family, project)
+	) WITHOUT ROWID;
+	CREATE TRIGGER rollup_daily_ai AFTER INSERT ON usage_events BEGIN
+		` + rollupAddNewSQL + `
+	END;
+	CREATE TRIGGER rollup_daily_au AFTER UPDATE ON usage_events BEGIN
+		` + rollupSubtractOldSQL + `
+		` + rollupAddNewSQL + `
+		` + rollupCleanupOldSQL + `
+	END;
+	CREATE TRIGGER rollup_daily_ad AFTER DELETE ON usage_events BEGIN
+		` + rollupSubtractOldSQL + `
+		` + rollupCleanupOldSQL + `
+	END;
+	` + rollupRebuildSQL,
 }
+
+// rollupKeyOld matches a rollup row by the OLD event values (NULL-safe
+// COALESCE matching the insert path).
+const rollupKeyOld = `day_utc = substr(old.ts, 1, 10) AND machine = old.machine
+	AND harness = COALESCE(old.harness, '') AND provider = old.provider
+	AND model = old.model AND model_family = old.model_family
+	AND project = COALESCE(old.project, '')`
+
+// rollupAddNewSQL upserts the NEW event row's contribution.
+const rollupAddNewSQL = `INSERT INTO rollup_daily (day_utc, machine, harness,
+		provider, model, model_family, project, events, tokens_input,
+		tokens_output, tokens_cache_write, tokens_cache_read,
+		tokens_reasoning, cost_usd_micro, cost_api_equiv_micro,
+		events_unpriced, map_version, snapshot_version)
+	VALUES (substr(new.ts, 1, 10), new.machine, COALESCE(new.harness, ''),
+		new.provider, new.model, new.model_family, COALESCE(new.project, ''),
+		1, new.tokens_input, new.tokens_output, new.tokens_cache_write,
+		new.tokens_cache_read, COALESCE(new.tokens_reasoning, 0),
+		COALESCE(new.cost_usd_micro, 0), COALESCE(new.cost_api_equiv_micro, 0),
+		(new.cost_usd_micro IS NULL), new.map_version, new.price_snapshot)
+	ON CONFLICT (day_utc, machine, harness, provider, model, model_family, project)
+	DO UPDATE SET
+		events = events + 1,
+		tokens_input = tokens_input + new.tokens_input,
+		tokens_output = tokens_output + new.tokens_output,
+		tokens_cache_write = tokens_cache_write + new.tokens_cache_write,
+		tokens_cache_read = tokens_cache_read + new.tokens_cache_read,
+		tokens_reasoning = tokens_reasoning + COALESCE(new.tokens_reasoning, 0),
+		cost_usd_micro = cost_usd_micro + COALESCE(new.cost_usd_micro, 0),
+		cost_api_equiv_micro = cost_api_equiv_micro + COALESCE(new.cost_api_equiv_micro, 0),
+		events_unpriced = events_unpriced + (new.cost_usd_micro IS NULL),
+		map_version = COALESCE(new.map_version, map_version),
+		snapshot_version = COALESCE(new.price_snapshot, snapshot_version);`
+
+// rollupSubtractOldSQL removes the OLD event row's contribution.
+const rollupSubtractOldSQL = `UPDATE rollup_daily SET
+		events = events - 1,
+		tokens_input = tokens_input - old.tokens_input,
+		tokens_output = tokens_output - old.tokens_output,
+		tokens_cache_write = tokens_cache_write - old.tokens_cache_write,
+		tokens_cache_read = tokens_cache_read - old.tokens_cache_read,
+		tokens_reasoning = tokens_reasoning - COALESCE(old.tokens_reasoning, 0),
+		cost_usd_micro = cost_usd_micro - COALESCE(old.cost_usd_micro, 0),
+		cost_api_equiv_micro = cost_api_equiv_micro - COALESCE(old.cost_api_equiv_micro, 0),
+		events_unpriced = events_unpriced - (old.cost_usd_micro IS NULL)
+	WHERE ` + rollupKeyOld + `;`
+
+// rollupCleanupOldSQL drops the old bucket when it emptied, so the
+// incremental table stays identical to a fresh rebuild.
+const rollupCleanupOldSQL = `DELETE FROM rollup_daily
+	WHERE events = 0 AND ` + rollupKeyOld + `;`
+
+// rollupRebuildSQL constructs rollup_daily from usage_events — used by
+// the migration backfill and by `recompute --rollups` (after a DELETE).
+const rollupRebuildSQL = `INSERT INTO rollup_daily (day_utc, machine, harness,
+		provider, model, model_family, project, events, tokens_input,
+		tokens_output, tokens_cache_write, tokens_cache_read,
+		tokens_reasoning, cost_usd_micro, cost_api_equiv_micro,
+		events_unpriced, map_version, snapshot_version)
+	SELECT substr(ts, 1, 10), machine, COALESCE(harness, ''), provider,
+		model, model_family, COALESCE(project, ''),
+		COUNT(*), SUM(tokens_input), SUM(tokens_output),
+		SUM(tokens_cache_write), SUM(tokens_cache_read),
+		SUM(COALESCE(tokens_reasoning, 0)), SUM(COALESCE(cost_usd_micro, 0)),
+		SUM(COALESCE(cost_api_equiv_micro, 0)), SUM(cost_usd_micro IS NULL),
+		MAX(map_version), MAX(price_snapshot)
+	FROM usage_events
+	GROUP BY 1, 2, 3, 4, 5, 6, 7;`
 
 // migrationHooks run inside the migration's transaction, after its SQL —
 // used to surface backfill outcomes (a migration must never be silent

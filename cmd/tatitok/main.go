@@ -315,24 +315,28 @@ func cmdRecompute(args []string) error {
 	provenance := fs.Bool("provenance", false, "fill NULL adapter_version/source-link columns from the source files")
 	modelMap := fs.Bool("model-map", false, "re-normalize stored model_family under the current model map")
 	prices := fs.Bool("pricing", false, "re-derive cost columns under the current price snapshot + overrides")
+	rollups := fs.Bool("rollups", false, "rebuild rollup_daily from the event table")
 	dryRun := fs.Bool("dry-run", false, "print the plan and change nothing")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	source := fs.String("source", "", "restrict to one adapter (claude-code, codex, opencode)")
 	_ = fs.Parse(args)
 	modes := 0
-	for _, m := range []bool{*provenance, *modelMap, *prices} {
+	for _, m := range []bool{*provenance, *modelMap, *prices, *rollups} {
 		if m {
 			modes++
 		}
 	}
 	if modes != 1 {
-		return fmt.Errorf("pass exactly one of --provenance, --model-map or --pricing (--rollups arrives later in milestone 3)")
+		return fmt.Errorf("pass exactly one of --provenance, --model-map, --pricing or --rollups")
 	}
 	if *modelMap {
 		return cmdRecomputeModelMap(*dbPath, *dryRun)
 	}
 	if *prices {
 		return cmdRecomputePricing(*dbPath, *dryRun)
+	}
+	if *rollups {
+		return cmdRecomputeRollups(*dbPath, *dryRun)
 	}
 
 	selected := allAdapters
@@ -496,6 +500,38 @@ func cmdRecomputePricing(dbPath string, dryRun bool) error {
 	for basis, n := range res.ByBasis {
 		fmt.Printf("  %-14s %s\n", basis, formatTokens(n))
 	}
+	return nil
+}
+
+// cmdRecomputeRollups rebuilds the rollup table from events (explicit;
+// the triggers keep it correct incrementally — this normalizes version
+// columns and recovers from anything unforeseen).
+func cmdRecomputeRollups(dbPath string, dryRun bool) error {
+	st, err := openStore(dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+
+	rollupRows, events, err := st.RollupCounts(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("rollup_daily: %s rows over %s events — full rebuild from the event table\n",
+		formatTokens(rollupRows), formatTokens(events))
+	if dryRun {
+		fmt.Println("\ndry run — no changes made")
+		return nil
+	}
+	slog.Info("recompute --rollups starting", "db", dbPath,
+		"rollup_rows", rollupRows, "events", events)
+	rows, err := st.RecomputeRollups(ctx)
+	if err != nil {
+		return err
+	}
+	slog.Info("recompute --rollups complete", "rollup_rows", rows)
+	fmt.Printf("\nrebuilt rollup_daily: %s rows\n", formatTokens(rows))
 	return nil
 }
 

@@ -290,6 +290,25 @@ func TestReingestIdempotent(t *testing.T) {
 	}
 }
 
+// assertRollupMatchesDaily: rollup-served daily must equal direct
+// aggregation at UTC (M3 Task 3 consistency property on the replacement
+// path).
+func assertRollupMatchesDaily(t *testing.T, s *store.Store, when string) {
+	t.Helper()
+	ctx := context.Background()
+	direct, err := s.Daily(ctx, time.UTC, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rolled, err := s.DailyFromRollups(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(direct, rolled) {
+		t.Fatalf("%s: rollup-served daily diverged from direct aggregation", when)
+	}
+}
+
 // M2.1 review item 1 (owner-directed test): OpenCode message rows are
 // mutable while a turn is in flight, so a row ingested mid-turn must be
 // superseded when a later ingest reads its finalized form. The
@@ -411,6 +430,7 @@ func TestMutatedRowSupersededOnReingest(t *testing.T) {
 	if reflect.DeepEqual(partialDaily, wantDaily) {
 		t.Fatal("partial row did not change the day sums — mutation ineffective")
 	}
+	assertRollupMatchesDaily(t, s, "after partial-row ingest")
 
 	// The turn finishes: restore the finalized row and re-ingest. The
 	// stored event must be replaced (same ID, new payload), not frozen.
@@ -433,6 +453,9 @@ func TestMutatedRowSupersededOnReingest(t *testing.T) {
 	if !reflect.DeepEqual(gotDaily, wantDaily) {
 		t.Fatal("finalized row did not supersede the partial one")
 	}
+	// M3 Task 3: the replacement must correct the rollups too — the
+	// mutated-row fixture path, end to end.
+	assertRollupMatchesDaily(t, s, "after finalized-row replacement")
 	total, err := s.CountEvents(ctx)
 	if err != nil {
 		t.Fatal(err)

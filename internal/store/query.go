@@ -145,8 +145,15 @@ func (s *Store) Daily(ctx context.Context, tz *time.Location, harness string) ([
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	return assembleDaily(rows)
+}
 
+// assembleDaily turns ordered (day, harness, model, sums) group rows
+// into DailyRows — shared by the event-direct path (Daily) and the
+// rollup-served path (DailyFromRollups), so the two are byte-equal by
+// construction wherever their groupings agree.
+func assembleDaily(rows *sql.Rows) ([]DailyRow, error) {
+	defer func() { _ = rows.Close() }()
 	var out []DailyRow
 	models := map[string]*ModelSums{} // per current day
 	flushModels := func() {

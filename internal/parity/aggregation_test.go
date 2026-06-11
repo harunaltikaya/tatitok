@@ -37,4 +37,15 @@ func TestSQLAggregationBudget(t *testing.T) {
 	if d := time.Since(start); d > 5*time.Second {
 		t.Fatalf("stats aggregation took %v, budget is 5s", d)
 	}
+
+	// The rollup-served path (M3 Task 3) must beat the same budget — it
+	// reads the pre-aggregated table, so this is the cheapest query in
+	// the system and the timing is a regression tripwire, not a race.
+	start = time.Now()
+	if _, err := s.DailyFromRollups(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("rollup-served daily took %v, budget is 5s", d)
+	}
 }
