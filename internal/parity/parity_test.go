@@ -2,10 +2,12 @@ package parity
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -245,14 +247,23 @@ func TestParityFullCodex(t *testing.T) {
 
 // TestParityFullOpencode is the owner-run gate against the full live
 // opencode store (`make parity-full-opencode`). Same recapture
-// discipline: pinned ccusage version from the opencode fixture META, live
-// `ccusage opencode daily` at comparison time (its discovery is
-// HOME-anchored, which under the unmodified environment is exactly the
-// live store the adapter detects).
+// discipline: pinned ccusage version from the opencode fixture META,
+// recaptured at comparison time, never an on-disk -full file.
+//
+// Unlike the JSONL gates, the source is a SQLite database OpenCode may be
+// writing to. The live store is therefore read exactly once, briefly —
+// `VACUUM INTO` a temp snapshot — and BOTH sides compare against that
+// snapshot: ccusage via the HOME-override isolation the harvest uses (its
+// opencode discovery is HOME-anchored; XDG_DATA_HOME ignored but set
+// consistently; npm cache pinned so npx still resolves the pinned
+// version), the adapter via Detect against the snapshot home. No long
+// cursor ever sits on the live db, and a mid-test OpenCode write cannot
+// desync the two sides.
 func TestParityFullOpencode(t *testing.T) {
 	if os.Getenv("TATITOK_PARITY_FULL_OPENCODE") != "1" {
 		t.Skip("owner-run full parity: make parity-full-opencode (needs the live opencode.db + npx)")
 	}
+	ctx := context.Background()
 	meta, err := LoadMeta(filepath.Join("../../testdata/fixtures/opencode", "gx10", "expected", "META.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -275,9 +286,32 @@ func TestParityFullOpencode(t *testing.T) {
 		t.Logf("live root: %s", s.Root)
 	}
 
-	// Recapture from the live store, never from a stored -full file.
+	// Snapshot the live store ONCE; everything below reads the snapshot.
+	snapHome := t.TempDir()
+	snapDB := filepath.Join(snapHome, ".local", "share", "opencode", "opencode.db")
+	if err := os.MkdirAll(filepath.Dir(snapDB), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	live, err := sql.Open("sqlite", fmt.Sprintf(
+		"file:%s?mode=ro&_pragma=busy_timeout(5000)",
+		filepath.Join(srcs[0].Root, "opencode.db")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = live.ExecContext(ctx, `VACUUM INTO ?`, snapDB)
+	_ = live.Close()
+	if err != nil {
+		t.Fatalf("snapshot live store: %v", err)
+	}
+
+	// Recapture from the snapshot, never from a stored -full file.
 	cmd := exec.Command("npx", "-y", "ccusage@"+meta.CCUsageVersion,
 		"opencode", "daily", "--json", "--offline")
+	cmd.Env = overrideEnv(map[string]string{
+		"HOME":             snapHome,
+		"XDG_DATA_HOME":    filepath.Join(snapHome, ".local", "share"),
+		"npm_config_cache": filepath.Join(home, ".npm"),
+	})
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
@@ -288,8 +322,18 @@ func TestParityFullOpencode(t *testing.T) {
 		t.Fatalf("ccusage output: %v", err)
 	}
 
-	s := ingestIntoWith(t, opencode.Adapter{}, srcs)
-	got, err := s.Daily(context.Background(), time.Local, "")
+	snapSrcs, err := opencode.Adapter{}.Detect(adapters.Probe{
+		Getenv:  func(string) string { return "" },
+		HomeDir: snapHome, Machine: "parity-full",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapSrcs) == 0 {
+		t.Fatal("snapshot store not detected")
+	}
+	s := ingestIntoWith(t, opencode.Adapter{}, snapSrcs)
+	got, err := s.Daily(ctx, time.Local, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,4 +343,22 @@ func TestParityFullOpencode(t *testing.T) {
 	}
 	t.Logf("full-history opencode parity holds across %d days (ccusage %s)",
 		len(want.Daily), meta.CCUsageVersion)
+}
+
+// overrideEnv returns the current environment with the given variables
+// replaced (not appended — libc getenv takes the FIRST occurrence, so a
+// duplicate HOME would silently win or lose by libc implementation).
+func overrideEnv(overrides map[string]string) []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		if _, ok := overrides[k]; ok {
+			continue
+		}
+		env = append(env, kv)
+	}
+	for k, v := range overrides {
+		env = append(env, k+"="+v)
+	}
+	return env
 }
