@@ -184,6 +184,12 @@ func cmdIngest(args []string) error {
 		ingested++
 		fmt.Printf("%-12s ingested %d files (%d lines): %d events emitted, %d new rows, %d parse errors\n",
 			a.Name()+":", sum.Files, sum.Lines, sum.Emitted, sum.Inserted, sum.ParseErrors)
+		if sum.Replaced > 0 {
+			// AS-4: a stored number changed because the source row itself
+			// changed (mutable store finalized an in-flight turn) — say so.
+			fmt.Printf("%-12s %d events replaced (source rows changed since last ingest)\n",
+				a.Name()+":", sum.Replaced)
+		}
 		if sum.Skipped > 0 {
 			fmt.Printf("%-12s WARNING: %d sources skipped (unreadable) — totals are incomplete\n",
 				a.Name()+":", sum.Skipped)

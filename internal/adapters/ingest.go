@@ -10,10 +10,15 @@ import (
 
 // IngestSummary aggregates one backfill run.
 type IngestSummary struct {
-	Files       int
-	Lines       int
-	Emitted     int // billable events emitted by the adapter
-	Inserted    int // new rows (duplicates collapse via INSERT OR IGNORE)
+	Files    int
+	Lines    int
+	Emitted  int // billable events emitted by the adapter
+	Inserted int // new rows (duplicates collapse on the deterministic ID)
+	// Replaced counts stored events whose source row changed since the
+	// previous ingest and were updated to mirror it (mutable stores —
+	// OpenCode rewrites a message row while the turn is in flight). The
+	// correction mirrors source truth; it is reported, never silent (AS-4).
+	Replaced    int
 	ParseErrors int
 	// Skipped counts sources (files or project dirs) the adapter could
 	// not read — recorded in the sources table with their read error,
@@ -98,13 +103,14 @@ func (k *storeSink) FileDone(res FileResult) error {
 			return err
 		}
 	} else {
-		n, err := k.cur.Commit(k.ctx, info)
+		stats, err := k.cur.Commit(k.ctx, info)
 		emitted := k.curEmitted
 		k.cur, k.curPath, k.curEmitted = nil, "", 0
 		if err != nil {
 			return err
 		}
-		k.sum.Inserted += n
+		k.sum.Inserted += stats.Inserted
+		k.sum.Replaced += stats.Replaced
 		k.sum.Emitted += emitted
 	}
 	k.sum.Files++

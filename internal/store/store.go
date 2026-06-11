@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -146,16 +147,23 @@ type SourceInfo struct {
 	AdapterVersion int
 }
 
+// InsertStats reports one file transaction's effect on usage_events.
+type InsertStats struct {
+	Inserted int // new rows (duplicates collapse on the deterministic ID)
+	Replaced int // existing rows updated because their source row changed
+}
+
 // FileTx is one source file's ingest transaction: events arrive in
 // size-bounded batches (bounded memory — rows go to SQLite, not Go
 // slices), and the file commits atomically together with its sources row.
 // Rollback discards everything, so a file that fails mid-read leaves no
 // partial events behind.
 type FileTx struct {
-	tx       *sql.Tx
-	stmt     *sql.Stmt
-	inserted int
-	done     bool
+	tx    *sql.Tx
+	ins   *sql.Stmt
+	upd   *sql.Stmt
+	stats InsertStats
+	done  bool
 }
 
 // BeginFile opens the transaction for one source file's events.
@@ -164,22 +172,52 @@ func (s *Store) BeginFile(ctx context.Context) (*FileTx, error) {
 	if err != nil {
 		return nil, err
 	}
-	stmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO usage_events
+	ins, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO usage_events
 		(id, ts, machine, source_kind, harness, provider, model, model_family,
 		 project, session_id, request_id,
 		 tokens_input, tokens_output, tokens_cache_write, tokens_cache_read,
 		 tokens_reasoning, accuracy, meta, raw, adapter_version)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+		VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return nil, err
 	}
-	return &FileTx{tx: tx, stmt: stmt}, nil
+	// Replacement path: some stores mutate rows in place (OpenCode updates
+	// a message row while the turn is in flight), so an event ID can come
+	// back with a different payload. The DB mirrors the latest source read:
+	// on conflict, update iff the payload differs (NULL-safe IS NOT).
+	// adapter_version is provenance, not payload — it is stamped when a
+	// replacement happens but never triggers one by itself. Replacements
+	// are counted and logged, never silent (PRD AS-4).
+	upd, err := tx.PrepareContext(ctx, `UPDATE usage_events SET
+		ts=?2, machine=?3, source_kind=?4, harness=?5, provider=?6, model=?7,
+		model_family=?8, project=?9, session_id=?10, request_id=?11,
+		tokens_input=?12, tokens_output=?13, tokens_cache_write=?14,
+		tokens_cache_read=?15, tokens_reasoning=?16, accuracy=?17, meta=?18,
+		raw=?19, adapter_version=?20
+		WHERE id=?1 AND (
+			ts IS NOT ?2 OR machine IS NOT ?3 OR source_kind IS NOT ?4 OR
+			harness IS NOT ?5 OR provider IS NOT ?6 OR model IS NOT ?7 OR
+			model_family IS NOT ?8 OR project IS NOT ?9 OR
+			session_id IS NOT ?10 OR request_id IS NOT ?11 OR
+			tokens_input IS NOT ?12 OR tokens_output IS NOT ?13 OR
+			tokens_cache_write IS NOT ?14 OR tokens_cache_read IS NOT ?15 OR
+			tokens_reasoning IS NOT ?16 OR accuracy IS NOT ?17 OR
+			meta IS NOT ?18 OR raw IS NOT ?19
+		)`)
+	if err != nil {
+		_ = ins.Close()
+		_ = tx.Rollback()
+		return nil, err
+	}
+	return &FileTx{tx: tx, ins: ins, upd: upd}, nil
 }
 
 // InsertEvents validates and inserts one batch into the open transaction.
-// INSERT OR IGNORE on the primary key makes re-ingest idempotent. An error
-// leaves the transaction unusable; the caller must Rollback.
+// The deterministic ID is the primary key: a duplicate with an identical
+// payload is a no-op (idempotent re-ingest); a duplicate whose payload
+// differs replaces the stored row to mirror the source (see BeginFile).
+// An error leaves the transaction unusable; the caller must Rollback.
 func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, adapterVersion int) error {
 	for i := range events {
 		e := &events[i]
@@ -198,13 +236,15 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, adapterV
 		if len(e.Raw) > 0 {
 			raw = string(e.Raw)
 		}
-		res, err := f.stmt.ExecContext(ctx,
+		args := []any{
 			e.ID, e.TS.UTC().Format(time.RFC3339Nano), e.Machine, e.SourceKind,
 			nullStr(e.Harness), e.Provider, e.Model, e.ModelFamily,
 			nullStr(e.Project), nullStr(e.SessionID), nullStr(e.RequestID),
 			e.TokensInput, e.TokensOutput, e.TokensCacheWrite, e.TokensCacheRead,
 			e.TokensReasoning, string(e.Accuracy), meta, raw,
-			nullVersion(adapterVersion))
+			nullVersion(adapterVersion),
+		}
+		res, err := f.ins.ExecContext(ctx, args...)
 		if err != nil {
 			return fmt.Errorf("insert %s: %w", e.ID, err)
 		}
@@ -212,24 +252,39 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, adapterV
 		if err != nil {
 			return err
 		}
-		f.inserted += int(n)
+		if n == 1 {
+			f.stats.Inserted++
+			continue
+		}
+		res, err = f.upd.ExecContext(ctx, args...)
+		if err != nil {
+			return fmt.Errorf("replace %s: %w", e.ID, err)
+		}
+		if n, err = res.RowsAffected(); err != nil {
+			return err
+		}
+		if n == 1 {
+			f.stats.Replaced++
+			slog.Info("replaced stored event: source row changed since last ingest",
+				"id", e.ID, "harness", e.Harness, "ts", e.TS.UTC())
+		}
 	}
 	return nil
 }
 
 // Commit writes the file's sources row and commits the transaction,
-// returning the number of newly inserted (non-duplicate) events.
-func (f *FileTx) Commit(ctx context.Context, src SourceInfo) (int, error) {
+// returning the insert/replace counts.
+func (f *FileTx) Commit(ctx context.Context, src SourceInfo) (InsertStats, error) {
 	f.done = true
-	_ = f.stmt.Close()
+	f.closeStmts()
 	if err := recordSource(ctx, f.tx, src); err != nil {
 		_ = f.tx.Rollback()
-		return 0, err
+		return InsertStats{}, err
 	}
 	if err := f.tx.Commit(); err != nil {
-		return 0, err
+		return InsertStats{}, err
 	}
-	return f.inserted, nil
+	return f.stats, nil
 }
 
 // Rollback discards the file's events (skipped source / cancelled run).
@@ -238,8 +293,13 @@ func (f *FileTx) Rollback() error {
 		return nil
 	}
 	f.done = true
-	_ = f.stmt.Close()
+	f.closeStmts()
 	return f.tx.Rollback()
+}
+
+func (f *FileTx) closeStmts() {
+	_ = f.ins.Close()
+	_ = f.upd.Close()
 }
 
 type execer interface {
@@ -274,15 +334,14 @@ func (s *Store) RecordSource(ctx context.Context, src SourceInfo) error {
 
 // InsertBatch writes one file's events and its sources row in a single
 // transaction (convenience wrapper over BeginFile/InsertEvents/Commit).
-// Returns the number of newly inserted (non-duplicate) events.
-func (s *Store) InsertBatch(ctx context.Context, events []core.Event, src SourceInfo) (int, error) {
+func (s *Store) InsertBatch(ctx context.Context, events []core.Event, src SourceInfo) (InsertStats, error) {
 	f, err := s.BeginFile(ctx)
 	if err != nil {
-		return 0, err
+		return InsertStats{}, err
 	}
 	if err := f.InsertEvents(ctx, events, src.AdapterVersion); err != nil {
 		_ = f.Rollback()
-		return 0, fmt.Errorf("%s: %w", src.Path, err)
+		return InsertStats{}, fmt.Errorf("%s: %w", src.Path, err)
 	}
 	return f.Commit(ctx, src)
 }

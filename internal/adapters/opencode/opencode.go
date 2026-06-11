@@ -26,6 +26,18 @@
 // key. Event IDs hash (harness, message id, session id): both native,
 // stable and unique per message, so re-ingest is idempotent and distinct
 // messages never collapse.
+//
+// Message rows are MUTABLE while a turn is in flight: OpenCode rewrites
+// the row's data blob until the message finishes, marked by
+// data.time.completed appearing (verified empirically on the live store,
+// 2026-06-11: every assistant row without time.completed carries zero
+// tokens, and no row changes after time.completed — see
+// docs/format-notes.md "Message rows are mutable"). A snapshot taken
+// mid-turn could therefore hand us a partial row; it is still emitted
+// when its tokens are nonzero (ccusage counts it at the same snapshot —
+// parity), and the store's replacement semantics update the stored event
+// when a later ingest reads the finalized row (same event ID, changed
+// payload; replacements are counted and logged, never silent).
 package opencode
 
 import (

@@ -7,6 +7,7 @@ package opencode
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -262,8 +263,9 @@ func TestReingestIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if again := ingest(); again.Inserted != 0 {
-		t.Fatalf("re-ingest inserted %d new rows, want 0", again.Inserted)
+	if again := ingest(); again.Inserted != 0 || again.Replaced != 0 {
+		t.Fatalf("re-ingest inserted %d / replaced %d rows, want 0/0",
+			again.Inserted, again.Replaced)
 	}
 	daily2, err := s.Daily(ctx, time.UTC, "")
 	if err != nil {
@@ -278,6 +280,164 @@ func TestReingestIdempotent(t *testing.T) {
 	}
 	if total != wantUnique {
 		t.Fatalf("row count %d after re-ingest, want %d", total, wantUnique)
+	}
+}
+
+// M2.1 review item 1 (owner-directed test): OpenCode message rows are
+// mutable while a turn is in flight, so a row ingested mid-turn must be
+// superseded when a later ingest reads its finalized form. The
+// "in-flight" variant is derived from one real fixture row by removing
+// data.time.completed and shrinking tokens.output — the documented
+// mid-turn state a live snapshot could capture (docs/format-notes.md
+// "Message rows are mutable"); no log lines are fabricated from scratch.
+func TestMutatedRowSupersededOnReingest(t *testing.T) {
+	ctx := context.Background()
+
+	// Reference truth: the pristine fixture set in its own store.
+	ref, err := store.Open(filepath.Join(t.TempDir(), "ref.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ref.Close() }()
+	if _, err := adapters.IngestBackfill(ctx, ref, Adapter{},
+		[]adapters.Source{fixtureSource(t)}); err != nil {
+		t.Fatal(err)
+	}
+	wantDaily, err := ref.Daily(ctx, time.UTC, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rewrite one fixture row into its in-flight form. Victim: first row in
+	// backfill order that is billable, completed, and has output >= 2 (so
+	// the halved partial value stays a nonzero integer and still emits).
+	src := fixtureSource(t)
+	dbPath := filepath.Join(src.Root, "opencode.db")
+	db, err := sql.Open("sqlite", "file:"+dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, time_created, time_updated, data FROM message ORDER BY time_created, id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var victimID, origData string
+	var victimCreated, origUpdated int64
+	for rows.Next() {
+		var id, data string
+		var tc, tu int64
+		if err := rows.Scan(&id, &tc, &tu, &data); err != nil {
+			t.Fatal(err)
+		}
+		var d map[string]any
+		if err := json.Unmarshal([]byte(data), &d); err != nil {
+			t.Fatal(err)
+		}
+		tok, _ := d["tokens"].(map[string]any)
+		tm, _ := d["time"].(map[string]any)
+		if d["role"] != "assistant" || tok == nil || tm == nil {
+			continue
+		}
+		if _, completed := tm["completed"]; !completed {
+			continue
+		}
+		if out, _ := tok["output"].(float64); out >= 2 {
+			victimID, victimCreated, origUpdated, origData = id, tc, tu, data
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	_ = rows.Close()
+	if victimID == "" {
+		t.Fatal("no completed billable fixture row with output >= 2")
+	}
+
+	var partial map[string]any
+	if err := json.Unmarshal([]byte(origData), &partial); err != nil {
+		t.Fatal(err)
+	}
+	delete(partial["time"].(map[string]any), "completed")
+	tok := partial["tokens"].(map[string]any)
+	tok["output"] = int64(tok["output"].(float64)) / 2
+	partialJSON, err := json.Marshal(partial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE message SET data = ?, time_updated = ? WHERE id = ?`,
+		string(partialJSON), victimCreated, victimID); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ingest := func() adapters.IngestSummary {
+		t.Helper()
+		sum, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src})
+		if err != nil {
+			t.Fatalf("ingest: %v", err)
+		}
+		if sum.ParseErrors != 0 {
+			t.Fatalf("parse errors: %d", sum.ParseErrors)
+		}
+		return sum
+	}
+
+	// Ingest the snapshot holding the in-flight row: still a full event set
+	// (nonzero partial rows are billable — ccusage counts them at the same
+	// snapshot), but the day sums diverge from the finalized truth.
+	first := ingest()
+	if first.Inserted != wantUnique || first.Replaced != 0 {
+		t.Fatalf("first ingest: %d inserted / %d replaced, want %d/0",
+			first.Inserted, first.Replaced, wantUnique)
+	}
+	partialDaily, err := s.Daily(ctx, time.UTC, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reflect.DeepEqual(partialDaily, wantDaily) {
+		t.Fatal("partial row did not change the day sums — mutation ineffective")
+	}
+
+	// The turn finishes: restore the finalized row and re-ingest. The
+	// stored event must be replaced (same ID, new payload), not frozen.
+	if _, err := db.ExecContext(ctx,
+		`UPDATE message SET data = ?, time_updated = ? WHERE id = ?`,
+		origData, origUpdated, victimID); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	second := ingest()
+	if second.Inserted != 0 || second.Replaced != 1 {
+		t.Fatalf("re-ingest after finalize: %d inserted / %d replaced, want 0/1",
+			second.Inserted, second.Replaced)
+	}
+	gotDaily, err := s.Daily(ctx, time.UTC, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotDaily, wantDaily) {
+		t.Fatal("finalized row did not supersede the partial one")
+	}
+	total, err := s.CountEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != wantUnique {
+		t.Fatalf("row count %d after replacement, want %d", total, wantUnique)
+	}
+
+	// And the corrected state is stable: another ingest is a no-op.
+	if third := ingest(); third.Inserted != 0 || third.Replaced != 0 {
+		t.Fatalf("third ingest: %d inserted / %d replaced, want 0/0",
+			third.Inserted, third.Replaced)
 	}
 }
 

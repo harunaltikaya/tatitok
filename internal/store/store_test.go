@@ -55,20 +55,20 @@ func TestInsertBatchIdempotent(t *testing.T) {
 		event("m2", "r2", "model-a", "s1", ts.Add(time.Minute), TokenSums{Input: 1, Output: 2}),
 	}
 
-	n, err := s.InsertBatch(ctx, batch, testSource(2))
+	stats, err := s.InsertBatch(ctx, batch, testSource(2))
 	if err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
-	if n != 2 {
-		t.Fatalf("first insert: got %d new rows, want 2", n)
+	if stats.Inserted != 2 || stats.Replaced != 0 {
+		t.Fatalf("first insert: got %+v, want 2 inserted, 0 replaced", stats)
 	}
 
-	n, err = s.InsertBatch(ctx, batch, testSource(2))
+	stats, err = s.InsertBatch(ctx, batch, testSource(2))
 	if err != nil {
 		t.Fatalf("re-insert: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("re-insert: got %d new rows, want 0", n)
+	if stats.Inserted != 0 || stats.Replaced != 0 {
+		t.Fatalf("re-insert: got %+v, want 0 inserted, 0 replaced", stats)
 	}
 
 	total, err := s.CountEvents(ctx)
@@ -77,6 +77,61 @@ func TestInsertBatchIdempotent(t *testing.T) {
 	}
 	if total != 2 {
 		t.Fatalf("count after re-ingest: got %d, want 2", total)
+	}
+}
+
+// Mutable-store semantics: re-ingesting an event whose deterministic ID
+// already exists but whose payload changed (OpenCode finalizing an
+// in-flight message row) replaces the stored row to mirror the source;
+// an identical payload stays a no-op, and a provenance-only difference
+// (adapter_version) never triggers a replacement.
+func TestInsertBatchReplacesChangedPayload(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	partial := event("m1", "r1", "model-a", "s1", ts, TokenSums{Input: 10, Output: 3})
+
+	src := testSource(1)
+	src.AdapterVersion = 1
+	if stats, err := s.InsertBatch(ctx, []core.Event{partial}, src); err != nil || stats.Inserted != 1 {
+		t.Fatalf("first insert: %+v, %v", stats, err)
+	}
+
+	// Same deterministic ID, finalized token counts.
+	final := event("m1", "r1", "model-a", "s1", ts, TokenSums{Input: 10, Output: 42})
+	stats, err := s.InsertBatch(ctx, []core.Event{final}, src)
+	if err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if stats.Inserted != 0 || stats.Replaced != 1 {
+		t.Fatalf("replace: got %+v, want 0 inserted, 1 replaced", stats)
+	}
+	days, err := s.Daily(ctx, time.UTC, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(days) != 1 || days[0].Output != 42 {
+		t.Fatalf("stored payload not replaced: %+v", days)
+	}
+	total, err := s.CountEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("replacement duplicated the row: %d", total)
+	}
+
+	// Identical payload re-ingested → idempotent no-op.
+	if stats, err = s.InsertBatch(ctx, []core.Event{final}, src); err != nil ||
+		stats.Inserted != 0 || stats.Replaced != 0 {
+		t.Fatalf("identical re-ingest: %+v, %v", stats, err)
+	}
+
+	// adapter_version alone is provenance, never a payload change.
+	src.AdapterVersion = 2
+	if stats, err = s.InsertBatch(ctx, []core.Event{final}, src); err != nil ||
+		stats.Inserted != 0 || stats.Replaced != 0 {
+		t.Fatalf("provenance-only re-ingest: %+v, %v", stats, err)
 	}
 }
 
