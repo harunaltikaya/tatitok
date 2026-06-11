@@ -53,11 +53,11 @@ func printSessionTable(rows []store.SessionRow) {
 		fmt.Println("no events ingested yet — run: tatitok ingest --backfill")
 		return
 	}
-	fmt.Printf("%-38s %-12s %12s %12s %14s %14s  %s\n",
-		"SESSION", "LAST", "INPUT", "OUTPUT", "CACHE WRITE", "CACHE READ", "PROJECT")
+	fmt.Printf("%-12s %-38s %-12s %12s %12s %14s %14s  %s\n",
+		"HARNESS", "SESSION", "LAST", "INPUT", "OUTPUT", "CACHE WRITE", "CACHE READ", "PROJECT")
 	for _, r := range rows {
-		fmt.Printf("%-38s %-12s %12s %12s %14s %14s  %s\n",
-			r.SessionID, r.LastActivity, formatTokens(r.Input),
+		fmt.Printf("%-12s %-38s %-12s %12s %12s %14s %14s  %s\n",
+			r.Harness, r.SessionID, r.LastActivity, formatTokens(r.Input),
 			formatTokens(r.Output), formatTokens(r.CacheWrite),
 			formatTokens(r.CacheRead), r.Project)
 	}

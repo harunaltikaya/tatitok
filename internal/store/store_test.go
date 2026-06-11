@@ -23,13 +23,13 @@ func openTemp(t *testing.T) *Store {
 	return s
 }
 
-func event(msgID, reqID, model, session string, ts time.Time, sums TokenSums) core.Event {
+func eventH(harness, msgID, reqID, model, session string, ts time.Time, sums TokenSums) core.Event {
 	return core.Event{
-		ID:          core.EventID("claude-code", msgID, reqID),
+		ID:          core.EventID(harness, msgID, reqID),
 		TS:          ts.UTC(),
 		Machine:     "test",
 		SourceKind:  core.SourceKindHarnessLog,
-		Harness:     "claude-code",
+		Harness:     harness,
 		Provider:    "anthropic",
 		Model:       model,
 		ModelFamily: model,
@@ -39,6 +39,10 @@ func event(msgID, reqID, model, session string, ts time.Time, sums TokenSums) co
 		TokensCacheWrite: sums.CacheWrite, TokensCacheRead: sums.CacheRead,
 		Accuracy: core.AccuracyExact,
 	}
+}
+
+func event(msgID, reqID, model, session string, ts time.Time, sums TokenSums) core.Event {
+	return eventH("claude-code", msgID, reqID, model, session, ts, sums)
 }
 
 func testSource(n int) SourceInfo {
@@ -233,8 +237,66 @@ func TestSessions(t *testing.T) {
 	if sessions[0].SessionID != "s1" || sessions[0].Input != 1 || sessions[0].Output != 2 {
 		t.Errorf("s1 wrong: %+v", sessions[0])
 	}
+	if sessions[0].Harness != "claude-code" {
+		t.Errorf("s1 harness wrong: %+v", sessions[0])
+	}
 	if len(sessions[0].ModelsUsed) != 2 {
 		t.Errorf("s1 models wrong: %+v", sessions[0].ModelsUsed)
+	}
+}
+
+// Session identity is (harness, session_id): native ids can collide
+// across harnesses, and the empty session id is common to several — they
+// must never merge into one row (M2.1 review item 3; machine joins the
+// key with the M3 schema).
+func TestSessionsCrossHarnessCollision(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	batch := []core.Event{
+		// same session id under two harnesses
+		eventH("claude-code", "m1", "r1", "model-a", "shared", ts, TokenSums{Input: 1}),
+		eventH("codex", "m2", "r2", "model-b", "shared", ts.Add(time.Minute), TokenSums{Output: 2}),
+		// empty session id under two harnesses
+		eventH("claude-code", "m3", "r3", "model-a", "", ts.Add(2*time.Minute), TokenSums{CacheWrite: 3}),
+		eventH("opencode", "m4", "r4", "model-c", "", ts.Add(3*time.Minute), TokenSums{CacheRead: 4}),
+	}
+	if _, err := s.InsertBatch(ctx, batch, testSource(4)); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := s.Sessions(ctx, time.UTC, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 4 {
+		t.Fatalf("got %d sessions, want 4 (cross-harness ids must not merge): %+v",
+			len(sessions), sessions)
+	}
+	bySession := map[sessionKey]SessionRow{}
+	for _, r := range sessions {
+		bySession[sessionKey{r.Harness, r.SessionID}] = r
+	}
+	if r := bySession[sessionKey{"claude-code", "shared"}]; r.Input != 1 || r.Output != 0 {
+		t.Errorf("claude-code/shared absorbed foreign tokens: %+v", r)
+	}
+	if r := bySession[sessionKey{"codex", "shared"}]; r.Output != 2 || r.Input != 0 {
+		t.Errorf("codex/shared absorbed foreign tokens: %+v", r)
+	}
+	if r := bySession[sessionKey{"claude-code", ""}]; r.CacheWrite != 3 || r.CacheRead != 0 {
+		t.Errorf("claude-code/<empty> absorbed foreign tokens: %+v", r)
+	}
+	if r := bySession[sessionKey{"opencode", ""}]; r.CacheRead != 4 || r.CacheWrite != 0 {
+		t.Errorf("opencode/<empty> absorbed foreign tokens: %+v", r)
+	}
+
+	// --harness restriction still keys correctly
+	only, err := s.Sessions(ctx, time.UTC, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(only) != 1 || only[0].Harness != "codex" || only[0].Output != 2 {
+		t.Fatalf("harness-restricted sessions wrong: %+v", only)
 	}
 }
 
