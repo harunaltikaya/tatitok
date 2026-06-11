@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"github.com/harunaltikaya/tatitok/internal/pricing"
@@ -62,8 +63,44 @@ type Hub struct {
 	srv *http.Server
 	w   *watcher // nil when no watch targets
 
+	// health facts, fixed at Start (M4 Task 2).
+	version  string
+	snapshot string // pinned price snapshot id
+	dbHash   string // sha256 of the absolute DB path — never the path
+	started  time.Time
+
 	done     chan struct{} // closed when the serve loop returns
 	serveErr error         // read only after done is closed
+}
+
+// buildVersion: the module version when stamped, else the VCS revision
+// (dev builds), else "dev".
+func buildVersion() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	if v := bi.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	rev, dirty := "", ""
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			if s.Value == "true" {
+				dirty = "-dirty"
+			}
+		}
+	}
+	if rev != "" {
+		if len(rev) > 12 {
+			rev = rev[:12]
+		}
+		return rev + dirty
+	}
+	return "dev"
 }
 
 // Start opens the store, binds the listener and begins serving. It
@@ -90,19 +127,30 @@ func Start(cfg Config) (*Hub, error) {
 		return nil, err
 	}
 
+	snapshot, err := pricing.SnapshotVersion()
+	if err != nil {
+		_ = ln.Close()
+		_ = st.Close()
+		return nil, err
+	}
+
+	h := &Hub{
+		cfg:      cfg,
+		st:       st,
+		ln:       ln,
+		version:  buildVersion(),
+		snapshot: snapshot,
+		dbHash:   dbPathHash(cfg.DBPath),
+		started:  time.Now(),
+		done:     make(chan struct{}),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = fmt.Fprintln(w, "tatitok hub running — API and dashboard arrive in later M4 tasks")
+		_, _ = fmt.Fprintln(w, "tatitok hub running — API at /api/v1, dashboard arrives in M4 Task 4")
 	})
-
-	h := &Hub{
-		cfg:  cfg,
-		st:   st,
-		ln:   ln,
-		srv:  &http.Server{Handler: mux},
-		done: make(chan struct{}),
-	}
+	h.registerAPI(mux)
+	h.srv = &http.Server{Handler: mux}
 	go func() {
 		err := h.srv.Serve(h.ln)
 		if !errors.Is(err, http.ErrServerClosed) {

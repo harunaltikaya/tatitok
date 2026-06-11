@@ -442,6 +442,41 @@ func (s *Store) Provenance(ctx context.Context) ([]ProvenanceRow, error) {
 	return out, rows.Err()
 }
 
+// ModelInfo is one row of the model inventory (M4 Task 2,
+// /api/v1/meta/models — dashboard legends): the distinct
+// (provider, model, family, basis) combinations actually stored, with
+// event counts. Basis 'unknown' covers NULL (pre-pricing rows).
+type ModelInfo struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Family   string `json:"modelFamily"`
+	Basis    string `json:"costBasis"`
+	Events   int64  `json:"events"`
+}
+
+// ModelInventory lists every stored (provider, model, family, basis)
+// combination, ordered for stable output.
+func (s *Store) ModelInventory(ctx context.Context) ([]ModelInfo, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT provider, model, model_family,
+			COALESCE(cost_basis, 'unknown'), COUNT(*)
+		FROM usage_events
+		GROUP BY provider, model, model_family, COALESCE(cost_basis, 'unknown')
+		ORDER BY provider, model, model_family, 4`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ModelInfo
+	for rows.Next() {
+		var m ModelInfo
+		if err := rows.Scan(&m.Provider, &m.Model, &m.Family, &m.Basis, &m.Events); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // SourceState is the (mtime, size) recorded for one source file at its
 // last ingest — the watcher's catch-up baseline (M4 Task 1): at serve
 // start, files whose stat still matches are not re-read.
