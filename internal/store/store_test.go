@@ -129,7 +129,7 @@ func TestDailyTimezoneBucketing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	days, err := s.Daily(ctx, ist)
+	days, err := s.Daily(ctx, ist, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestDailyTimezoneBucketing(t *testing.T) {
 	}
 
 	// Same data in UTC buckets differently.
-	utcDays, err := s.Daily(ctx, time.UTC)
+	utcDays, err := s.Daily(ctx, time.UTC, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestSessions(t *testing.T) {
 	if _, err := s.InsertBatch(ctx, batch, testSource(3)); err != nil {
 		t.Fatal(err)
 	}
-	sessions, err := s.Sessions(ctx, time.UTC)
+	sessions, err := s.Sessions(ctx, time.UTC, "")
 	if err != nil {
 		t.Fatal(err)
 	}

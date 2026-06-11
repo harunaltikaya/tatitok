@@ -25,12 +25,15 @@ const usageText = `tatitok — local-first AI token usage tracker
 
 Usage:
   tatitok ingest --backfill [--db PATH] [--source claude-code|codex|opencode]
-  tatitok stats  --daily|--session [--json] [--db PATH] [--timezone TZ]
+  tatitok stats  --daily|--session [--json] [--db PATH] [--timezone TZ] [--harness NAME]
   tatitok doctor --scan-content [--db PATH] [LITERAL...]
   tatitok doctor --provenance [--db PATH] [--json]
 
-stats buckets days in the local timezone by default (ccusage's rule);
-pass --timezone for like-for-like comparisons across machines.
+ingest with no --source runs every detected adapter and reports per
+source. stats buckets days in the local timezone by default (ccusage's
+rule); pass --timezone for like-for-like comparisons across machines;
+--harness restricts the report, and daily JSON output carries a
+per-harness breakdown.
 doctor --scan-content re-checks every stored record against the
 sanitizer invariants; extra LITERAL arguments are also grepped for and
 must not appear anywhere in stored raw/meta.
@@ -106,18 +109,18 @@ func openStore(path string) (*store.Store, error) {
 	return store.Open(path)
 }
 
-// registry of available adapters.
+// allAdapters is the registry; ingest with no --source runs every one.
+var allAdapters = []adapters.Adapter{
+	claudecode.Adapter{}, codex.Adapter{}, opencode.Adapter{},
+}
+
 func adapterFor(name string) (adapters.Adapter, error) {
-	switch name {
-	case "claude-code":
-		return claudecode.Adapter{}, nil
-	case "codex":
-		return codex.Adapter{}, nil
-	case "opencode":
-		return opencode.Adapter{}, nil
-	default:
-		return nil, fmt.Errorf("unknown --source %q (supported: claude-code, codex, opencode)", name)
+	for _, a := range allAdapters {
+		if a.Name() == name {
+			return a, nil
+		}
 	}
+	return nil, fmt.Errorf("unknown --source %q (supported: claude-code, codex, opencode)", name)
 }
 
 func realProbe() adapters.Probe {
@@ -133,46 +136,69 @@ func cmdIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	backfill := fs.Bool("backfill", false, "ingest full history from detected log roots")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
-	source := fs.String("source", "claude-code", "adapter to ingest from")
+	source := fs.String("source", "", "adapter to ingest from (default: every detected adapter)")
 	_ = fs.Parse(args)
 	if !*backfill {
 		return fmt.Errorf("ingest currently requires --backfill (live tail is a later milestone)")
 	}
 
-	a, err := adapterFor(*source)
-	if err != nil {
-		return err
+	// No --source: run every registered adapter over whatever it detects;
+	// adapters with nothing to ingest are reported, not errors.
+	selected := allAdapters
+	if *source != "" {
+		a, err := adapterFor(*source)
+		if err != nil {
+			return err
+		}
+		selected = []adapters.Adapter{a}
 	}
-	srcs, err := a.Detect(realProbe())
-	if err != nil {
-		return err
-	}
-	if len(srcs) == 0 {
-		return fmt.Errorf("no %s log roots found (set CLAUDE_CONFIG_DIR to override)", a.Name())
-	}
+
 	st, err := openStore(*dbPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = st.Close() }()
 
-	for _, s := range srcs {
-		slog.Info("ingesting", "adapter", a.Name(), "root", s.Root)
+	probe := realProbe()
+	ctx := context.Background()
+	ingested, skippedTotal := 0, 0
+	for _, a := range selected {
+		srcs, err := a.Detect(probe)
+		if err != nil {
+			return err
+		}
+		if len(srcs) == 0 {
+			if *source != "" {
+				return fmt.Errorf("no %s log roots found", a.Name())
+			}
+			fmt.Printf("%-12s no log roots detected — skipped\n", a.Name()+":")
+			continue
+		}
+		for _, s := range srcs {
+			slog.Info("ingesting", "adapter", a.Name(), "root", s.Root)
+		}
+		sum, err := adapters.IngestBackfill(ctx, st, a, srcs)
+		if err != nil {
+			return fmt.Errorf("%s: %w", a.Name(), err)
+		}
+		ingested++
+		fmt.Printf("%-12s ingested %d files (%d lines): %d events emitted, %d new rows, %d parse errors\n",
+			a.Name()+":", sum.Files, sum.Lines, sum.Emitted, sum.Inserted, sum.ParseErrors)
+		if sum.Skipped > 0 {
+			fmt.Printf("%-12s WARNING: %d sources skipped (unreadable) — totals are incomplete\n",
+				a.Name()+":", sum.Skipped)
+			skippedTotal += sum.Skipped
+		}
 	}
-	sum, err := adapters.IngestBackfill(context.Background(), st, a, srcs)
-	if err != nil {
-		return err
+	if ingested == 0 {
+		return fmt.Errorf("no log roots found for any adapter (claude-code, codex, opencode)")
 	}
-	fmt.Printf("ingested %d files (%d lines): %d events emitted, %d new rows, %d parse errors\n",
-		sum.Files, sum.Lines, sum.Emitted, sum.Inserted, sum.ParseErrors)
-	if sum.Skipped > 0 {
+	if skippedTotal > 0 {
 		// Distinct from parse errors and from exit 0: the run finished,
 		// but unreadable sources mean the DB is missing history (they are
 		// recorded in the sources table with their read error).
-		fmt.Printf("WARNING: %d sources skipped (unreadable) — totals are incomplete\n",
-			sum.Skipped)
 		return exitError{code: 3, msg: fmt.Sprintf(
-			"ingest complete with %d skipped sources (see warnings above)", sum.Skipped)}
+			"ingest complete with %d skipped sources (see warnings above)", skippedTotal)}
 	}
 	return nil
 }
@@ -184,6 +210,7 @@ func cmdStats(args []string) error {
 	asJSON := fs.Bool("json", false, "JSON output")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	tzName := fs.String("timezone", "local", "IANA timezone for day bucketing")
+	harness := fs.String("harness", "", "restrict to one harness (claude-code, codex, opencode)")
 	_ = fs.Parse(args)
 	if *daily == *session {
 		return fmt.Errorf("pass exactly one of --daily or --session")
@@ -204,7 +231,7 @@ func cmdStats(args []string) error {
 
 	ctx := context.Background()
 	if *daily {
-		rows, err := st.Daily(ctx, tz)
+		rows, err := st.Daily(ctx, tz, *harness)
 		if err != nil {
 			return err
 		}
@@ -214,7 +241,7 @@ func cmdStats(args []string) error {
 		printDailyTable(rows)
 		return nil
 	}
-	rows, err := st.Sessions(ctx, tz)
+	rows, err := st.Sessions(ctx, tz, *harness)
 	if err != nil {
 		return err
 	}

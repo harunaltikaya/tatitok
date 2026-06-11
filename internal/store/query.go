@@ -76,14 +76,22 @@ type ModelSums struct {
 	TokenSums
 }
 
+// HarnessSums is a per-harness breakdown within a day (M2 Task 5: one DB
+// holds claude-code, codex and opencode side by side).
+type HarnessSums struct {
+	Harness string `json:"harness"`
+	TokenSums
+}
+
 // DailyRow is one local-time day. Date is YYYY-MM-DD in the query
 // timezone — ccusage buckets days in local time, so parity comparisons
 // must use the timezone recorded in expected/META.json.
 type DailyRow struct {
 	Date string `json:"date"`
 	TokenSums
-	ModelsUsed      []string    `json:"modelsUsed"`
-	ModelBreakdowns []ModelSums `json:"modelBreakdowns"`
+	ModelsUsed        []string      `json:"modelsUsed"`
+	ModelBreakdowns   []ModelSums   `json:"modelBreakdowns"`
+	HarnessBreakdowns []HarnessSums `json:"harnessBreakdowns"`
 }
 
 // SessionRow is one harness session.
@@ -95,51 +103,88 @@ type SessionRow struct {
 	LastActivity string   `json:"lastActivity"` // YYYY-MM-DD in query tz
 }
 
-// Daily returns per-day token sums bucketed in tz, oldest day first.
-// Aggregation runs in SQL: one GROUP BY (day, model) pass with the
-// timezone rule applied via tatitok_day; Go only assembles the per-day
-// rows from the (few) model rows. tz must be resolvable by its name
-// (IANA, "UTC" or "Local").
-func (s *Store) Daily(ctx context.Context, tz *time.Location) ([]DailyRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT tatitok_day(ts, ?1) AS day, model,
+// Daily returns per-day token sums bucketed in tz, oldest day first,
+// with per-model and per-harness breakdowns. A non-empty harness
+// restricts the report to that harness (`stats --harness`). Aggregation
+// runs in SQL: one GROUP BY (day, harness, model) pass with the timezone
+// rule applied via tatitok_day; Go only assembles the per-day rows from
+// the (few) group rows. tz must be resolvable by its name (IANA, "UTC"
+// or "Local").
+func (s *Store) Daily(ctx context.Context, tz *time.Location, harness string) ([]DailyRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT tatitok_day(ts, ?1) AS day,
+			COALESCE(harness, '') AS h, model,
 			SUM(tokens_input), SUM(tokens_output),
 			SUM(tokens_cache_write), SUM(tokens_cache_read)
 		FROM usage_events
-		GROUP BY day, model
-		ORDER BY day, model`, tz.String())
+		WHERE ?2 = '' OR harness = ?2
+		GROUP BY day, h, model
+		ORDER BY day, h, model`, tz.String(), harness)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
 	var out []DailyRow
+	models := map[string]*ModelSums{} // per current day
+	flushModels := func() {
+		if len(out) == 0 {
+			return
+		}
+		d := &out[len(out)-1]
+		names := make([]string, 0, len(models))
+		for name := range models {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			d.ModelBreakdowns = append(d.ModelBreakdowns, *models[name])
+			d.ModelsUsed = append(d.ModelsUsed, name)
+		}
+		models = map[string]*ModelSums{}
+	}
 	for rows.Next() {
-		var day string
-		var m ModelSums
-		if err := rows.Scan(&day, &m.Model,
-			&m.Input, &m.Output, &m.CacheWrite, &m.CacheRead); err != nil {
+		var day, h string
+		var sums TokenSums
+		var model string
+		if err := rows.Scan(&day, &h, &model,
+			&sums.Input, &sums.Output, &sums.CacheWrite, &sums.CacheRead); err != nil {
 			return nil, err
 		}
 		if len(out) == 0 || out[len(out)-1].Date != day {
+			flushModels()
 			out = append(out, DailyRow{Date: day})
 		}
 		d := &out[len(out)-1]
-		d.add(m.TokenSums)
-		d.ModelBreakdowns = append(d.ModelBreakdowns, m)
-		d.ModelsUsed = append(d.ModelsUsed, m.Model)
+		d.add(sums)
+		// rows arrive ordered by harness within the day: extend or append
+		if n := len(d.HarnessBreakdowns); n > 0 && d.HarnessBreakdowns[n-1].Harness == h {
+			d.HarnessBreakdowns[n-1].add(sums)
+		} else {
+			d.HarnessBreakdowns = append(d.HarnessBreakdowns,
+				HarnessSums{Harness: h, TokenSums: sums})
+		}
+		// models merge across harnesses (a model may appear in several)
+		m := models[model]
+		if m == nil {
+			m = &ModelSums{Model: model}
+			models[model] = m
+		}
+		m.add(sums)
 	}
+	flushModels()
 	return out, rows.Err()
 }
 
-// Sessions returns per-session token sums, most recent activity last.
+// Sessions returns per-session token sums, most recent activity last. A
+// non-empty harness restricts the report (`stats --harness`).
 // Aggregation runs in SQL: a GROUP BY (session, model) pass for sums,
 // models and last-activity day (MAX over tatitok_day is sound — day
 // strings are fixed-width, so lexicographic max is chronological max),
 // plus one GROUP BY session pass whose bare project column SQLite takes
 // from the MIN(ts) row (the session's first event, matching the legacy
 // scan order).
-func (s *Store) Sessions(ctx context.Context, tz *time.Location) ([]SessionRow, error) {
-	first, err := s.sessionFirstProjects(ctx)
+func (s *Store) Sessions(ctx context.Context, tz *time.Location, harness string) ([]SessionRow, error) {
+	first, err := s.sessionFirstProjects(ctx, harness)
 	if err != nil {
 		return nil, err
 	}
@@ -148,8 +193,9 @@ func (s *Store) Sessions(ctx context.Context, tz *time.Location) ([]SessionRow, 
 			SUM(tokens_input), SUM(tokens_output),
 			SUM(tokens_cache_write), SUM(tokens_cache_read)
 		FROM usage_events
+		WHERE ?2 = '' OR harness = ?2
 		GROUP BY sid, model
-		ORDER BY sid, model`, tz.String())
+		ORDER BY sid, model`, tz.String(), harness)
 	if err != nil {
 		return nil, err
 	}
@@ -188,10 +234,12 @@ func (s *Store) Sessions(ctx context.Context, tz *time.Location) ([]SessionRow, 
 // sessionFirstProjects maps each session to the project of its earliest
 // event. SQLite's bare-column-with-MIN semantics pin project to the
 // MIN(ts) row.
-func (s *Store) sessionFirstProjects(ctx context.Context) (map[string]string, error) {
+func (s *Store) sessionFirstProjects(ctx context.Context, harness string) (map[string]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(session_id, ''),
 			COALESCE(project, ''), MIN(ts)
-		FROM usage_events GROUP BY 1`)
+		FROM usage_events
+		WHERE ?1 = '' OR harness = ?1
+		GROUP BY 1`, harness)
 	if err != nil {
 		return nil, err
 	}

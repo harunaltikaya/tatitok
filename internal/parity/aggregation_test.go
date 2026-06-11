@@ -28,10 +28,10 @@ func TestSQLAggregationBudget(t *testing.T) {
 		Harness: "claude-code", Root: root, Machine: "gx10",
 	}})
 	start := time.Now()
-	if _, err := s.Daily(context.Background(), time.UTC); err != nil {
+	if _, err := s.Daily(context.Background(), time.UTC, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Sessions(context.Background(), time.UTC); err != nil {
+	if _, err := s.Sessions(context.Background(), time.UTC, ""); err != nil {
 		t.Fatal(err)
 	}
 	if d := time.Since(start); d > 5*time.Second {
