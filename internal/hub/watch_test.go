@@ -324,6 +324,100 @@ func TestWatchOpencodePoll(t *testing.T) {
 	assertConverged(t, h.st, opencode.Adapter{}, src)
 }
 
+// TestWatchRescanCoversDroppedNotify is the Codex M4 finding-3
+// reproduction, kept permanently: an fsnotify watcher that silently
+// delivers nothing (the dropped-buffered-event scenario — here the
+// notifyDisabled test hook, which does NOT flip targets to polling)
+// must not lose changes until restart. The periodic safety-net rescan
+// stats notify targets every rescanTicks-th poll tick and picks the
+// change up within a bounded window.
+func TestWatchRescanCoversDroppedNotify(t *testing.T) {
+	files := fixtureSessionFiles(t)
+	whole := files[0]
+
+	root := t.TempDir()
+	src := adapters.Source{Harness: "claude-code", Root: root, Machine: "gx10"}
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "rescan.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	w := startWatcher(st, nil, []WatchTarget{{Adapter: claudecode.Adapter{}, Source: src}},
+		100*time.Millisecond, 100*time.Millisecond, nil,
+		func(w *watcher) { w.notifyDisabled = true; w.rescanTicks = 2 })
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		w.Stop(ctx)
+	}()
+
+	// Change appears AFTER the startup catch-up scan: only the rescan
+	// can see it (fsnotify is "delivering nothing", polling is off for
+	// notify-mode targets except the rescan).
+	time.Sleep(150 * time.Millisecond)
+	dir := filepath.Join(root, whole.project)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, whole.name), whole.content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, "safety-net rescan to ingest the change fsnotify never delivered", func() bool {
+		n, err := st.CountEvents(context.Background())
+		return err == nil && n > 0
+	})
+	assertConverged(t, st, claudecode.Adapter{}, src)
+}
+
+// TestWatchNotifyBrokenFlipsToPolling: runtime fsnotify failure parity
+// with setup failure (Codex M4 finding 3) — a broken watcher degrades
+// every notify source to polling, and changes keep flowing.
+func TestWatchNotifyBrokenFlipsToPolling(t *testing.T) {
+	files := fixtureSessionFiles(t)
+	whole := files[0]
+
+	root := t.TempDir()
+	src := adapters.Source{Harness: "claude-code", Root: root, Machine: "gx10"}
+	st, err := store.Open(filepath.Join(t.TempDir(), "broken.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	w := startWatcher(st, nil, []WatchTarget{{Adapter: claudecode.Adapter{}, Source: src}},
+		100*time.Millisecond, 100*time.Millisecond, nil,
+		func(w *watcher) { w.notifyDisabled = true; w.rescanTicks = 1 << 30 }) // rescan effectively off
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		w.Stop(ctx)
+	}()
+
+	if w.targets[0].polled.Load() {
+		t.Fatal("notify target polled before any failure")
+	}
+	w.notifyBroken("test: simulated runtime fsnotify failure")
+	if !w.targets[0].polled.Load() {
+		t.Fatal("notifyBroken did not flip the notify target to polling")
+	}
+
+	// With the target on the polling path, a new file must ingest even
+	// though fsnotify delivers nothing and the rescan is disabled.
+	dir := filepath.Join(root, whole.project)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, whole.name), whole.content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "polling fallback to ingest after notify breakage", func() bool {
+		n, err := st.CountEvents(context.Background())
+		return err == nil && n > 0
+	})
+	assertConverged(t, st, claudecode.Adapter{}, src)
+}
+
 // TestWatchDebounceCoalescing: a burst of rapid appends to one file
 // becomes exactly one ingest pass.
 func TestWatchDebounceCoalescing(t *testing.T) {

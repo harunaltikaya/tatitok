@@ -12,6 +12,7 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -35,6 +36,12 @@ const (
 	// DefaultPollInterval drives the polling sources (opencode primary;
 	// fsnotify fallback for the others).
 	DefaultPollInterval = 5 * time.Second
+	// defaultRescanTicks: every Nth poll tick also rescans the NOTIFY
+	// targets — the safety net (Codex M4 finding 3) bounding how long a
+	// change lost to a dropped/overflowed fsnotify event can stay
+	// un-ingested (N × poll interval, ~60s at defaults) instead of
+	// persisting until restart.
+	defaultRescanTicks = 12
 )
 
 // WatchTarget pairs an adapter with one of its detected sources.
@@ -69,6 +76,13 @@ type watcher struct {
 	passes atomic.Int64      // completed ingest passes
 	onPass func(passSummary) // SSE fan-out (M4 Task 3); never blocks
 
+	// rescanTicks: every Nth poll tick rescans notify targets too
+	// (safety net, finding 3). notifyDisabled is a TEST hook simulating
+	// an fsnotify that silently delivers nothing — the exact scenario
+	// the rescan exists for.
+	rescanTicks    int
+	notifyDisabled bool
+
 	cancelLoop context.CancelFunc // stops watching and the debounce loop
 	cancelPass context.CancelFunc // hard-aborts an in-flight pass (Stop timeout)
 	wg         sync.WaitGroup
@@ -78,15 +92,19 @@ type watcher struct {
 // startWatcher wires the goroutines: one fsnotify loop for all notify
 // targets, one poller for polling targets (which also runs the startup
 // catch-up scan for everyone), one debounce/ingest loop.
-func startWatcher(st *store.Store, ov *pricing.Overrides, targets []WatchTarget, debounce, pollEvery time.Duration, onPass func(passSummary)) *watcher {
+func startWatcher(st *store.Store, ov *pricing.Overrides, targets []WatchTarget, debounce, pollEvery time.Duration, onPass func(passSummary), opts ...func(*watcher)) *watcher {
 	loopCtx, cancelLoop := context.WithCancel(context.Background())
 	passCtx, cancelPass := context.WithCancel(context.Background())
 	w := &watcher{
 		st: st, overrides: ov,
 		debounce: debounce, pollEvery: pollEvery,
 		events: make(chan fileEvent, 1024), onPass: onPass,
-		cancelLoop: cancelLoop, cancelPass: cancelPass,
+		rescanTicks: defaultRescanTicks,
+		cancelLoop:  cancelLoop, cancelPass: cancelPass,
 		done: make(chan struct{}),
+	}
+	for _, o := range opts {
+		o(w)
 	}
 	for _, t := range targets {
 		w.targets = append(w.targets, &watchTarget{
@@ -151,6 +169,9 @@ func (w *watcher) emit(ctx context.Context, t *watchTarget, path string) {
 // landed before the watch took effect. Any setup failure flips the
 // target to polling — the automatic fallback the milestone requires.
 func (w *watcher) notifyLoop(ctx context.Context) {
+	if w.notifyDisabled {
+		return // test hook: fsnotify that silently delivers nothing
+	}
 	dirTarget := map[string]*watchTarget{}
 	var notify []*watchTarget
 	for _, t := range w.targets {
@@ -198,12 +219,20 @@ func (w *watcher) notifyLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case err, ok := <-fsw.Errors:
+			// Runtime failure parity with setup failure (Codex M4
+			// finding 3): an fsnotify runtime error (overflow, watcher
+			// breakage) is not attributable to one target and may have
+			// dropped events already — degrade ALL notify sources to
+			// polling rather than to silence.
 			if !ok {
+				w.notifyBroken("fsnotify error channel closed")
 				return
 			}
-			slog.Warn("fsnotify error", "error", err)
+			w.notifyBroken(fmt.Sprintf("fsnotify runtime error: %v", err))
+			return
 		case ev, ok := <-fsw.Events:
 			if !ok {
+				w.notifyBroken("fsnotify event channel closed")
 				return
 			}
 			t := dirTarget[filepath.Dir(ev.Name)]
@@ -233,6 +262,21 @@ func (w *watcher) notifyLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// notifyBroken flips every notify target to polling — setup-failure
+// parity for runtime failures (Codex M4 finding 3): a broken or closed
+// fsnotify watcher must degrade to polling, never to silence.
+func (w *watcher) notifyBroken(reason string) {
+	flipped := 0
+	for _, t := range w.targets {
+		if !t.spec.PollOnly && !t.polled.Load() {
+			t.polled.Store(true)
+			flipped++
+		}
+	}
+	slog.Warn("fsnotify degraded — notify sources fall back to polling",
+		"reason", reason, "flipped", flipped, "interval", w.pollEvery.String())
 }
 
 // scanExisting emits every matching file already under dir (used right
@@ -298,13 +342,21 @@ func (w *watcher) pollLoop(ctx context.Context) {
 
 	tick := time.NewTicker(w.pollEvery)
 	defer tick.Stop()
+	ticks := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			// Safety-net rescan (Codex M4 finding 3): every rescanTicks-th
+			// tick also stats the NOTIFY targets, so a change whose
+			// fsnotify event was dropped (buffer overflow, kernel queue)
+			// is picked up within a bounded window instead of persisting
+			// until restart.
+			ticks++
+			rescan := ticks%w.rescanTicks == 0
 			for _, t := range w.targets {
-				if t.polled.Load() {
+				if t.polled.Load() || rescan {
 					scan(t)
 				}
 			}
