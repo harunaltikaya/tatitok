@@ -253,8 +253,9 @@ func formatMicroUSD(micro int64) string {
 // doctorPricing is the opencode store-and-compare lane (milestone-3
 // Task 2): OUR computed cost vs the source-reported cost, per
 // (provider, model). Deltas are a report, never an auto-correction;
-// out-of-tolerance groups where both sides are priced → exit 1.
-func doctorPricing(ctx context.Context, st *store.Store) error {
+// out-of-tolerance groups where both sides are priced → exit 1, unless
+// the owner recorded the divergence as explained (M4 Task 5).
+func doctorPricing(ctx context.Context, st *store.Store, ov *pricing.Overrides) error {
 	rows, err := st.PricingReconciliation(ctx, pricing.USDToMicro)
 	if err != nil {
 		return err
@@ -265,7 +266,7 @@ func doctorPricing(ctx context.Context, st *store.Store) error {
 	}
 	fmt.Printf("%-22s %-30s %-10s %8s %14s %14s %14s  %s\n",
 		"PROVIDER", "MODEL", "BASIS", "EVENTS", "OURS", "SOURCE", "DELTA", "VERDICT")
-	violations, gaps := 0, 0
+	violations, gaps, explained := 0, 0, 0
 	for _, r := range rows {
 		delta := r.OursMicro - r.SourceMicro
 		verdict := "ok"
@@ -279,13 +280,25 @@ func doctorPricing(ctx context.Context, st *store.Store) error {
 			verdict = fmt.Sprintf("COVERAGE GAP — %d events unpriced (model missing from snapshot/overrides)", r.Unpriced)
 			gaps++
 		case delta > pricingTolerance(r.SourceMicro) || -delta > pricingTolerance(r.SourceMicro):
-			verdict = "OUT OF TOLERANCE (>1% and >$0.001)"
-			violations++
+			// M4 Task 5 (the dead-check ruling, gpt-5-nano precedent): a
+			// divergence the owner investigated and ruled expected reports
+			// with its written reason at exit 0 — a permanently failing
+			// check is a dead check. Anything unexplained still fails.
+			if reason, ok := ov.ExplainedDivergence(r.Provider, r.Model); ok {
+				verdict = "EXPLAINED DIVERGENCE — " + reason
+				explained++
+			} else {
+				verdict = "OUT OF TOLERANCE (>1% and >$0.001)"
+				violations++
+			}
 		}
 		fmt.Printf("%-22s %-30s %-10s %8s %14s %14s %14s  %s\n",
 			r.Provider, r.Model, r.Basis, formatTokens(r.Events),
 			formatMicroUSD(r.OursMicro), formatMicroUSD(r.SourceMicro),
 			formatMicroUSD(delta), verdict)
+	}
+	if explained > 0 {
+		fmt.Printf("\n%d explained divergence(s) reported informationally (prices.json explained_divergences) — stored costs untouched; remove the entry to re-arm the check\n", explained)
 	}
 	if gaps > 0 {
 		fmt.Printf("\n%d coverage gap(s): the source priced models our snapshot cannot — add override-file entries or refresh the snapshot, then run: tatitok recompute --pricing\n", gaps)

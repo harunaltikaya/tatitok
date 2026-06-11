@@ -268,33 +268,49 @@ func Resolve(provider, model, family string, ov *Overrides) (Quote, error) {
 // EquivalentRates resolves the API-equivalent rates for a free-basis
 // event (owner ruling, mirroring FR-9.3): the exact model key first,
 // then the base-family key — the latter flagged "family" so the
-// derivation is visible per event.
-func EquivalentRates(model, family string) (Rates, string, bool) {
+// derivation is visible per event. M4 Task 5: resolution goes THROUGH
+// the override patches (snapshot-only was a recorded known gap) — a key
+// the snapshot lacks but the override file prices resolves, and a patch
+// over a snapshot entry layers exactly like billing resolution. When a
+// patch contributed, the derivation says so ("+override"). free:true
+// entries never serve as rate sources (see ratesPatch).
+func EquivalentRates(model, family string, ov *Overrides) (Rates, string, bool) {
 	loadOnce.Do(load)
 	if loadErr != nil {
 		return Rates{}, "", false
 	}
-	if r, ok := snapRates[model]; ok {
-		return r, "model", true
-	}
+	keys := [][2]string{{model, "model"}}
 	if family != model {
-		if r, ok := snapRates[family]; ok {
-			return r, "family", true
+		keys = append(keys, [2]string{family, "family"})
+	}
+	for _, k := range keys {
+		base, snapOK := snapRates[k[0]]
+		patch, patchOK := ov.ratesPatch(k[0])
+		switch {
+		case patchOK:
+			return patch.apply(base), k[1] + "+override", true
+		case snapOK:
+			return base, k[1], true
 		}
 	}
 	return Rates{}, "", false
 }
 
 // ReferenceRates resolves a user-chosen reference model for the
-// cloud-equivalent "would have cost" path (FR-9.3) — snapshot only, no
-// basis logic.
-func ReferenceRates(model string) (Rates, bool, error) {
+// cloud-equivalent "would have cost" path (FR-9.3) — no basis logic.
+// M4 Task 5: the target may be snapshot-defined, override-defined, or
+// an override patch layered over a snapshot entry (free:true entries
+// excluded — they declare billing, not prices).
+func ReferenceRates(model string, ov *Overrides) (Rates, bool, error) {
 	loadOnce.Do(load)
 	if loadErr != nil {
 		return Rates{}, false, loadErr
 	}
-	r, ok := snapRates[model]
-	return r, ok, nil
+	base, snapOK := snapRates[model]
+	if patch, ok := ov.ratesPatch(model); ok {
+		return patch.apply(base), true, nil
+	}
+	return base, snapOK, nil
 }
 
 // USDToMicro converts a decimal USD amount (e.g. an opencode

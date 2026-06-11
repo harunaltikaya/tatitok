@@ -60,7 +60,7 @@ func Apply(e *core.Event, ov *Overrides) error {
 		if src, present := sourceCostRat(e.Meta); present && src.Sign() == 0 {
 			q.Basis, q.Rates = BasisFree, &Rates{}
 			detail := priceDetail{Rates: Rates{}, FreeSource: "source"}
-			if equiv, derivedFrom, ok := EquivalentRates(e.Model, e.ModelFamily); ok {
+			if equiv, derivedFrom, ok := EquivalentRates(e.Model, e.ModelFamily, ov); ok {
 				ev, err := equiv.CostMicroUSD(in, out, cw, 0, cr)
 				if err != nil {
 					return fmt.Errorf("%s: %w", e.ID, err)
@@ -81,7 +81,7 @@ func Apply(e *core.Event, ov *Overrides) error {
 	if q.Basis == BasisLocal {
 		detail := priceDetail{Rates: *q.Rates}
 		if ref, ok := ov.Reference(e.Model, e.ModelFamily); ok {
-			rr, found, err := ReferenceRates(ref)
+			rr, found, err := ReferenceRates(ref, ov)
 			if err != nil {
 				return err
 			}
@@ -122,7 +122,21 @@ func Apply(e *core.Event, ov *Overrides) error {
 	if q.Basis == BasisFree {
 		// Owner-declared free (override file free:true): kept as its own
 		// basis source, distinct from source-reported $0 (M3.1 ruling).
+		// M4 Task 5 (closing the recorded known gap): this path now
+		// carries the API-equivalent like every other free path — for
+		// deepseek-v4-flash-free that resolves through the family's
+		// override patch ("family+override"), where it used to store NULL
+		// for both missing pieces at once.
 		detail.FreeSource = "override"
+		if equiv, derivedFrom, ok := EquivalentRates(e.Model, e.ModelFamily, ov); ok {
+			ev, err := equiv.CostMicroUSD(in, out, cw, 0, cr)
+			if err != nil {
+				return fmt.Errorf("%s: %w", e.ID, err)
+			}
+			e.CostAPIEquivMicro = &ev
+			detail.EquivRates = &equiv
+			detail.EquivSource = derivedFrom
+		}
 	}
 	return stamp(e, q, cost, detail)
 }

@@ -523,3 +523,180 @@ func TestApplyFreeOverrideProvenance(t *testing.T) {
 		t.Fatalf("owner-declared free not flagged distinctly: %+v", detail)
 	}
 }
+
+// loadOverridesJSON writes and parses an override file (helper for the
+// M4 Task 5 tests below — synthetic CONFIG, not log fixtures).
+func loadOverridesJSON(t *testing.T, body string) *Overrides {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "prices.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := LoadOverrides(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ov
+}
+
+// M4 Task 5 (closing the recorded known gap): equivalent resolution
+// goes through override patches, and the override-declared-free path
+// carries the API-equivalent like every other free path.
+func TestOverrideAwareEquivalents(t *testing.T) {
+	ov := loadOverridesJSON(t, `{
+		"prices": {
+			"deepseek-v4-flash": {
+				"input_usd_per_mtok": "0.14",
+				"output_usd_per_mtok": "0.28",
+				"cache_read_usd_per_mtok": "0.0028"
+			},
+			"deepseek-v4-flash-free": { "free": true }
+		}
+	}`)
+
+	// Snapshot-absent key resolves through the family patch; the exact
+	// model's free:true entry is NOT a rate source.
+	r, derived, ok := EquivalentRates("deepseek-v4-flash-free", "deepseek-v4-flash", ov)
+	want := Rates{Input: 140_000, Output: 280_000, CacheRead: 2_800}
+	if !ok || derived != "family+override" || r != want {
+		t.Fatalf("equiv through patch: ok=%v derived=%q rates=%+v, want family+override %+v", ok, derived, r, want)
+	}
+
+	// Apply end to end: owner-declared free bills $0 AND carries the
+	// equivalent (this exact case used to store NULL for both reasons
+	// at once — M3.1 recorded gap, flash-free symptom).
+	e := core.Event{ID: "ff", Harness: "opencode", Provider: "deepseek",
+		Model: "deepseek-v4-flash-free", ModelFamily: "deepseek-v4-flash",
+		TokensInput: 1_000_000, TokensOutput: 1_000_000}
+	if err := Apply(&e, ov); err != nil {
+		t.Fatal(err)
+	}
+	if e.CostBasis != "free" || e.CostUSDMicro == nil || *e.CostUSDMicro != 0 {
+		t.Fatalf("override-free billing: %+v", e)
+	}
+	// 1 Mtok in at $0.14 + 1 Mtok out at $0.28 = $0.42.
+	if e.CostAPIEquivMicro == nil || *e.CostAPIEquivMicro != 420_000 {
+		t.Fatalf("override-free equivalent = %v, want 420000 micro", e.CostAPIEquivMicro)
+	}
+	var detail struct {
+		FreeSource  string `json:"free_source"`
+		EquivSource string `json:"equiv_source"`
+	}
+	if err := json.Unmarshal(e.PriceRates, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.FreeSource != "override" || detail.EquivSource != "family+override" {
+		t.Fatalf("provenance: %+v", detail)
+	}
+
+	// A patch over a snapshot entry layers for equivalents exactly like
+	// billing resolution (the sonnet 1h-rate patch).
+	ov = loadOverridesJSON(t, `{
+		"prices": {"claude-sonnet-4-6": {"cache_write_1h_usd_per_mtok": "6.00"}}
+	}`)
+	r, derived, ok = EquivalentRates("claude-sonnet-4-6", "claude-sonnet-4-6", ov)
+	if !ok || derived != "model+override" || r.CacheWrite1h != 6_000_000 || r.Input != 3_000_000 {
+		t.Fatalf("layered equiv: ok=%v derived=%q rates=%+v", ok, derived, r)
+	}
+
+	// No overrides: pure snapshot behavior is unchanged.
+	r, derived, ok = EquivalentRates("claude-sonnet-4-6", "claude-sonnet-4-6", nil)
+	if !ok || derived != "model" || r.CacheWrite1h != 0 {
+		t.Fatalf("snapshot-only equiv changed: ok=%v derived=%q rates=%+v", ok, derived, r)
+	}
+}
+
+// M4 Task 5: reference targets may be override-defined (the snapshot-only
+// validation was the recorded limitation keeping qwen pointed at a
+// stand-in); free:true-only entries still do not qualify.
+func TestOverrideDefinedReferenceTargets(t *testing.T) {
+	ov := loadOverridesJSON(t, `{
+		"prices": {
+			"deepseek-v4-flash": {
+				"input_usd_per_mtok": "0.14",
+				"output_usd_per_mtok": "0.28"
+			}
+		},
+		"reference_models": { "qwen3.6-27b": "deepseek-v4-flash" }
+	}`)
+	r, found, err := ReferenceRates("deepseek-v4-flash", ov)
+	if err != nil || !found || r.Input != 140_000 {
+		t.Fatalf("override-defined reference target: found=%v rates=%+v err=%v", found, r, err)
+	}
+
+	e := core.Event{ID: "lq", Harness: "opencode", Provider: "vllm",
+		Model: "qwen3.6-27b", ModelFamily: "qwen3.6-27b",
+		TokensInput: 1_000_000, TokensOutput: 1_000_000}
+	if err := Apply(&e, ov); err != nil {
+		t.Fatal(err)
+	}
+	if e.CostBasis != "local" || e.CostAPIEquivMicro == nil || *e.CostAPIEquivMicro != 420_000 {
+		t.Fatalf("local event with override-defined reference: %+v equiv=%v", e, e.CostAPIEquivMicro)
+	}
+	var detail struct {
+		EquivSource string `json:"equiv_source"`
+	}
+	if err := json.Unmarshal(e.PriceRates, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.EquivSource != "reference:deepseek-v4-flash" {
+		t.Fatalf("reference provenance: %+v", detail)
+	}
+
+	// free:true-only target: rejected at load (declares billing, not prices).
+	path := filepath.Join(t.TempDir(), "prices.json")
+	if err := os.WriteFile(path, []byte(`{
+		"prices": { "x-free": { "free": true } },
+		"reference_models": { "q": "x-free" }
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOverrides(path); err == nil {
+		t.Fatal("free:true-only reference target accepted")
+	}
+	// Entirely unknown target: still rejected.
+	if err := os.WriteFile(path, []byte(`{
+		"reference_models": { "q": "no-such-model-anywhere" }
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOverrides(path); err == nil {
+		t.Fatal("unknown reference target accepted")
+	}
+}
+
+// M4 Task 5: explained_divergences parsing and lookup (the dead-check
+// ruling — doctor consumes these to report ruled store-and-compare
+// failures informationally).
+func TestExplainedDivergences(t *testing.T) {
+	ov := loadOverridesJSON(t, `{
+		"explained_divergences": [
+			{"provider": "deepseek", "model": "deepseek-v4-pro",
+			 "reason": "price-cut regime break, ruled 2026-06-11"}
+		]
+	}`)
+	if ov.Divergences() != 1 {
+		t.Fatalf("Divergences = %d, want 1", ov.Divergences())
+	}
+	reason, ok := ov.ExplainedDivergence("deepseek", "deepseek-v4-pro")
+	if !ok || reason == "" {
+		t.Fatalf("explained divergence not found: %q %v", reason, ok)
+	}
+	if _, ok := ov.ExplainedDivergence("deepseek", "deepseek-v4-flash"); ok {
+		t.Fatal("unrelated model reported as explained")
+	}
+	if _, ok := (*Overrides)(nil).ExplainedDivergence("p", "m"); ok {
+		t.Fatal("nil overrides reported an explanation")
+	}
+
+	// A divergence without a written reason is not explained: load error.
+	path := filepath.Join(t.TempDir(), "prices.json")
+	if err := os.WriteFile(path, []byte(`{
+		"explained_divergences": [{"provider": "p", "model": "m"}]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOverrides(path); err == nil {
+		t.Fatal("reason-less divergence entry accepted")
+	}
+}

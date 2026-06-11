@@ -178,9 +178,10 @@ func loadPriceOverrides(probe adapters.Probe) (*pricing.Overrides, error) {
 	if err != nil {
 		return nil, err
 	}
-	if ov.Len() > 0 || ov.References() > 0 {
+	if ov.Len() > 0 || ov.References() > 0 || ov.Divergences() > 0 {
 		slog.Info("price overrides loaded", "path", path,
-			"models", ov.Len(), "reference_models", ov.References())
+			"models", ov.Len(), "reference_models", ov.References(),
+			"explained_divergences", ov.Divergences())
 	}
 	return ov, nil
 }
@@ -608,7 +609,13 @@ func cmdDoctor(args []string) error {
 		return doctorProvenance(context.Background(), st, *asJSON)
 	}
 	if *prices {
-		return doctorPricing(context.Background(), st)
+		// The override file's explained_divergences declassify ruled
+		// store-and-compare findings (M4 Task 5).
+		overrides, err := loadPriceOverrides(realProbe())
+		if err != nil {
+			return err
+		}
+		return doctorPricing(context.Background(), st, overrides)
 	}
 	return doctorScanContent(context.Background(), st, fs.Args())
 }

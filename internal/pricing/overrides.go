@@ -42,6 +42,15 @@ package pricing
 // distinctly from source-reported $0 free events: price_rates carries
 // free_source "override" vs "source" (price_snapshot likewise reads
 // "override"), so the two origins stay distinguishable per event.
+//
+// "explained_divergences" (M4 Task 5, the dead-check ruling): a list of
+// {provider, model, reason} entries naming store-and-compare groups
+// whose divergence from source-reported costs is UNDERSTOOD and ruled
+// expected (the gpt-5-nano precedent; first entry: the deepseek-v4-pro
+// price-cut regime break). `doctor --pricing` reports matching
+// out-of-tolerance groups informationally at exit 0 instead of failing
+// — a permanently failing check is a dead check. The stored costs are
+// untouched either way; this only declassifies the report finding.
 
 import (
 	"encoding/json"
@@ -82,8 +91,53 @@ func (p overridePatch) apply(base Rates) Rates {
 // no overrides.
 type Overrides struct {
 	patches map[string]overridePatch
-	refs    map[string]string // local model/family → reference snapshot model
-	path    string
+	refs    map[string]string // local model/family → reference model (snapshot or override-defined)
+	// divergences: (provider, model) → reason, from explained_divergences.
+	divergences map[[2]string]string
+	path        string
+}
+
+// hasRates reports whether the patch carries at least one rate field —
+// a free:true-only entry declares billing, not prices, and is never a
+// rate source for equivalents or reference targets.
+func (p overridePatch) hasRates() bool {
+	return p.input != nil || p.output != nil || p.cacheWrite != nil ||
+		p.cacheWrite1h != nil || p.cacheRead != nil
+}
+
+// ratesPatch returns the patch for key when it can serve as a RATE
+// source: present, not owner-declared free, and carrying at least one
+// rate field. The free exclusion is deliberate — free means "bills $0",
+// which is a billing rule, not a price; equivalents derived from it
+// would be silently meaningless zeros.
+func (o *Overrides) ratesPatch(key string) (overridePatch, bool) {
+	if o == nil {
+		return overridePatch{}, false
+	}
+	p, ok := o.patches[key]
+	if !ok || p.free || !p.hasRates() {
+		return overridePatch{}, false
+	}
+	return p, true
+}
+
+// ExplainedDivergence reports the owner-recorded reason a
+// (provider, model) store-and-compare group is expected to diverge, if
+// one was declared.
+func (o *Overrides) ExplainedDivergence(provider, model string) (string, bool) {
+	if o == nil {
+		return "", false
+	}
+	reason, ok := o.divergences[[2]string{provider, model}]
+	return reason, ok
+}
+
+// Divergences reports how many explained-divergence entries are loaded.
+func (o *Overrides) Divergences() int {
+	if o == nil {
+		return 0
+	}
+	return len(o.divergences)
 }
 
 // Path returns the file the overrides were read from ("" when none).
@@ -145,9 +199,16 @@ type overrideEntry struct {
 	CacheRead    json.Number `json:"cache_read_usd_per_mtok"`
 }
 
+type divergenceEntry struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Reason   string `json:"reason"`
+}
+
 type overrideFile struct {
-	Prices          map[string]overrideEntry `json:"prices"`
-	ReferenceModels map[string]string        `json:"reference_models"`
+	Prices               map[string]overrideEntry `json:"prices"`
+	ReferenceModels      map[string]string        `json:"reference_models"`
+	ExplainedDivergences []divergenceEntry        `json:"explained_divergences"`
 }
 
 // OverridesPath resolves the override file location from the
@@ -204,17 +265,31 @@ func LoadOverrides(path string) (*Overrides, error) {
 		if local == "" || ref == "" {
 			return nil, fmt.Errorf("price overrides %s: empty reference_models entry (%q: %q)", path, local, ref)
 		}
-		_, found, err := ReferenceRates(ref)
+		// M4 Task 5 (removing the snapshot-only limitation): a reference
+		// target resolves through the override patches parsed above, so
+		// a model the snapshot lacks but this very file prices (e.g.
+		// deepseek-v4-flash) is a valid target. A free:true-only entry is
+		// NOT — it declares billing, not prices.
+		_, found, err := ReferenceRates(ref, ov)
 		if err != nil {
 			return nil, fmt.Errorf("price overrides %s: %w", path, err)
 		}
 		if !found {
-			return nil, fmt.Errorf("price overrides %s: reference model %q for %q is not in the price snapshot", path, ref, local)
+			return nil, fmt.Errorf("price overrides %s: reference model %q for %q is neither in the price snapshot nor priced by this file's overrides (free:true does not price a model)", path, ref, local)
 		}
 		if ov.refs == nil {
 			ov.refs = make(map[string]string, len(f.ReferenceModels))
 		}
 		ov.refs[local] = ref
+	}
+	for i, d := range f.ExplainedDivergences {
+		if d.Provider == "" || d.Model == "" || d.Reason == "" {
+			return nil, fmt.Errorf("price overrides %s: explained_divergences[%d] needs provider, model and reason — a divergence without a written reason is not explained", path, i)
+		}
+		if ov.divergences == nil {
+			ov.divergences = make(map[[2]string]string, len(f.ExplainedDivergences))
+		}
+		ov.divergences[[2]string{d.Provider, d.Model}] = d.Reason
 	}
 	return ov, nil
 }
