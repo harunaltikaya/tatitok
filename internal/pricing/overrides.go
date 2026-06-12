@@ -56,6 +56,22 @@ package pricing
 // reconstructed historical snapshots. free is a billing rule, not a
 // price: it cannot be dated (neither inside a regime nor beside one).
 //
+// "plans" (M5 Task 2): owner-declared subscriptions. Usage covered by a
+// plan bills $0 with basis plan_included and ALWAYS carries the
+// API-equivalent when rates resolve — the M3 free-basis discipline
+// applied to plans, provenance distinct from free and local
+// (price_rates.plan names the covering plan). Each plan declares a
+// name, matchers (harness and/or provider, optionally model — AND
+// within a matcher, OR across the list, model matching raw model or
+// family), a rolling window duration, and optionally a weekly cap (in
+// API-equivalent USD — tatitok's one cross-model yardstick) and a
+// monthly price. tatitok NEVER guesses plan membership. Precedence:
+// per-model free:true and the local-provider rule beat plans (your own
+// metal is never a subscription); plans beat everything else,
+// including source-reported $0 and rate patches — patches define
+// RATES, which keep pricing the equivalent. First declared plan
+// covering an event wins.
+//
 // "explained_divergences" (M4 Task 5, the dead-check ruling): a list of
 // {provider, model, reason} entries naming store-and-compare groups
 // whose divergence from source-reported costs is UNDERSTOOD and ruled
@@ -138,7 +154,66 @@ type Overrides struct {
 	refs    map[string]string // local model/family → reference model (snapshot or override-defined)
 	// divergences: (provider, model) → reason, from explained_divergences.
 	divergences map[[2]string]string
+	plans       []Plan
 	path        string
+}
+
+// Plan is one owner-declared subscription (M5 Task 2).
+type Plan struct {
+	Name     string
+	Matchers []PlanMatcher
+	// Window is the plan's rolling usage-window duration.
+	Window time.Duration
+	// WeeklyCapEquivMicro is the declared weekly cap in API-equivalent
+	// micro-USD (nil = no cap declared); MonthlyPriceMicro the
+	// subscription's monthly price in micro-USD (nil = not declared).
+	WeeklyCapEquivMicro *int64
+	MonthlyPriceMicro   *int64
+}
+
+// PlanMatcher matches events by harness/provider/model; empty fields
+// are wildcards, every present field must match (AND), and Model
+// matches the raw model or the family.
+type PlanMatcher struct {
+	Harness, Provider, Model string
+}
+
+func (m PlanMatcher) matches(harness, provider, model, family string) bool {
+	if m.Harness != "" && m.Harness != harness {
+		return false
+	}
+	if m.Provider != "" && m.Provider != provider {
+		return false
+	}
+	if m.Model != "" && m.Model != model && m.Model != family {
+		return false
+	}
+	return true
+}
+
+// PlanFor returns the first declared plan covering the event
+// coordinates. Plan precedence against free:true and local lives in
+// Apply, not here.
+func (o *Overrides) PlanFor(harness, provider, model, family string) (Plan, bool) {
+	if o == nil {
+		return Plan{}, false
+	}
+	for _, p := range o.plans {
+		for _, m := range p.Matchers {
+			if m.matches(harness, provider, model, family) {
+				return p, true
+			}
+		}
+	}
+	return Plan{}, false
+}
+
+// Plans returns the declared plans in declaration order.
+func (o *Overrides) Plans() []Plan {
+	if o == nil {
+		return nil
+	}
+	return o.plans
 }
 
 // hasRates reports whether the patch carries at least one rate field —
@@ -314,11 +389,28 @@ type divergenceEntry struct {
 	Reason   string          `json:"reason"`
 }
 
+type planMatcherEntry struct {
+	Doc      json.RawMessage `json:"_doc"`
+	Harness  string          `json:"harness"`
+	Provider string          `json:"provider"`
+	Model    string          `json:"model"`
+}
+
+type planEntry struct {
+	Doc               json.RawMessage    `json:"_doc"`
+	Name              string             `json:"name"`
+	Matchers          []planMatcherEntry `json:"matchers"`
+	Window            string             `json:"window"`
+	WeeklyCapEquivUSD json.Number        `json:"weekly_cap_equiv_usd"`
+	MonthlyPriceUSD   json.Number        `json:"monthly_price_usd"`
+}
+
 type overrideFile struct {
 	Doc                  json.RawMessage          `json:"_doc"`
 	Prices               map[string]overrideEntry `json:"prices"`
 	ReferenceModels      map[string]string        `json:"reference_models"`
 	ExplainedDivergences []divergenceEntry        `json:"explained_divergences"`
+	Plans                []planEntry              `json:"plans"`
 }
 
 // OverridesPath resolves the override file location from the
@@ -452,6 +544,58 @@ func LoadOverrides(path string) (*Overrides, error) {
 			ov.divergences = make(map[[2]string]string, len(f.ExplainedDivergences))
 		}
 		ov.divergences[[2]string{provider, model}] = reason
+	}
+	names := map[string]bool{}
+	for i, pe := range f.Plans {
+		name := strings.TrimSpace(pe.Name)
+		if name == "" {
+			return nil, fmt.Errorf("price overrides %s: plans[%d]: name is required", path, i)
+		}
+		if names[name] {
+			return nil, fmt.Errorf("price overrides %s: plans[%d]: duplicate plan name %q", path, i, name)
+		}
+		names[name] = true
+		if len(pe.Matchers) == 0 {
+			return nil, fmt.Errorf("price overrides %s: plan %q: at least one matcher is required — tatitok never guesses plan membership", path, name)
+		}
+		p := Plan{Name: name}
+		for j, me := range pe.Matchers {
+			m := PlanMatcher{
+				Harness:  strings.TrimSpace(me.Harness),
+				Provider: strings.TrimSpace(me.Provider),
+				Model:    strings.TrimSpace(me.Model),
+			}
+			if m.Harness == "" && m.Provider == "" && m.Model == "" {
+				return nil, fmt.Errorf("price overrides %s: plan %q matchers[%d]: an empty matcher would cover everything — declare harness, provider and/or model", path, name, j)
+			}
+			p.Matchers = append(p.Matchers, m)
+		}
+		if pe.Window == "" {
+			return nil, fmt.Errorf("price overrides %s: plan %q: window duration is required (e.g. \"5h\")", path, name)
+		}
+		dur, err := time.ParseDuration(pe.Window)
+		if err != nil || dur <= 0 {
+			return nil, fmt.Errorf("price overrides %s: plan %q: window %q is not a positive Go duration", path, name, pe.Window)
+		}
+		p.Window = dur
+		for _, c := range []struct {
+			n    json.Number
+			what string
+			dst  **int64
+		}{
+			{pe.WeeklyCapEquivUSD, "weekly_cap_equiv_usd", &p.WeeklyCapEquivMicro},
+			{pe.MonthlyPriceUSD, "monthly_price_usd", &p.MonthlyPriceMicro},
+		} {
+			if c.n == "" {
+				continue
+			}
+			v, err := USDToMicro(c.n.String())
+			if err != nil || v <= 0 {
+				return nil, fmt.Errorf("price overrides %s: plan %q: %s %q is not a positive USD amount", path, name, c.what, c.n)
+			}
+			*c.dst = &v
+		}
+		ov.plans = append(ov.plans, p)
 	}
 	return ov, nil
 }

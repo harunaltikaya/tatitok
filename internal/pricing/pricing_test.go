@@ -1000,6 +1000,235 @@ func TestApplyRegimeProvenance(t *testing.T) {
 	}
 }
 
+// M5 Task 2: owner-declared plans. tatitok never guesses plan
+// membership — the `plans` section names each subscription, its
+// matchers, its window, and optionally a weekly cap and monthly price.
+func TestPlanParsing(t *testing.T) {
+	ov := loadOverridesJSON(t, `{
+		"plans": [
+			{
+				"_doc": "the harness subscription",
+				"name": "claude-max",
+				"matchers": [
+					{"harness": "claude-code"},
+					{"_doc": "review bot", "harness": "opencode", "provider": "anthropic", "model": "claude-sonnet-4-6"}
+				],
+				"window": "5h",
+				"weekly_cap_equiv_usd": "120.00",
+				"monthly_price_usd": "200.00"
+			},
+			{
+				"name": "codex-sub",
+				"matchers": [{"harness": "codex"}],
+				"window": "5h"
+			}
+		]
+	}`)
+	plans := ov.Plans()
+	if len(plans) != 2 {
+		t.Fatalf("Plans = %d, want 2", len(plans))
+	}
+	p := plans[0]
+	if p.Name != "claude-max" || p.Window != 5*time.Hour || len(p.Matchers) != 2 {
+		t.Fatalf("plan parsed wrong: %+v", p)
+	}
+	if p.WeeklyCapEquivMicro == nil || *p.WeeklyCapEquivMicro != 120_000_000 ||
+		p.MonthlyPriceMicro == nil || *p.MonthlyPriceMicro != 200_000_000 {
+		t.Fatalf("plan money parsed wrong: cap=%v price=%v", p.WeeklyCapEquivMicro, p.MonthlyPriceMicro)
+	}
+	if plans[1].WeeklyCapEquivMicro != nil || plans[1].MonthlyPriceMicro != nil {
+		t.Fatalf("absent money fields must stay nil: %+v", plans[1])
+	}
+
+	bad := map[string]string{
+		"missing name":   `{"plans": [{"matchers": [{"harness": "h"}], "window": "5h"}]}`,
+		"duplicate name": `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h"}, {"name": "p", "matchers": [{"harness": "x"}], "window": "5h"}]}`,
+		"no matchers":    `{"plans": [{"name": "p", "window": "5h"}]}`,
+		"empty matcher (would cover everything)": `{"plans": [{"name": "p", "matchers": [{}], "window": "5h"}]}`,
+		"missing window":      `{"plans": [{"name": "p", "matchers": [{"harness": "h"}]}]}`,
+		"unparseable window":  `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5 hours"}]}`,
+		"non-positive window": `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "-5h"}]}`,
+		"bad weekly cap":      `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "weekly_cap_equiv_usd": "lots"}]}`,
+		"zero monthly price":  `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "monthly_price_usd": "0"}]}`,
+		"unknown plan key":    `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "cap": "1"}]}`,
+		"unknown matcher key": `{"plans": [{"name": "p", "matchers": [{"harnes": "h"}], "window": "5h"}]}`,
+	}
+	dir := t.TempDir()
+	for name, body := range bad {
+		path := filepath.Join(dir, "prices.json")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadOverrides(path); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// Matcher semantics: AND within a matcher (every present field must
+// match), OR across the list; the model field matches raw model or
+// family; the first declared plan covering the event wins.
+func TestPlanFor(t *testing.T) {
+	ov := loadOverridesJSON(t, `{
+		"plans": [
+			{"name": "first", "matchers": [
+				{"harness": "claude-code"},
+				{"harness": "opencode", "model": "review-bot-large"}
+			], "window": "5h"},
+			{"name": "second", "matchers": [{"harness": "opencode"}], "window": "5h"}
+		]
+	}`)
+	cases := []struct {
+		harness, provider, model, family string
+		want                             string
+		none                             bool
+	}{
+		{"claude-code", "anthropic", "claude-fable-5", "claude-fable-5", "first", false},
+		// AND within: harness alone is not enough for the second matcher…
+		{"opencode", "x", "other-model", "other-model", "second", false},
+		// …but harness+model matches "first" before "second" (declared order).
+		{"opencode", "x", "review-bot-large", "review-bot-large", "first", false},
+		// model field matches the FAMILY too.
+		{"opencode", "x", "review-bot-large-v2", "review-bot-large", "first", false},
+		{"codex", "openai", "gpt-5.5", "gpt-5.5", "", true},
+	}
+	for _, c := range cases {
+		p, ok := ov.PlanFor(c.harness, c.provider, c.model, c.family)
+		if ok == c.none || (!c.none && p.Name != c.want) {
+			t.Errorf("PlanFor(%s,%s,%s,%s) = %v/%v, want %q (none=%v)",
+				c.harness, c.provider, c.model, c.family, p.Name, ok, c.want, c.none)
+		}
+	}
+	if _, ok := (*Overrides)(nil).PlanFor("h", "p", "m", "f"); ok {
+		t.Fatal("nil overrides matched a plan")
+	}
+}
+
+// M5 Task 2: basis plan_included — actual cost $0, the API-equivalent
+// ALWAYS computed and stored when rates resolve (the M3 free-basis
+// discipline applied to plans), provenance distinct from free and
+// local (price_rates.plan names the covering plan; equiv_source
+// "billing" says the equivalent is exactly what billing resolution
+// would have charged).
+func TestApplyPlanIncluded(t *testing.T) {
+	ov := loadOverridesJSON(t, `{
+		"prices": {
+			"deepseek-v4-pro": {
+				"input_usd_per_mtok": "0.435",
+				"regimes": [{"from": "2025-09-01", "until": "2026-05-25",
+					"input_usd_per_mtok": "1.74"}]
+			},
+			"gx10": {"free": true}
+		},
+		"plans": [{"name": "claude-max", "matchers": [
+			{"harness": "claude-code"},
+			{"harness": "opencode"}
+		], "window": "5h", "monthly_price_usd": "200.00"}]
+	}`)
+
+	// Snapshot-priced model under the plan: $0 billed, equivalent is the
+	// full would-have-cost INCLUDING the cache-write TTL split.
+	e := core.Event{ID: "p1", Harness: "claude-code", Provider: "anthropic",
+		Model: "claude-fable-5", ModelFamily: "claude-fable-5",
+		TS:          time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC),
+		TokensInput: 1000, TokensOutput: 100, TokensCacheWrite: 200, TokensCacheRead: 5000,
+		Meta: map[string]any{"cache_creation": map[string]any{
+			"ephemeral_5m_input_tokens": float64(50),
+			"ephemeral_1h_input_tokens": float64(150),
+		}}}
+	if err := Apply(&e, ov); err != nil {
+		t.Fatal(err)
+	}
+	if e.CostBasis != "plan_included" || e.CostUSDMicro == nil || *e.CostUSDMicro != 0 {
+		t.Fatalf("plan basis: %+v", e)
+	}
+	// 22500 flat (TestApplyEndToEnd) − 2500 flat cache + 625 + 3000 split.
+	if e.CostAPIEquivMicro == nil || *e.CostAPIEquivMicro != 23625 {
+		t.Fatalf("plan equivalent = %v, want 23625 micro", e.CostAPIEquivMicro)
+	}
+	var detail struct {
+		Plan        string `json:"plan"`
+		EquivSource string `json:"equiv_source"`
+		EquivRates  *Rates `json:"equiv_rates"`
+		Input       int64  `json:"input"`
+	}
+	if err := json.Unmarshal(e.PriceRates, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Plan != "claude-max" || detail.EquivSource != "billing" ||
+		detail.EquivRates == nil || detail.Input != 0 {
+		t.Fatalf("plan provenance: %+v (billed rates must be zero, equiv recorded)", detail)
+	}
+	ver, _ := SnapshotVersion()
+	if e.PriceSnapshot != ver {
+		t.Fatalf("plan event snapshot = %q, want %q (pins what priced the equivalent)", e.PriceSnapshot, ver)
+	}
+
+	// Unknown-model usage under the plan (the auto-review mass): basis
+	// plan_included, $0, equivalent honestly NULL until rates exist.
+	u := core.Event{ID: "p2", Harness: "opencode", Provider: "mystery",
+		Model: "auto-review-xl", ModelFamily: "auto-review-xl",
+		TS: time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC), TokensInput: 500}
+	if err := Apply(&u, ov); err != nil {
+		t.Fatal(err)
+	}
+	if u.CostBasis != "plan_included" || u.CostUSDMicro == nil || *u.CostUSDMicro != 0 ||
+		u.CostAPIEquivMicro != nil {
+		t.Fatalf("unknown model under plan: %+v equiv=%v", u, u.CostAPIEquivMicro)
+	}
+
+	// Regime-priced model under the plan: the equivalent is dated.
+	r := core.Event{ID: "p3", Harness: "opencode", Provider: "deepseek",
+		Model: "deepseek-v4-pro", ModelFamily: "deepseek-v4-pro",
+		TS: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), TokensInput: 1_000_000}
+	if err := Apply(&r, ov); err != nil {
+		t.Fatal(err)
+	}
+	if r.CostBasis != "plan_included" || r.CostAPIEquivMicro == nil || *r.CostAPIEquivMicro != 1_740_000 {
+		t.Fatalf("regime equivalent under plan: basis=%s equiv=%v", r.CostBasis, r.CostAPIEquivMicro)
+	}
+	if r.PriceSnapshot != "override+regime:2025-09-01T00:00:00Z" {
+		t.Fatalf("regime provenance under plan: %q", r.PriceSnapshot)
+	}
+
+	// Source-reported $0 LOSES to the plan: plan_included is the more
+	// honest basis when the owner declared coverage.
+	s := core.Event{ID: "p4", Harness: "opencode", Provider: "anthropic",
+		Model: "claude-fable-5", ModelFamily: "claude-fable-5",
+		TS:          time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC),
+		TokensInput: 1000,
+		Meta:        map[string]any{"source_cost": json.Number("0")}}
+	if err := Apply(&s, ov); err != nil {
+		t.Fatal(err)
+	}
+	if s.CostBasis != "plan_included" {
+		t.Fatalf("source-$0 beat the plan: %+v", s)
+	}
+
+	// free:true (per-model owner word) BEATS the plan.
+	f := core.Event{ID: "p5", Harness: "opencode", Provider: "openrouter",
+		Model: "gx10", ModelFamily: "gx10",
+		TS: time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC), TokensInput: 100}
+	if err := Apply(&f, ov); err != nil {
+		t.Fatal(err)
+	}
+	if f.CostBasis != "free" {
+		t.Fatalf("plan beat the per-model free declaration: %+v", f)
+	}
+
+	// Local providers BEAT the plan: your own metal is never a
+	// subscription.
+	l := core.Event{ID: "p6", Harness: "opencode", Provider: "vllm",
+		Model: "qwen3.6-27b", ModelFamily: "qwen3.6-27b",
+		TS: time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC), TokensInput: 100}
+	if err := Apply(&l, ov); err != nil {
+		t.Fatal(err)
+	}
+	if l.CostBasis != "local" {
+		t.Fatalf("plan beat the local-provider rule: %+v", l)
+	}
+}
+
 // An explicit override beats source-$0 free interception (M3.1 design)
 // — and a DATED regime is an explicit override too: its provenance
 // reads "override+regime:<from>", not bare "override", and the guard

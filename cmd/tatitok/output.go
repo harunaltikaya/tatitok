@@ -276,6 +276,11 @@ func doctorPricing(ctx context.Context, st *store.Store, ov *pricing.Overrides) 
 			// $0) are informational, never findings; the stored
 			// API-equivalent is the comparison value of interest.
 			verdict = fmt.Sprintf("free — API-equivalent %s stored", formatMicroUSD(r.EquivMicro))
+		case r.Basis == "plan_included":
+			// M5 Task 2: plan-covered usage bills $0 by owner declaration —
+			// informational like free, with the equivalent as the value of
+			// interest.
+			verdict = fmt.Sprintf("plan_included — API-equivalent %s stored", formatMicroUSD(r.EquivMicro))
 		case r.Unpriced > 0:
 			verdict = fmt.Sprintf("COVERAGE GAP — %d events unpriced (model missing from snapshot/overrides)", r.Unpriced)
 			gaps++

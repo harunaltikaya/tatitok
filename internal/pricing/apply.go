@@ -19,8 +19,11 @@ import (
 // free in the price-override file (free:true, owner's word, no source
 // evidence needed) — vs "source" — the source itself reported exactly
 // $0 for the event. Same basis, different provenance, visible per event.
+// Plan (M5 Task 2) names the owner-declared plan that covered a
+// plan_included event — the basis' distinct provenance.
 type priceDetail struct {
 	Rates
+	Plan        string `json:"plan,omitempty"`
 	FreeSource  string `json:"free_source,omitempty"`
 	EquivRates  *Rates `json:"equiv_rates,omitempty"`
 	EquivSource string `json:"equiv_source,omitempty"`
@@ -51,13 +54,42 @@ func Apply(e *core.Event, ov *Overrides) error {
 		e.TokensInput, e.TokensOutput, e.TokensCacheWrite, e.TokensCacheRead,
 		e.TokensReasoning)
 
+	// Plan interception (M5 Task 2): owner-declared subscription coverage
+	// bills $0 with basis plan_included and ALWAYS carries the
+	// API-equivalent when rates resolve — computed exactly as the billing
+	// path would have charged (same rates, same cache-write TTL split),
+	// equiv_source "billing", rate provenance in price_snapshot.
+	// Precedence: per-model free:true (Resolve's only BasisFree source)
+	// and the local-provider rule beat plans — your own metal is never a
+	// subscription; plans beat source-reported $0 and rate patches.
+	e.CostAPIEquivMicro = nil
+	if q.Basis != BasisLocal && q.Basis != BasisFree {
+		if plan, ok := ov.PlanFor(e.Harness, e.Provider, e.Model, e.ModelFamily); ok {
+			detail := priceDetail{Rates: Rates{}, Plan: plan.Name}
+			if q.Rates != nil {
+				cwFlat, cw1h := cw, int64(0)
+				if five, oneH, ok := cacheWriteSplit(e.Meta, cw); ok && q.Rates.CacheWrite1h > 0 {
+					cwFlat, cw1h = five, oneH
+				}
+				ev, err := q.Rates.CostMicroUSD(in, out, cwFlat, cw1h, cr)
+				if err != nil {
+					return fmt.Errorf("%s: %w", e.ID, err)
+				}
+				e.CostAPIEquivMicro = &ev
+				detail.EquivRates = q.Rates
+				detail.EquivSource = "billing"
+			}
+			q.Basis = BasisPlanIncluded
+			return stamp(e, q, 0, detail)
+		}
+	}
+
 	// Free interception: a source-reported $0 beats snapshot pricing and
 	// unknown — but never an explicit override (including a dated regime,
 	// whose provenance reads "override+regime:<from>") or the
 	// local-provider rule. The zero test is on the UNROUNDED source value
 	// (M3.1 finding 5): a tiny-but-real cost like $4e-7 rounds to 0
 	// micro-USD and must NOT be misclassified as free.
-	e.CostAPIEquivMicro = nil
 	if !strings.HasPrefix(q.Snapshot, "override") && q.Basis != BasisLocal {
 		if src, present := sourceCostRat(e.Meta); present && src.Sign() == 0 {
 			q.Basis, q.Rates = BasisFree, &Rates{}
