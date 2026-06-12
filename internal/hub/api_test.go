@@ -271,9 +271,13 @@ func TestAPIMetaModels(t *testing.T) {
 	}
 }
 
-// TestAPIMethodNotAllowed (Codex M4 finding 5): a known path with the
-// wrong method answers with the JSON envelope and an Allow header — the
-// api.go contract, not the mux's text/plain default.
+// TestAPIMethodNotAllowed (Codex M4 finding 5; HEAD ruling, M5 Codex
+// round): a known path with a wrong method answers with the JSON
+// envelope and "Allow: GET, HEAD" — and HEAD is NOT a wrong method.
+// Per RFC 9110 §9.3.2 it is GET without the response body; the mux's
+// GET patterns match it by design, so HEAD answers 200 with the GET's
+// headers and an empty body. The contract states this; this test pins
+// both halves permanently.
 func TestAPIMethodNotAllowed(t *testing.T) {
 	h := seedHub(t)
 	paths := []string{
@@ -295,8 +299,8 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 			if resp.StatusCode != http.StatusMethodNotAllowed {
 				t.Errorf("%s %s = %d, want 405", method, p, resp.StatusCode)
 			}
-			if allow := resp.Header.Get("Allow"); allow != "GET" {
-				t.Errorf("%s %s: Allow = %q, want GET", method, p, allow)
+			if allow := resp.Header.Get("Allow"); allow != "GET, HEAD" {
+				t.Errorf("%s %s: Allow = %q, want \"GET, HEAD\"", method, p, allow)
 			}
 			if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 				t.Errorf("%s %s: Content-Type %q, want the JSON envelope", method, p, ct)
@@ -305,6 +309,33 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 			if err := json.Unmarshal(b, &e); err != nil || e.Error.Code != "method_not_allowed" {
 				t.Errorf("%s %s: not the error envelope: %s", method, p, b)
 			}
+		}
+
+		// HEAD: 200, the GET's headers, empty body (net/http strips it;
+		// the stream endpoint answers with its SSE headers and is closed
+		// by the client like any other consumer).
+		req, err := http.NewRequest(http.MethodHead, "http://"+h.Addr()+p, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("HEAD %s = %d, want 200", p, resp.StatusCode)
+		}
+		if len(b) != 0 {
+			t.Errorf("HEAD %s carried a body (%d bytes)", p, len(b))
+		}
+		wantCT := "application/json"
+		if p == "/api/v1/stream" {
+			wantCT = "text/event-stream"
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, wantCT) {
+			t.Errorf("HEAD %s: Content-Type %q, want %s (the GET's headers)", p, ct, wantCT)
 		}
 	}
 }

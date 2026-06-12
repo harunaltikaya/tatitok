@@ -63,19 +63,25 @@ func checkParams(r *http.Request, allowed ...string) error {
 }
 
 // registerAPI mounts /api/v1 on the hub's mux. Every endpoint is
-// GET-only; a known path with any other method gets the JSON envelope
-// with an Allow header (M4 Codex round, finding 5 — the mux's built-in
-// 405 is text/plain, off-contract), and everything else under /api/ is
-// a JSON 404 (never the dashboard's HTML).
+// GET-only — and that includes HEAD (owner ruling, M5 Codex round):
+// per RFC 9110 §9.3.2 HEAD is GET without the response body, the
+// mux's "GET " patterns match it deliberately, and net/http strips
+// the body — so HEAD answers 200 with the GET's headers and an empty
+// body. It was never in the "wrong methods" set. A known path with
+// any OTHER method gets the JSON envelope with "Allow: GET, HEAD"
+// (M4 Codex round, finding 5 — the mux's built-in 405 is text/plain,
+// off-contract), and everything else under /api/ is a JSON 404
+// (never the dashboard's HTML).
 func (h *Hub) registerAPI(mux *http.ServeMux) {
 	get := func(path string, fn http.HandlerFunc) {
 		mux.HandleFunc("GET "+path, fn)
 		// Method-less pattern: more specific than "/api/", less than
-		// "GET path" — exactly the wrong-method case.
+		// "GET path" (which also takes HEAD) — exactly the wrong-method
+		// case.
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Allow", "GET")
+			w.Header().Set("Allow", "GET, HEAD")
 			writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed",
-				r.Method+" is not supported on "+path+" (only GET)")
+				r.Method+" is not supported on "+path+" (only GET and HEAD)")
 		})
 	}
 	get("/api/v1/health", h.apiHealth)
