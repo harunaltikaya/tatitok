@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
 )
@@ -51,12 +52,13 @@ func Apply(e *core.Event, ov *Overrides) error {
 		e.TokensReasoning)
 
 	// Free interception: a source-reported $0 beats snapshot pricing and
-	// unknown — but never an explicit override or the local-provider rule.
-	// The zero test is on the UNROUNDED source value (M3.1 finding 5): a
-	// tiny-but-real cost like $4e-7 rounds to 0 micro-USD and must NOT be
-	// misclassified as free.
+	// unknown — but never an explicit override (including a dated regime,
+	// whose provenance reads "override+regime:<from>") or the
+	// local-provider rule. The zero test is on the UNROUNDED source value
+	// (M3.1 finding 5): a tiny-but-real cost like $4e-7 rounds to 0
+	// micro-USD and must NOT be misclassified as free.
 	e.CostAPIEquivMicro = nil
-	if q.Snapshot != "override" && q.Basis != BasisLocal {
+	if !strings.HasPrefix(q.Snapshot, "override") && q.Basis != BasisLocal {
 		if src, present := sourceCostRat(e.Meta); present && src.Sign() == 0 {
 			q.Basis, q.Rates = BasisFree, &Rates{}
 			detail := priceDetail{Rates: Rates{}, FreeSource: "source"}

@@ -1000,6 +1000,26 @@ func TestApplyRegimeProvenance(t *testing.T) {
 	}
 }
 
+// An explicit override beats source-$0 free interception (M3.1 design)
+// — and a DATED regime is an explicit override too: its provenance
+// reads "override+regime:<from>", not bare "override", and the guard
+// must treat both alike. Regression pin for the M5 Task 2 round.
+func TestApplyRegimeBeatsSourceZero(t *testing.T) {
+	ov := loadOverridesJSON(t, regimeOverrides)
+	e := core.Event{ID: "rz", Harness: "opencode", Provider: "deepseek",
+		Model: "deepseek-v4-pro", ModelFamily: "deepseek-v4-pro",
+		TS:          time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+		TokensInput: 1_000_000,
+		Meta:        map[string]any{"source_cost": json.Number("0")}}
+	if err := Apply(&e, ov); err != nil {
+		t.Fatal(err)
+	}
+	if e.CostBasis != "api_price" || e.CostUSDMicro == nil || *e.CostUSDMicro != 1_740_000 {
+		t.Fatalf("regime-priced event lost to source-$0 interception: basis=%s cost=%v",
+			e.CostBasis, e.CostUSDMicro)
+	}
+}
+
 // Equivalent and reference derivations are regime-aware too: a
 // would-have-cost answer is dated by the event it answers for, and the
 // stored derivation says which regime served it.
