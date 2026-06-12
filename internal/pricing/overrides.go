@@ -63,9 +63,14 @@ package pricing
 // (price_rates.plan names the covering plan). Each plan declares a
 // name, matchers (harness and/or provider, optionally model — AND
 // within a matcher, OR across the list, model matching raw model or
-// family), a rolling window duration, and optionally a weekly cap (in
-// API-equivalent USD — tatitok's one cross-model yardstick) and a
-// monthly price. tatitok NEVER guesses plan membership. Precedence:
+// family), a rolling window duration, a window anchor (window_start:
+// floored|exact, floored default — provider-dependent, see window.go),
+// and optionally a weekly cap (in API-equivalent USD — tatitok's one
+// cross-model yardstick) and a monthly price. The window meter models
+// LOCAL usage only: a provider's limit is account-level (shared pools,
+// other devices, other accounts), so the meter is informational, never
+// the authoritative counter. tatitok NEVER guesses plan membership.
+// Precedence:
 // per-model free:true and the local-provider rule beat plans (your own
 // metal is never a subscription); plans beat everything else,
 // including source-reported $0 and rate patches — patches define
@@ -164,6 +169,10 @@ type Plan struct {
 	Matchers []PlanMatcher
 	// Window is the plan's rolling usage-window duration.
 	Window time.Duration
+	// WindowStart is the window-anchoring mode (M5 stop-1 finding:
+	// provider-dependent — Anthropic floors to the UTC hour, OpenAI
+	// anchors at the exact first request). Default AnchorFloored.
+	WindowStart WindowAnchor
 	// WeeklyCapEquivMicro is the declared weekly cap in API-equivalent
 	// micro-USD (nil = no cap declared); MonthlyPriceMicro the
 	// subscription's monthly price in micro-USD (nil = not declared).
@@ -401,6 +410,7 @@ type planEntry struct {
 	Name              string             `json:"name"`
 	Matchers          []planMatcherEntry `json:"matchers"`
 	Window            string             `json:"window"`
+	WindowStart       string             `json:"window_start"`
 	WeeklyCapEquivUSD json.Number        `json:"weekly_cap_equiv_usd"`
 	MonthlyPriceUSD   json.Number        `json:"monthly_price_usd"`
 }
@@ -578,6 +588,14 @@ func LoadOverrides(path string) (*Overrides, error) {
 			return nil, fmt.Errorf("price overrides %s: plan %q: window %q is not a positive Go duration", path, name, pe.Window)
 		}
 		p.Window = dur
+		switch WindowAnchor(pe.WindowStart) {
+		case "", AnchorFloored:
+			p.WindowStart = AnchorFloored
+		case AnchorExact:
+			p.WindowStart = AnchorExact
+		default:
+			return nil, fmt.Errorf("price overrides %s: plan %q: window_start %q is not \"floored\" or \"exact\"", path, name, pe.WindowStart)
+		}
 		for _, c := range []struct {
 			n    json.Number
 			what string

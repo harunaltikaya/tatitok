@@ -1039,6 +1039,18 @@ func TestPlanParsing(t *testing.T) {
 	if plans[1].WeeklyCapEquivMicro != nil || plans[1].MonthlyPriceMicro != nil {
 		t.Fatalf("absent money fields must stay nil: %+v", plans[1])
 	}
+	// Anchoring (M5 stop-1 finding): floored is the default; exact is the
+	// OpenAI behavior, declared per plan.
+	if p.WindowStart != AnchorFloored || plans[1].WindowStart != AnchorFloored {
+		t.Fatalf("default anchor: %q / %q, want floored", p.WindowStart, plans[1].WindowStart)
+	}
+	ov = loadOverridesJSON(t, `{
+		"plans": [{"name": "p", "matchers": [{"harness": "codex"}],
+			"window": "5h", "window_start": "exact"}]
+	}`)
+	if ov.Plans()[0].WindowStart != AnchorExact {
+		t.Fatalf("exact anchor not parsed: %+v", ov.Plans()[0])
+	}
 
 	bad := map[string]string{
 		"missing name":   `{"plans": [{"matchers": [{"harness": "h"}], "window": "5h"}]}`,
@@ -1052,6 +1064,7 @@ func TestPlanParsing(t *testing.T) {
 		"zero monthly price":  `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "monthly_price_usd": "0"}]}`,
 		"unknown plan key":    `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "cap": "1"}]}`,
 		"unknown matcher key": `{"plans": [{"name": "p", "matchers": [{"harnes": "h"}], "window": "5h"}]}`,
+		"invalid window_start": `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "window_start": "rounded"}]}`,
 	}
 	dir := t.TempDir()
 	for name, body := range bad {

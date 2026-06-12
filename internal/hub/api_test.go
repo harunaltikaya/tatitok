@@ -401,6 +401,7 @@ func TestAPIPlans(t *testing.T) {
 		Plans []struct {
 			Name                string `json:"name"`
 			WindowSeconds       int64  `json:"window_seconds"`
+			WindowStart         string `json:"window_start"`
 			WeeklyCapEquivMicro *int64 `json:"weekly_cap_equiv_micro"`
 			MonthlyPriceMicro   *int64 `json:"monthly_price_micro"`
 			CurrentWindow       *struct {
@@ -422,7 +423,7 @@ func TestAPIPlans(t *testing.T) {
 		t.Fatalf("plans payload shape: %+v", got)
 	}
 	p := got.Plans[0]
-	if p.Name != "claude-max" || p.WindowSeconds != 5*3600 ||
+	if p.Name != "claude-max" || p.WindowSeconds != 5*3600 || p.WindowStart != "floored" ||
 		p.WeeklyCapEquivMicro == nil || *p.WeeklyCapEquivMicro != 120_000_000 ||
 		p.MonthlyPriceMicro == nil || *p.MonthlyPriceMicro != 200_000_000 {
 		t.Fatalf("plan declaration not echoed: %+v", p)
@@ -440,7 +441,7 @@ func TestAPIPlans(t *testing.T) {
 	for i, e := range rows {
 		we[i] = pricing.WindowEvent{TS: e.TS, Input: e.Input, EquivMicro: e.EquivMicro, Unpriced: e.Unpriced}
 	}
-	windows := pricing.PlanWindows(we, 5*time.Hour)
+	windows := pricing.PlanWindows(we, 5*time.Hour, pricing.AnchorFloored)
 	if p.WindowsTotal != len(windows) {
 		t.Errorf("windows_total = %d, want %d", p.WindowsTotal, len(windows))
 	}

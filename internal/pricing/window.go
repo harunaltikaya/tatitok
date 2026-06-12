@@ -6,16 +6,32 @@ package pricing
 // parity surface; no golden ceremony applies.
 //
 // The partition is greedy and deterministic: a window OPENS at the
-// first event not covered by the previous window, with its start
-// floored to the UTC hour (the provider-observed reset behavior;
-// sub-hour windows skip the floor — flooring could otherwise close a
-// window before its own opening event). The window spans [start,
+// first event not covered by the previous window and spans [start,
 // start+duration); events inside join it; the first event at or past
 // the end opens the next window.
+//
+// Anchoring is PROVIDER-DEPENDENT (M5 stop-1 finding, live-verified):
+// Anthropic floors window starts to the UTC hour; OpenAI anchors at
+// the exact first-request time. Each plan declares its anchor
+// (window_start: floored|exact, floored default). Floored skips the
+// floor for sub-hour durations — flooring could otherwise close a
+// window before its own opening event.
 
 import (
 	"sort"
 	"time"
+)
+
+// WindowAnchor selects how a plan's windows anchor their start.
+type WindowAnchor string
+
+const (
+	// AnchorFloored floors the opening event's timestamp to the UTC hour
+	// (Anthropic's observed reset behavior).
+	AnchorFloored WindowAnchor = "floored"
+	// AnchorExact anchors at the opening event's exact timestamp
+	// (OpenAI's observed reset behavior).
+	AnchorExact WindowAnchor = "exact"
 )
 
 // WindowEvent is one plan-covered event's contribution to window math.
@@ -43,20 +59,21 @@ type WindowUsage struct {
 	Unpriced   int64 `json:"events_unpriced"`
 }
 
-// windowStart floors the opening event's timestamp to the UTC hour —
-// except for sub-hour durations, where the floor could place the
-// window's end before the event itself.
-func windowStart(ts time.Time, dur time.Duration) time.Time {
-	if dur < time.Hour {
+// windowStart anchors the opening event's timestamp per the plan's
+// declaration. The floor is skipped for sub-hour durations, where it
+// could place the window's end before the event itself.
+func windowStart(ts time.Time, dur time.Duration, anchor WindowAnchor) time.Time {
+	if anchor == AnchorExact || dur < time.Hour {
 		return ts
 	}
 	return ts.Truncate(time.Hour)
 }
 
-// PlanWindows partitions events into rolling windows of dur. Events are
-// sorted by timestamp if not already ascending; the returned windows
-// are ascending and non-overlapping.
-func PlanWindows(events []WindowEvent, dur time.Duration) []WindowUsage {
+// PlanWindows partitions events into rolling windows of dur, anchored
+// per the plan's declaration. Events are sorted by timestamp if not
+// already ascending; the returned windows are ascending and
+// non-overlapping.
+func PlanWindows(events []WindowEvent, dur time.Duration, anchor WindowAnchor) []WindowUsage {
 	if len(events) == 0 || dur <= 0 {
 		return nil
 	}
@@ -70,7 +87,7 @@ func PlanWindows(events []WindowEvent, dur time.Duration) []WindowUsage {
 	for _, e := range events {
 		ts := e.TS.UTC()
 		if len(out) == 0 || !ts.Before(out[len(out)-1].End) {
-			start := windowStart(ts, dur)
+			start := windowStart(ts, dur, anchor)
 			out = append(out, WindowUsage{Start: start, End: start.Add(dur)})
 		}
 		w := &out[len(out)-1]

@@ -23,7 +23,7 @@ func TestPlanWindowsPartition(t *testing.T) {
 		{TS: at(14, 0), Input: 1, EquivMicro: 2},        // at end — opens [14:00, 19:00)
 		{TS: at(23, 30), Input: 9, Unpriced: true},      // gap — opens [23:00, 04:00)
 	}
-	w := PlanWindows(events, dur)
+	w := PlanWindows(events, dur, AnchorFloored)
 	if len(w) != 3 {
 		t.Fatalf("windows = %d, want 3: %+v", len(w), w)
 	}
@@ -42,28 +42,49 @@ func TestPlanWindowsPartition(t *testing.T) {
 
 	// Unsorted input partitions identically (defensive sort).
 	shuffled := []WindowEvent{events[3], events[0], events[4], events[2], events[1]}
-	w2 := PlanWindows(shuffled, dur)
+	w2 := PlanWindows(shuffled, dur, AnchorFloored)
 	if len(w2) != 3 || w2[0] != w[0] || w2[1] != w[1] || w2[2] != w[2] {
 		t.Fatalf("unsorted input changed the partition: %+v", w2)
 	}
 
 	// Empty input and non-positive duration: no windows.
-	if PlanWindows(nil, dur) != nil || PlanWindows(events, 0) != nil {
+	if PlanWindows(nil, dur, AnchorFloored) != nil || PlanWindows(events, 0, AnchorFloored) != nil {
 		t.Fatal("degenerate inputs produced windows")
+	}
+}
+
+// Exact anchoring (M5 stop-1 finding, the OpenAI behavior): windows
+// open at the first request's exact timestamp — an 18:33 first request
+// resets at 23:33, not 23:00.
+func TestPlanWindowsExactAnchor(t *testing.T) {
+	events := []WindowEvent{
+		{TS: at(18, 33), Input: 1},
+		{TS: at(23, 32), Input: 2}, // still inside [18:33, 23:33)
+		{TS: at(23, 33), Input: 3}, // at end — opens [23:33, 04:33)
+	}
+	w := PlanWindows(events, 5*time.Hour, AnchorExact)
+	if len(w) != 2 {
+		t.Fatalf("windows = %d, want 2: %+v", len(w), w)
+	}
+	if !w[0].Start.Equal(at(18, 33)) || !w[0].End.Equal(at(23, 33)) || w[0].Events != 2 {
+		t.Fatalf("exact window 0: %+v", w[0])
+	}
+	if !w[1].Start.Equal(at(23, 33)) || w[1].Events != 1 {
+		t.Fatalf("exact window 1: %+v", w[1])
 	}
 }
 
 // Sub-hour windows skip the hour floor — flooring would end the window
 // before its own opening event.
 func TestPlanWindowsSubHour(t *testing.T) {
-	w := PlanWindows([]WindowEvent{{TS: at(12, 45)}}, 30*time.Minute)
+	w := PlanWindows([]WindowEvent{{TS: at(12, 45)}}, 30*time.Minute, AnchorFloored)
 	if len(w) != 1 || !w[0].Start.Equal(at(12, 45)) || !w[0].End.Equal(time.Date(2026, 6, 10, 13, 15, 0, 0, time.UTC)) {
 		t.Fatalf("sub-hour window: %+v", w)
 	}
 }
 
 func TestCurrentWindow(t *testing.T) {
-	w := PlanWindows([]WindowEvent{{TS: at(9, 30)}}, 5*time.Hour) // [09:00, 14:00)
+	w := PlanWindows([]WindowEvent{{TS: at(9, 30)}}, 5*time.Hour, AnchorFloored) // [09:00, 14:00)
 	if cur, ok := CurrentWindow(w, at(13, 59)); !ok || !cur.Start.Equal(at(9, 0)) {
 		t.Fatalf("inside window not current: %+v %v", cur, ok)
 	}

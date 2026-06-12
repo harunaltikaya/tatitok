@@ -109,7 +109,7 @@ func TestPlanIncludedWindowsFixtures(t *testing.T) {
 			CacheWrite: e.CacheWrite, CacheRead: e.CacheRead,
 			EquivMicro: e.EquivMicro, Unpriced: e.Unpriced}
 	}
-	windows := pricing.PlanWindows(we, 5*time.Hour)
+	windows := pricing.PlanWindows(we, 5*time.Hour, pricing.AnchorFloored)
 
 	// Invariants: ascending, non-overlapping, hour-floored starts, 5h
 	// spans, every event accounted for, equivalents conserved.
