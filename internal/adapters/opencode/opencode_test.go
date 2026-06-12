@@ -265,7 +265,7 @@ func TestReingestIdempotent(t *testing.T) {
 	if first.ParseErrors != 0 {
 		t.Fatalf("parse errors on fixtures: %d", first.ParseErrors)
 	}
-	daily1, err := s.Daily(ctx, time.UTC, "")
+	daily1, err := s.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestReingestIdempotent(t *testing.T) {
 		t.Fatalf("re-ingest inserted %d / replaced %d rows, want 0/0",
 			again.Inserted, again.Replaced)
 	}
-	daily2, err := s.Daily(ctx, time.UTC, "")
+	daily2, err := s.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,11 +320,11 @@ func TestHasLegacyStorageTree(t *testing.T) {
 func assertRollupMatchesDaily(t *testing.T, s *store.Store, when string) {
 	t.Helper()
 	ctx := context.Background()
-	direct, err := s.Daily(ctx, time.UTC, "")
+	direct, err := s.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rolled, err := s.DailyFromRollups(ctx, "")
+	rolled, err := s.DailyFromRollups(ctx, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestMutatedRowSupersededOnReingest(t *testing.T) {
 		[]adapters.Source{fixtureSource(t)}, nil); err != nil {
 		t.Fatal(err)
 	}
-	wantDaily, err := ref.Daily(ctx, time.UTC, "")
+	wantDaily, err := ref.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +447,7 @@ func TestMutatedRowSupersededOnReingest(t *testing.T) {
 		t.Fatalf("first ingest: %d inserted / %d replaced, want %d/0",
 			first.Inserted, first.Replaced, wantUnique)
 	}
-	partialDaily, err := s.Daily(ctx, time.UTC, "")
+	partialDaily, err := s.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +470,7 @@ func TestMutatedRowSupersededOnReingest(t *testing.T) {
 		t.Fatalf("re-ingest after finalize: %d inserted / %d replaced, want 0/1",
 			second.Inserted, second.Replaced)
 	}
-	gotDaily, err := s.Daily(ctx, time.UTC, "")
+	gotDaily, err := s.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}

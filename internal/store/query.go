@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -150,15 +151,84 @@ type SessionRow struct {
 	LastActivity string   `json:"lastActivity"` // YYYY-MM-DD in query tz
 }
 
+// Filters is the M5 Task 3 facet filter set: values OR within a
+// dimension, dimensions AND across — the dashboard semantics, shared by
+// API and CLI so dashboard claims stay CLI-verifiable. Empty slices
+// constrain nothing. Model matches the RAW model column (consistent
+// with every stats surface); Basis matches stored cost_basis with NULL
+// reading as 'unknown'. Unknown values are not errors — they match
+// nothing; declaring the empty result is the caller's job.
+type Filters struct {
+	Harness  []string `json:"harness,omitempty"`
+	Provider []string `json:"provider,omitempty"`
+	Model    []string `json:"model,omitempty"`
+	Project  []string `json:"project,omitempty"`
+	Basis    []string `json:"basis,omitempty"`
+}
+
+// IsZero reports an unconstrained filter set.
+func (f Filters) IsZero() bool {
+	return len(f.Harness) == 0 && len(f.Provider) == 0 && len(f.Model) == 0 &&
+		len(f.Project) == 0 && len(f.Basis) == 0
+}
+
+// RollupServable reports whether the UTC rollup grain carries every
+// constrained dimension. Basis is the one it lacks — basis-filtered
+// queries fall back to exact event aggregation (declared in the API
+// payload as "source": "events").
+func (f Filters) RollupServable() bool { return len(f.Basis) == 0 }
+
+// predicate renders the filter as an "AND col IN (…)" SQL fragment
+// (empty when unconstrained) with its args, over the given per-dimension
+// column expressions.
+func (f Filters) predicate(harness, provider, model, project, basis string) (string, []any) {
+	var sb strings.Builder
+	var args []any
+	for _, d := range []struct {
+		col  string
+		vals []string
+	}{
+		{harness, f.Harness}, {provider, f.Provider}, {model, f.Model},
+		{project, f.Project}, {basis, f.Basis},
+	} {
+		if len(d.vals) == 0 {
+			continue
+		}
+		sb.WriteString(" AND " + d.col + " IN (")
+		for i := range d.vals {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteByte('?')
+			args = append(args, d.vals[i])
+		}
+		sb.WriteByte(')')
+	}
+	return sb.String(), args
+}
+
+// eventsPredicate filters the usage_events table (NULL-safe exprs).
+func (f Filters) eventsPredicate() (string, []any) {
+	return f.predicate("COALESCE(harness, '')", "provider", "model",
+		"COALESCE(project, '')", "COALESCE(cost_basis, 'unknown')")
+}
+
+// rollupPredicate filters rollup_daily (columns are NOT NULL there);
+// only valid when RollupServable.
+func (f Filters) rollupPredicate() (string, []any) {
+	return f.predicate("harness", "provider", "model", "project", "")
+}
+
 // Daily returns per-day token sums bucketed in tz, oldest day first,
-// with per-model and per-harness breakdowns. A non-empty harness
-// restricts the report to that harness (`stats --harness`). Aggregation
-// runs in SQL: one GROUP BY (day, harness, model) pass with the timezone
-// rule applied via tatitok_day; Go only assembles the per-day rows from
-// the (few) group rows. tz must be resolvable by its name (IANA, "UTC"
-// or "Local").
-func (s *Store) Daily(ctx context.Context, tz *time.Location, harness string) ([]DailyRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT tatitok_day(ts, ?1) AS day,
+// with per-model and per-harness breakdowns, restricted by f (M5
+// Task 3: OR within a dimension, AND across). Aggregation runs in SQL:
+// one GROUP BY (day, harness, model) pass with the timezone rule
+// applied via tatitok_day; Go only assembles the per-day rows from the
+// (few) group rows. tz must be resolvable by its name (IANA, "UTC" or
+// "Local").
+func (s *Store) Daily(ctx context.Context, tz *time.Location, f Filters) ([]DailyRow, error) {
+	pred, fargs := f.eventsPredicate()
+	rows, err := s.db.QueryContext(ctx, `SELECT tatitok_day(ts, ?) AS day,
 			COALESCE(harness, '') AS h, model,
 			SUM(tokens_input), SUM(tokens_output),
 			SUM(tokens_cache_write), SUM(tokens_cache_read),
@@ -167,9 +237,9 @@ func (s *Store) Daily(ctx context.Context, tz *time.Location, harness string) ([
 			SUM(COALESCE(cost_api_equiv_micro, 0)),
 			SUM(cost_usd_micro IS NULL)
 		FROM usage_events
-		WHERE ?2 = '' OR harness = ?2
+		WHERE 1=1`+pred+`
 		GROUP BY day, h, model
-		ORDER BY day, h, model`, tz.String(), harness)
+		ORDER BY day, h, model`, append([]any{tz.String()}, fargs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -335,14 +405,15 @@ var dailyByDims = map[string]string{
 }
 
 // DailyBy returns per-day sums broken down by one dimension, oldest day
-// first, keys ordered within the day. Totals across a day's keys equal
-// the Daily row for that day (tested).
-func (s *Store) DailyBy(ctx context.Context, tz *time.Location, dim, harness string) ([]DailyByRow, error) {
+// first, keys ordered within the day, restricted by f. Totals across a
+// day's keys equal the Daily row for that day (tested).
+func (s *Store) DailyBy(ctx context.Context, tz *time.Location, dim string, f Filters) ([]DailyByRow, error) {
 	expr, ok := dailyByDims[dim]
 	if !ok {
 		return nil, fmt.Errorf("unknown --by dimension %q (supported: harness, provider, model, project)", dim)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT tatitok_day(ts, ?1) AS day,
+	pred, fargs := f.eventsPredicate()
+	rows, err := s.db.QueryContext(ctx, `SELECT tatitok_day(ts, ?) AS day,
 			`+expr+` AS key,
 			SUM(tokens_input), SUM(tokens_output),
 			SUM(tokens_cache_write), SUM(tokens_cache_read),
@@ -351,9 +422,9 @@ func (s *Store) DailyBy(ctx context.Context, tz *time.Location, dim, harness str
 			SUM(COALESCE(cost_api_equiv_micro, 0)),
 			SUM(cost_usd_micro IS NULL)
 		FROM usage_events
-		WHERE ?2 = '' OR harness = ?2
+		WHERE 1=1`+pred+`
 		GROUP BY day, key
-		ORDER BY day, key`, tz.String(), harness)
+		ORDER BY day, key`, append([]any{tz.String()}, fargs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -452,6 +523,50 @@ type ModelInfo struct {
 	Family   string `json:"modelFamily"`
 	Basis    string `json:"costBasis"`
 	Events   int64  `json:"events"`
+}
+
+// FacetValue is one stored value of a filterable dimension, with its
+// event count (M5 Task 3 — /api/v1/meta/facets, the dashboard rail).
+type FacetValue struct {
+	Value  string `json:"value"`
+	Events int64  `json:"events"`
+}
+
+// Facets enumerates every filterable dimension's stored values with
+// event counts. Keys match the filter parameter names; values are
+// ordered for stable output.
+func (s *Store) Facets(ctx context.Context) (map[string][]FacetValue, error) {
+	dims := []struct{ name, expr string }{
+		{"harness", "COALESCE(harness, '')"},
+		{"provider", "provider"},
+		{"model", "model"},
+		{"project", "COALESCE(project, '')"},
+		{"basis", "COALESCE(cost_basis, 'unknown')"},
+	}
+	out := make(map[string][]FacetValue, len(dims))
+	for _, d := range dims {
+		rows, err := s.db.QueryContext(ctx, `SELECT `+d.expr+` AS v, COUNT(*)
+			FROM usage_events GROUP BY v ORDER BY v`)
+		if err != nil {
+			return nil, err
+		}
+		var vals []FacetValue
+		for rows.Next() {
+			var fv FacetValue
+			if err := rows.Scan(&fv.Value, &fv.Events); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			vals = append(vals, fv)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		_ = rows.Close()
+		out[d.name] = vals
+	}
+	return out, nil
 }
 
 // ModelInventory lists every stored (provider, model, family, basis)

@@ -114,7 +114,7 @@ func TestInsertBatchReplacesChangedPayload(t *testing.T) {
 	if stats.Inserted != 0 || stats.Replaced != 1 {
 		t.Fatalf("replace: got %+v, want 0 inserted, 1 replaced", stats)
 	}
-	days, err := s.Daily(ctx, time.UTC, "")
+	days, err := s.Daily(ctx, time.UTC, Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestDailyTimezoneBucketing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	days, err := s.Daily(ctx, ist, "")
+	days, err := s.Daily(ctx, ist, Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestDailyTimezoneBucketing(t *testing.T) {
 	}
 
 	// Same data in UTC buckets differently.
-	utcDays, err := s.Daily(ctx, time.UTC, "")
+	utcDays, err := s.Daily(ctx, time.UTC, Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestDailyTimezoneMatrixDST(t *testing.T) {
 			if err != nil {
 				t.Fatalf("tzdata embedded via time/tzdata, must resolve: %v", err)
 			}
-			got, err := s.Daily(ctx, loc, "")
+			got, err := s.Daily(ctx, loc, Filters{})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -23,7 +23,7 @@ func TestDailyByBreakdownConsistency(t *testing.T) {
 	ctx := context.Background()
 	ingestAllFixtures(t, st)
 
-	daily, err := st.Daily(ctx, time.UTC, "")
+	daily, err := st.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +33,7 @@ func TestDailyByBreakdownConsistency(t *testing.T) {
 	}
 
 	for _, dim := range []string{"harness", "provider", "model", "project"} {
-		rows, err := st.DailyBy(ctx, time.UTC, dim, "")
+		rows, err := st.DailyBy(ctx, time.UTC, dim, store.Filters{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -77,7 +77,7 @@ func TestDailyByBreakdownConsistency(t *testing.T) {
 	}
 
 	// --harness restriction composes with --by.
-	rows, err := st.DailyBy(ctx, time.UTC, "provider", "codex")
+	rows, err := st.DailyBy(ctx, time.UTC, "provider", store.Filters{Harness: []string{"codex"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestDailyByBreakdownConsistency(t *testing.T) {
 	}
 
 	// Unknown dimension is a loud error.
-	if _, err := st.DailyBy(ctx, time.UTC, "nonsense", ""); err == nil {
+	if _, err := st.DailyBy(ctx, time.UTC, "nonsense", store.Filters{}); err == nil {
 		t.Fatal("unknown --by dimension accepted")
 	}
 }

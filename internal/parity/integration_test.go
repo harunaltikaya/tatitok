@@ -58,7 +58,7 @@ func TestCombinedDBIdempotency(t *testing.T) {
 	if n := ingestAllFixtures(t, st); n != wantCombinedRows {
 		t.Fatalf("first combined ingest inserted %d rows, want %d", n, wantCombinedRows)
 	}
-	daily1, err := st.Daily(ctx, time.UTC, "")
+	daily1, err := st.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestCombinedDBIdempotency(t *testing.T) {
 	if total != wantCombinedRows {
 		t.Fatalf("combined row count %d, want %d", total, wantCombinedRows)
 	}
-	daily2, err := st.Daily(ctx, time.UTC, "")
+	daily2, err := st.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestHarnessBreakdownConsistency(t *testing.T) {
 	ctx := context.Background()
 	ingestAllFixtures(t, st)
 
-	all, err := st.Daily(ctx, time.UTC, "")
+	all, err := st.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestHarnessBreakdownConsistency(t *testing.T) {
 
 	// filtered report == that harness's breakdown slice
 	for h := range seenHarnesses {
-		filtered, err := st.Daily(ctx, time.UTC, h)
+		filtered, err := st.Daily(ctx, time.UTC, store.Filters{Harness: []string{h}})
 		if err != nil {
 			t.Fatal(err)
 		}

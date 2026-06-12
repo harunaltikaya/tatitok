@@ -59,7 +59,7 @@ func TestLocalReferenceEquivalentFixtures(t *testing.T) {
 		t.Fatalf("ingested %d rows, want %d", sum.Inserted, wantOpencodeRows)
 	}
 
-	rows, err := st.DailyBy(ctx, time.UTC, "model", "opencode")
+	rows, err := st.DailyBy(ctx, time.UTC, "model", store.Filters{Harness: []string{"opencode"}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,11 +20,15 @@ func assertRollupDaily(t *testing.T, st *store.Store, when string) {
 	t.Helper()
 	ctx := context.Background()
 	for _, harness := range []string{"", "claude-code", "codex", "opencode"} {
-		direct, err := st.Daily(ctx, time.UTC, harness)
+		var f store.Filters
+		if harness != "" {
+			f.Harness = []string{harness}
+		}
+		direct, err := st.Daily(ctx, time.UTC, f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		rolled, err := st.DailyFromRollups(ctx, harness)
+		rolled, err := st.DailyFromRollups(ctx, f)
 		if err != nil {
 			t.Fatal(err)
 		}

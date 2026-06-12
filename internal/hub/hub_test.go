@@ -192,11 +192,11 @@ func TestConcurrentHubAndCLIIngest(t *testing.T) {
 		t.Errorf("concurrent DB holds %d events, serial reference %d", gotN, wantN)
 	}
 
-	got, err := h.st.Daily(ctx, time.UTC, "")
+	got, err := h.st.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := ref.Daily(ctx, time.UTC, "")
+	want, err := ref.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestConcurrentHubAndCLIIngest(t *testing.T) {
 
 	// Rollup consistency under concurrent writers: trigger-maintained
 	// rollups must equal direct aggregation on the contended DB.
-	fromRollups, err := h.st.DailyFromRollups(ctx, "")
+	fromRollups, err := h.st.DailyFromRollups(ctx, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}

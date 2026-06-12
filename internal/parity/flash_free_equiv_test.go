@@ -59,7 +59,7 @@ func TestFlashFreeOverrideEquivalentFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows, err := st.DailyBy(ctx, time.UTC, "model", "opencode")
+	rows, err := st.DailyBy(ctx, time.UTC, "model", store.Filters{Harness: []string{"opencode"}})
 	if err != nil {
 		t.Fatal(err)
 	}

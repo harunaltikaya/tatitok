@@ -13,6 +13,7 @@ import (
 
 	"github.com/harunaltikaya/tatitok/internal/adapters"
 	"github.com/harunaltikaya/tatitok/internal/adapters/claudecode"
+	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
 func TestRecomputeProvenanceFixtures(t *testing.T) {
@@ -24,7 +25,7 @@ func TestRecomputeProvenanceFixtures(t *testing.T) {
 	src := adapters.Source{Harness: "claude-code", Root: root, Machine: "gx10"}
 	st := ingestInto(t, []adapters.Source{src})
 
-	dailyBefore, err := st.Daily(ctx, time.UTC, "")
+	dailyBefore, err := st.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,7 @@ func TestRecomputeProvenanceFixtures(t *testing.T) {
 
 	// AS-4: the recompute changed provenance columns only — every daily
 	// number is identical.
-	dailyAfter, err := st.Daily(ctx, time.UTC, "")
+	dailyAfter, err := st.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}

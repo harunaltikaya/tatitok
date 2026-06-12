@@ -214,11 +214,12 @@ func TestWatcherSoak(t *testing.T) {
 	// answers (M3 report open question 4).
 	assertRollupsConsistent(t, h.st)
 	for _, harness := range []string{"claude-code", "codex", "opencode"} {
-		direct, err := h.st.Daily(ctx, time.UTC, harness)
+		f := store.Filters{Harness: []string{harness}}
+		direct, err := h.st.Daily(ctx, time.UTC, f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		rolled, err := h.st.DailyFromRollups(ctx, harness)
+		rolled, err := h.st.DailyFromRollups(ctx, f)
 		if err != nil {
 			t.Fatal(err)
 		}

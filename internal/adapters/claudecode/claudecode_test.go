@@ -256,7 +256,7 @@ func TestReingestIdempotent(t *testing.T) {
 	if first.ParseErrors != 0 {
 		t.Fatalf("parse errors on fixtures: %d", first.ParseErrors)
 	}
-	daily1, err := s.Daily(ctx, time.UTC, "")
+	daily1, err := s.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestReingestIdempotent(t *testing.T) {
 	if again := ingest(); again.Inserted != 0 {
 		t.Fatalf("re-ingest inserted %d new rows, want 0", again.Inserted)
 	}
-	daily2, err := s.Daily(ctx, time.UTC, "")
+	daily2, err := s.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}

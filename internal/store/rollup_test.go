@@ -24,11 +24,11 @@ import (
 func assertRollupConsistent(t *testing.T, s *Store, when string) {
 	t.Helper()
 	ctx := context.Background()
-	direct, err := s.Daily(ctx, time.UTC, "")
+	direct, err := s.Daily(ctx, time.UTC, Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rolled, err := s.DailyFromRollups(ctx, "")
+	rolled, err := s.DailyFromRollups(ctx, Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}

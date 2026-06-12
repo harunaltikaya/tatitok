@@ -6,14 +6,21 @@ package store
 
 import (
 	"context"
+	"fmt"
 )
 
 // DailyFromRollups is the rollup-served Daily: identical output to
-// Daily(ctx, UTC, harness) by construction — same grouping, same
-// assembly — but reading the pre-aggregated table. UTC ONLY: rollup
-// days are UTC buckets and cannot serve other timezones exactly (the
-// recorded M3 decision; hourly grain is deferred to the live milestone).
-func (s *Store) DailyFromRollups(ctx context.Context, harness string) ([]DailyRow, error) {
+// Daily(ctx, UTC, f) by construction — same grouping, same assembly —
+// but reading the pre-aggregated table. UTC ONLY: rollup days are UTC
+// buckets and cannot serve other timezones exactly (the recorded M3
+// decision; hourly grain is deferred). A basis filter is a loud error:
+// the rollup grain lacks basis — callers check f.RollupServable() and
+// fall back to the exact event path (M5 Task 3).
+func (s *Store) DailyFromRollups(ctx context.Context, f Filters) ([]DailyRow, error) {
+	if !f.RollupServable() {
+		return nil, fmt.Errorf("rollups cannot serve a basis filter — aggregate events (Daily) instead")
+	}
+	pred, args := f.rollupPredicate()
 	rows, err := s.db.QueryContext(ctx, `SELECT day_utc AS day,
 			harness AS h, model,
 			SUM(tokens_input), SUM(tokens_output),
@@ -21,9 +28,9 @@ func (s *Store) DailyFromRollups(ctx context.Context, harness string) ([]DailyRo
 			SUM(tokens_reasoning), SUM(cost_usd_micro),
 			SUM(cost_api_equiv_micro), SUM(events_unpriced)
 		FROM rollup_daily
-		WHERE events > 0 AND (?1 = '' OR harness = ?1)
+		WHERE events > 0`+pred+`
 		GROUP BY day, h, model
-		ORDER BY day, h, model`, harness)
+		ORDER BY day, h, model`, args...)
 	if err != nil {
 		return nil, err
 	}

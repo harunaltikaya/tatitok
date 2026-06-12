@@ -173,7 +173,7 @@ func TestAPIStatsDaily(t *testing.T) {
 	if got.Grain != "day" || got.TZ != "UTC" {
 		t.Errorf("payload must declare grain/tz: got %q/%q", got.Grain, got.TZ)
 	}
-	want, err := h.st.DailyFromRollups(ctx, "")
+	want, err := h.st.DailyFromRollups(ctx, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestAPIStatsDailyBy(t *testing.T) {
 			DailyBy []store.DailyByRow `json:"daily_by"`
 		}
 		getOK(t, h, "/api/v1/stats/daily?by="+by, &got)
-		want, err := h.st.DailyBy(context.Background(), time.UTC, by, "")
+		want, err := h.st.DailyBy(context.Background(), time.UTC, by, store.Filters{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -232,6 +232,154 @@ func TestAPIStatsDailyBy(t *testing.T) {
 			t.Errorf("by=%s payload != DailyBy", by)
 		}
 	}
+}
+
+// TestAPIFilters (M5 Task 3): repeatable facet filter params — OR
+// within a dimension, AND across — on stats/daily and totals; every
+// filtered payload equals the equivalent direct store query; the
+// serving path is declared ("source": "rollup"|"events"); unknown
+// VALUES are empty results with the filters echoed, never errors;
+// unknown parameter NAMES stay rejected (the M4 rule).
+func TestAPIFilters(t *testing.T) {
+	h := seedHub(t)
+	ctx := context.Background()
+
+	type dailyPayload struct {
+		Source  string             `json:"source"`
+		Filters *store.Filters     `json:"filters"`
+		Daily   []store.DailyRow   `json:"daily"`
+		DailyBy []store.DailyByRow `json:"daily_by"`
+	}
+
+	// Rollup-servable filter: source rollup, equals the direct query.
+	var got dailyPayload
+	getOK(t, h, "/api/v1/stats/daily?harness=claude-code&harness=codex", &got)
+	if got.Source != "rollup" || got.Filters == nil || len(got.Filters.Harness) != 2 {
+		t.Fatalf("rollup-servable filter: source=%q filters=%+v", got.Source, got.Filters)
+	}
+	want, err := h.st.DailyFromRollups(ctx, store.Filters{Harness: []string{"claude-code", "codex"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gj, _ := json.Marshal(got.Daily)
+	wj, _ := json.Marshal(want)
+	if string(gj) != string(wj) {
+		t.Errorf("filtered daily != direct store query")
+	}
+	if len(got.Daily) == 0 {
+		t.Fatal("fixture-backed filter returned nothing")
+	}
+
+	// Basis filter: rollups cannot serve — events path, declared.
+	got = dailyPayload{}
+	getOK(t, h, "/api/v1/stats/daily?basis=api_price", &got)
+	if got.Source != "events" {
+		t.Fatalf("basis filter source = %q, want events", got.Source)
+	}
+	wantEv, err := h.st.Daily(ctx, time.UTC, store.Filters{Basis: []string{"api_price"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gj, _ = json.Marshal(got.Daily)
+	wj, _ = json.Marshal(wantEv)
+	if string(gj) != string(wj) {
+		t.Errorf("basis-filtered daily != direct store query")
+	}
+
+	// by= with a filter: events path, equals the direct query.
+	got = dailyPayload{}
+	getOK(t, h, "/api/v1/stats/daily?by=model&provider=anthropic", &got)
+	if got.Source != "events" {
+		t.Fatalf("by+filter source = %q, want events", got.Source)
+	}
+	wantBy, err := h.st.DailyBy(ctx, time.UTC, "model", store.Filters{Provider: []string{"anthropic"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gj, _ = json.Marshal(got.DailyBy)
+	wj, _ = json.Marshal(wantBy)
+	if string(gj) != string(wj) {
+		t.Errorf("by+filtered daily_by != direct store query")
+	}
+
+	// Unknown VALUE: empty result, declared via the echoed filters — not
+	// an error.
+	got = dailyPayload{}
+	getOK(t, h, "/api/v1/stats/daily?provider=no-such-provider", &got)
+	if len(got.Daily) != 0 || got.Daily == nil || got.Filters == nil ||
+		len(got.Filters.Provider) != 1 {
+		t.Errorf("unknown filter value: daily=%v filters=%+v (want declared empty result)", got.Daily, got.Filters)
+	}
+
+	// Totals with filters: equals summing the same filtered rows; source
+	// declared on both paths.
+	var totals struct {
+		Source string `json:"source"`
+		Totals struct {
+			store.TokenSums
+			store.CostSums
+		} `json:"totals"`
+	}
+	getOK(t, h, "/api/v1/totals?harness=opencode", &totals)
+	if totals.Source != "rollup" {
+		t.Errorf("filtered totals source = %q, want rollup", totals.Source)
+	}
+	wantRows, err := h.st.DailyFromRollups(ctx, store.Filters{Harness: []string{"opencode"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wantIn int64
+	for _, r := range wantRows {
+		wantIn += r.Input
+	}
+	if totals.Totals.Input != wantIn || wantIn == 0 {
+		t.Errorf("filtered totals input = %d, want %d", totals.Totals.Input, wantIn)
+	}
+	getOK(t, h, "/api/v1/totals?basis=local", &totals)
+	if totals.Source != "events" {
+		t.Errorf("basis-filtered totals source = %q, want events", totals.Source)
+	}
+
+	// Unknown parameter NAMES remain rejected.
+	assertErrEnvelope(t, h, "/api/v1/stats/daily?models=x", http.StatusBadRequest)
+	assertErrEnvelope(t, h, "/api/v1/totals?basis_=x", http.StatusBadRequest)
+}
+
+// TestAPIMetaFacets (M5 Task 3): the facet rail's source — every
+// filterable dimension enumerated with event counts, equal to the
+// direct store query.
+func TestAPIMetaFacets(t *testing.T) {
+	h := seedHub(t)
+	var got struct {
+		Facets map[string][]store.FacetValue `json:"facets"`
+	}
+	getOK(t, h, "/api/v1/meta/facets", &got)
+	want, err := h.st.Facets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Facets) != 5 {
+		t.Fatalf("facets payload has %d dimensions, want 5: %v", len(got.Facets), got.Facets)
+	}
+	total, err := h.st.CountEvents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for dim, vals := range want {
+		gj, _ := json.Marshal(got.Facets[dim])
+		wj, _ := json.Marshal(vals)
+		if string(gj) != string(wj) {
+			t.Errorf("facet %s != direct store query", dim)
+		}
+		var n int64
+		for _, v := range vals {
+			n += v.Events
+		}
+		if n != total {
+			t.Errorf("facet %s counts sum to %d, want %d", dim, n, total)
+		}
+	}
+	assertErrEnvelope(t, h, "/api/v1/meta/facets?x=1", http.StatusBadRequest)
 }
 
 func TestAPITotals(t *testing.T) {
@@ -245,7 +393,7 @@ func TestAPITotals(t *testing.T) {
 		} `json:"totals"`
 	}
 	getOK(t, h, "/api/v1/totals", &got)
-	want, err := h.st.DailyFromRollups(context.Background(), "")
+	want, err := h.st.DailyFromRollups(context.Background(), store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +454,8 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 	h := seedHub(t)
 	paths := []string{
 		"/api/v1/health", "/api/v1/stats/daily", "/api/v1/totals",
-		"/api/v1/meta/models", "/api/v1/plans", "/api/v1/stream",
+		"/api/v1/meta/models", "/api/v1/meta/facets", "/api/v1/plans",
+		"/api/v1/stream",
 	}
 	for _, p := range paths {
 		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {

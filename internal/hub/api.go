@@ -89,6 +89,7 @@ func (h *Hub) registerAPI(mux *http.ServeMux) {
 	get("/api/v1/stats/daily", h.apiStatsDaily)
 	get("/api/v1/totals", h.apiTotals)
 	get("/api/v1/meta/models", h.apiMetaModels)
+	get("/api/v1/meta/facets", h.apiMetaFacets)
 	get("/api/v1/plans", h.apiPlans)
 	get("/api/v1/stream", h.apiStream)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
@@ -152,11 +153,32 @@ func inRange(day, from, to string) bool {
 	return (from == "" || day >= from) && (to == "" || day <= to)
 }
 
+// filterParamNames are the M5 Task 3 facet filter query parameters —
+// repeatable (OR within a dimension, AND across dimensions), matching
+// the dashboard semantics exactly. Unknown VALUES are not errors (an
+// empty result, declared via the echoed filters); unknown parameter
+// NAMES stay rejected (the M4 rule, enforced by checkParams).
+var filterParamNames = []string{"harness", "provider", "model", "project", "basis"}
+
+func parseFilters(r *http.Request) store.Filters {
+	q := r.URL.Query()
+	return store.Filters{
+		Harness:  q["harness"],
+		Provider: q["provider"],
+		Model:    q["model"],
+		Project:  q["project"],
+		Basis:    q["basis"],
+	}
+}
+
 // apiStatsDaily mirrors the CLI exactly: plain daily is rollup-backed
-// (UTC rollup grain, M3); ?by= aggregates events in UTC like
-// `stats --daily --by` — same store calls, same numbers.
+// (UTC rollup grain, M3) unless a filter the rollup grain cannot serve
+// (basis) forces exact event aggregation; ?by= always aggregates
+// events. The serving path is declared in the payload ("source":
+// "rollup"|"events") — honesty about the path survives into the
+// response.
 func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
-	if err := checkParams(r, "from", "to", "by"); err != nil {
+	if err := checkParams(r, append([]string{"from", "to", "by"}, filterParamNames...)...); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
 		return
 	}
@@ -166,10 +188,14 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	f := parseFilters(r)
 	base := map[string]any{"grain": "day", "tz": "UTC"}
+	if !f.IsZero() {
+		base["filters"] = f
+	}
 
 	if by := r.URL.Query().Get("by"); by != "" {
-		rows, err := h.st.DailyBy(ctx, time.UTC, by, "")
+		rows, err := h.st.DailyBy(ctx, time.UTC, by, f)
 		if err != nil {
 			if strings.Contains(err.Error(), "unknown --by dimension") {
 				writeErr(w, http.StatusBadRequest, "bad_param",
@@ -179,24 +205,32 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
 			return
 		}
-		filtered := rows[:0]
+		filtered := make([]store.DailyByRow, 0, len(rows))
 		for _, row := range rows {
 			if inRange(row.Date, from, to) {
 				filtered = append(filtered, row)
 			}
 		}
 		base["by"] = by
+		base["source"] = "events"
 		base["daily_by"] = filtered
 		writeJSON(w, http.StatusOK, base)
 		return
 	}
 
-	rows, err := h.st.DailyFromRollups(ctx, "")
+	var rows []store.DailyRow
+	if f.RollupServable() {
+		base["source"] = "rollup"
+		rows, err = h.st.DailyFromRollups(ctx, f)
+	} else {
+		base["source"] = "events"
+		rows, err = h.st.Daily(ctx, time.UTC, f)
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
-	filtered := rows[:0]
+	filtered := make([]store.DailyRow, 0, len(rows))
 	for _, row := range rows {
 		if inRange(row.Date, from, to) {
 			filtered = append(filtered, row)
@@ -208,11 +242,12 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 
 var windowRe = regexp.MustCompile(`^([1-9][0-9]{0,2})d$`)
 
-// apiTotals is the convenience aggregate over the rollup-backed daily
-// rows. window: "all" (default), "today", or "Nd" (last N UTC days
-// including today, N ≤ 365).
+// apiTotals is the convenience aggregate over the daily rows —
+// rollup-backed unless a basis filter forces the exact event path
+// (declared as "source"). window: "all" (default), "today", or "Nd"
+// (last N UTC days including today, N ≤ 365).
 func (h *Hub) apiTotals(w http.ResponseWriter, r *http.Request) {
-	if err := checkParams(r, "window"); err != nil {
+	if err := checkParams(r, append([]string{"window"}, filterParamNames...)...); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
 		return
 	}
@@ -242,7 +277,16 @@ func (h *Hub) apiTotals(w http.ResponseWriter, r *http.Request) {
 		from = time.Now().UTC().AddDate(0, 0, -(n - 1)).Format(dayFormat)
 	}
 
-	rows, err := h.st.DailyFromRollups(r.Context(), "")
+	f := parseFilters(r)
+	source := "rollup"
+	var rows []store.DailyRow
+	var err error
+	if f.RollupServable() {
+		rows, err = h.st.DailyFromRollups(r.Context(), f)
+	} else {
+		source = "events"
+		rows, err = h.st.Daily(r.Context(), time.UTC, f)
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
@@ -266,11 +310,15 @@ func (h *Hub) apiTotals(w http.ResponseWriter, r *http.Request) {
 		sums.CostAPIEquivMicro += row.CostAPIEquivMicro
 		sums.UnpricedEvents += row.UnpricedEvents
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"grain": "day", "tz": "UTC",
+	payload := map[string]any{
+		"grain": "day", "tz": "UTC", "source": source,
 		"window": window, "from": from, "to": today,
 		"days": days, "totals": sums,
-	})
+	}
+	if !f.IsZero() {
+		payload["filters"] = f
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 // planPeriodUsage sums one fixed lookback (rolling week / calendar
@@ -379,6 +427,27 @@ func (h *Hub) apiPlans(w http.ResponseWriter, r *http.Request) {
 		"tz": "UTC", "now": now.Format(time.RFC3339),
 		"plans": out, "unmatched_plan_events": unmatched,
 	})
+}
+
+// apiMetaFacets (M5 Task 3): every filterable dimension's stored values
+// with event counts — the dashboard facet rail's source. Project values
+// render locally only (localhost serving; leakcheck guards the tree).
+func (h *Hub) apiMetaFacets(w http.ResponseWriter, r *http.Request) {
+	if err := checkParams(r); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
+	facets, err := h.st.Facets(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	for k, v := range facets {
+		if v == nil {
+			facets[k] = []store.FacetValue{}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"facets": facets})
 }
 
 // apiMetaModels: the model → family → pricing basis inventory that

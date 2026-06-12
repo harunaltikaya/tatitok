@@ -101,11 +101,11 @@ func assertConverged(t *testing.T, got *store.Store, a adapters.Adapter, src ada
 	if gotN != wantN {
 		t.Errorf("watched store has %d events, reference backfill %d", gotN, wantN)
 	}
-	gd, err := got.Daily(ctx, time.UTC, "")
+	gd, err := got.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rd, err := ref.Daily(ctx, time.UTC, "")
+	rd, err := ref.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,11 +120,11 @@ func assertConverged(t *testing.T, got *store.Store, a adapters.Adapter, src ada
 func assertRollupsConsistent(t *testing.T, st *store.Store) {
 	t.Helper()
 	ctx := context.Background()
-	direct, err := st.Daily(ctx, time.UTC, "")
+	direct, err := st.Daily(ctx, time.UTC, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rolled, err := st.DailyFromRollups(ctx, "")
+	rolled, err := st.DailyFromRollups(ctx, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}

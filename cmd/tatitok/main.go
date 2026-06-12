@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	// Embed the IANA zone database: day bucketing (--timezone) must work
@@ -279,13 +280,24 @@ func cmdStats(args []string) error {
 	asJSON := fs.Bool("json", false, "JSON output")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	tzName := fs.String("timezone", "local", "IANA timezone for day bucketing")
-	harness := fs.String("harness", "", "restrict to one harness (claude-code, codex, opencode)")
+	harness := fs.String("harness", "", "restrict to harness(es), comma-separated (claude-code, codex, opencode)")
+	provider := fs.String("provider", "", "restrict to provider(s), comma-separated")
+	model := fs.String("model", "", "restrict to model(s), comma-separated (raw model strings)")
+	project := fs.String("project", "", "restrict to project(s), comma-separated")
+	basis := fs.String("basis", "", "restrict to cost basis/bases, comma-separated (api_price, plan_included, local, free, unknown)")
 	_ = fs.Parse(args)
 	if *daily == *session {
 		return fmt.Errorf("pass exactly one of --daily or --session")
 	}
 	if *by != "" && !*daily {
 		return fmt.Errorf("--by applies to --daily only")
+	}
+	// M5 Task 3: the API's facet filters, on the CLI — same store calls,
+	// same semantics (OR within a dimension, AND across) — so dashboard
+	// claims stay CLI-verifiable.
+	filters := store.Filters{
+		Harness: splitCSV(*harness), Provider: splitCSV(*provider),
+		Model: splitCSV(*model), Project: splitCSV(*project), Basis: splitCSV(*basis),
 	}
 
 	tz := time.Local
@@ -304,34 +316,42 @@ func cmdStats(args []string) error {
 	ctx := context.Background()
 	switch {
 	case *daily && *by != "":
-		rows, err := st.DailyBy(ctx, tz, *by, *harness)
+		rows, err := st.DailyBy(ctx, tz, *by, filters)
 		if err != nil {
 			return err
 		}
 		if *asJSON {
-			return printJSON(map[string]any{"by": *by, "daily_by": rows})
+			return printJSON(map[string]any{"by": *by, "source": "events", "daily_by": rows})
 		}
 		printDailyByTable(*by, rows)
 		return nil
 	case *daily:
 		// UTC daily is served from the pre-aggregated rollup table —
 		// byte-equal to direct aggregation by construction (property
-		// tested); other timezones aggregate events exactly (rollup days
-		// are UTC buckets; M3 decision).
+		// tested) — unless a basis filter forces the exact event path
+		// (the rollup grain lacks basis; M5 Task 3). Other timezones
+		// aggregate events exactly (rollup days are UTC buckets; M3).
 		var rows []store.DailyRow
-		if tz.String() == "UTC" {
-			rows, err = st.DailyFromRollups(ctx, *harness)
+		source := "events"
+		if tz.String() == "UTC" && filters.RollupServable() {
+			source = "rollup"
+			rows, err = st.DailyFromRollups(ctx, filters)
 		} else {
-			rows, err = st.Daily(ctx, tz, *harness)
+			rows, err = st.Daily(ctx, tz, filters)
 		}
 		if err != nil {
 			return err
 		}
 		if *asJSON {
-			return printJSON(map[string]any{"daily": rows})
+			return printJSON(map[string]any{"source": source, "daily": rows})
 		}
 		printDailyTable(rows)
 		return nil
+	}
+	// Sessions keeps its M2 shape: a single optional harness restriction.
+	if len(filters.Provider)+len(filters.Model)+len(filters.Project)+len(filters.Basis) > 0 ||
+		len(filters.Harness) > 1 {
+		return fmt.Errorf("--session filters by a single --harness only (facet filters apply to --daily)")
 	}
 	rows, err := st.Sessions(ctx, tz, *harness)
 	if err != nil {
@@ -342,6 +362,21 @@ func cmdStats(args []string) error {
 	}
 	printSessionTable(rows)
 	return nil
+}
+
+// splitCSV parses a comma-separated multi-value flag; empty segments
+// are dropped, whitespace trimmed.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if v := strings.TrimSpace(part); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // cmdRecompute is the explicit recompute entrypoint (PRD AS-4: historical

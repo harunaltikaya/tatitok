@@ -127,7 +127,7 @@ func TestCCUsageDailyParity(t *testing.T) {
 					Harness: set.harness, Root: set.root(t, machineDir),
 					Machine: filepath.Base(machineDir),
 				}})
-				got, err := s.Daily(context.Background(), tz, "")
+				got, err := s.Daily(context.Background(), tz, store.Filters{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -187,7 +187,7 @@ func TestParityFull(t *testing.T) {
 	}
 
 	s := ingestInto(t, srcs)
-	got, err := s.Daily(context.Background(), time.Local, "")
+	got, err := s.Daily(context.Background(), time.Local, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestParityFullCodex(t *testing.T) {
 	}
 
 	s := ingestIntoWith(t, codex.Adapter{}, srcs)
-	got, err := s.Daily(context.Background(), time.Local, "")
+	got, err := s.Daily(context.Background(), time.Local, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestParityFullOpencode(t *testing.T) {
 		t.Fatal("snapshot store not detected")
 	}
 	s := ingestIntoWith(t, opencode.Adapter{}, snapSrcs)
-	got, err := s.Daily(ctx, time.Local, "")
+	got, err := s.Daily(ctx, time.Local, store.Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}

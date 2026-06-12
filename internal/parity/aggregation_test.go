@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/harunaltikaya/tatitok/internal/adapters"
+	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
 // The < 5 s full-history stats budget (with headroom): the fixture DB is
@@ -28,7 +29,7 @@ func TestSQLAggregationBudget(t *testing.T) {
 		Harness: "claude-code", Root: root, Machine: "gx10",
 	}})
 	start := time.Now()
-	if _, err := s.Daily(context.Background(), time.UTC, ""); err != nil {
+	if _, err := s.Daily(context.Background(), time.UTC, store.Filters{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Sessions(context.Background(), time.UTC, ""); err != nil {
@@ -42,7 +43,7 @@ func TestSQLAggregationBudget(t *testing.T) {
 	// reads the pre-aggregated table, so this is the cheapest query in
 	// the system and the timing is a regression tripwire, not a race.
 	start = time.Now()
-	if _, err := s.DailyFromRollups(context.Background(), ""); err != nil {
+	if _, err := s.DailyFromRollups(context.Background(), store.Filters{}); err != nil {
 		t.Fatal(err)
 	}
 	if d := time.Since(start); d > 5*time.Second {
