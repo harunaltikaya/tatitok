@@ -221,6 +221,29 @@ func isLocalProvider(provider string) bool {
 	return provider == "vllm" || strings.HasPrefix(provider, "vllm-")
 }
 
+// snapshotCanPriceKey reports whether the embedded snapshot could
+// resolve rates for an override key under SOME provider: the bare key
+// itself, or any provider-prefixed form (snapshotLookup tries
+// provider/model and provider/family with the EVENT's provider, which
+// load-time validation cannot know). Codex M5 round, finding 1: the
+// load-time half of the regime-only guard.
+func snapshotCanPriceKey(key string) (bool, error) {
+	loadOnce.Do(load)
+	if loadErr != nil {
+		return false, loadErr
+	}
+	if _, ok := snapRates[key]; ok {
+		return true, nil
+	}
+	suffix := "/" + key
+	for k := range snapRates {
+		if strings.HasSuffix(k, suffix) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // snapshotLookup resolves rates from the embedded snapshot: model,
 // provider/model, family, provider/family — first hit wins.
 func snapshotLookup(provider, model, family string) (Rates, bool) {
@@ -256,10 +279,20 @@ func Resolve(provider, model, family string, ts time.Time, ov *Overrides) (Quote
 		if p.free {
 			return Quote{Basis: BasisFree, Rates: &Rates{}, Snapshot: "override"}, nil
 		}
-		eff, suffix := p.patchAt(ts)
-		base, _ := snapshotLookup(provider, model, family)
-		r := eff.apply(base)
-		return Quote{Basis: BasisAPIPrice, Rates: &r, Snapshot: "override" + suffix}, nil
+		// Codex M5 round, finding 1 (HIGH): an effective patch with no
+		// rate fields — a regime-only entry outside its regimes —
+		// contributes nothing at this timestamp, so normal resolution
+		// decides: the snapshot with its truthful provenance where it
+		// can price, UNKNOWN where it cannot. The old unconditional
+		// return priced the snapshot-miss case at $0 api_price. Load
+		// validation rejects entries that would ALWAYS land here on a
+		// snapshot miss; this guard covers the remainder (the snapshot
+		// prices the key only under some providers).
+		if eff, suffix := p.patchAt(ts); eff.hasRates() {
+			base, _ := snapshotLookup(provider, model, family)
+			r := eff.apply(base)
+			return Quote{Basis: BasisAPIPrice, Rates: &r, Snapshot: "override" + suffix}, nil
+		}
 	}
 	if isLocalProvider(provider) {
 		return Quote{Basis: BasisLocal, Rates: &Rates{}, Snapshot: snapVersion}, nil

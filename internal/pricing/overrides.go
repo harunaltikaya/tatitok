@@ -515,6 +515,21 @@ func LoadOverrides(path string) (*Overrides, error) {
 					path, model, prev.from.Format(time.RFC3339), cur.from.Format(time.RFC3339))
 			}
 		}
+		// Codex M5 round, finding 1 (HIGH): an entry with ONLY dated
+		// regimes and no default rates leaves outside-regime events to
+		// the snapshot — if the snapshot cannot price the key under any
+		// provider, those events would be unpriceable (and used to price
+		// $0). A declaration that cannot be honored fails at load, per
+		// the strict-load philosophy.
+		if len(p.regimes) > 0 && !p.hasRates() {
+			ok, err := snapshotCanPriceKey(model)
+			if err != nil {
+				return nil, fmt.Errorf("price overrides %s: %w", path, err)
+			}
+			if !ok {
+				return nil, fmt.Errorf("price overrides %s: model %q: only dated regimes price it and the snapshot cannot — events outside the regimes would be unpriceable; add top-level rates (the current/default regime) or remove the entry", path, model)
+			}
+		}
 		ov.patches[model] = p
 	}
 	for local, ref := range f.ReferenceModels {
@@ -595,6 +610,14 @@ func LoadOverrides(path string) (*Overrides, error) {
 			p.WindowStart = AnchorExact
 		default:
 			return nil, fmt.Errorf("price overrides %s: plan %q: window_start %q is not \"floored\" or \"exact\"", path, name, pe.WindowStart)
+		}
+		// Codex M5 round, finding 3 (MED): hour-floored starts OVERLAP
+		// for non-whole-hour durations ≥ 1h (90m: [09:00,10:30) then
+		// [10:00,11:30)) — rejected here, by validation not new math.
+		// Sub-hour floored keeps its documented exception (the floor is
+		// skipped); exact anchoring never floors, so any duration works.
+		if p.WindowStart == AnchorFloored && p.Window >= time.Hour && p.Window%time.Hour != 0 {
+			return nil, fmt.Errorf("price overrides %s: plan %q: window %s with window_start \"floored\" must be a whole number of hours (hour-floored starts would overlap) — use a whole-hour window or window_start \"exact\"", path, name, pe.Window)
 		}
 		for _, c := range []struct {
 			n    json.Number

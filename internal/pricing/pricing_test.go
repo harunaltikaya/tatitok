@@ -1051,6 +1051,18 @@ func TestPlanParsing(t *testing.T) {
 	if ov.Plans()[0].WindowStart != AnchorExact {
 		t.Fatalf("exact anchor not parsed: %+v", ov.Plans()[0])
 	}
+	// Non-whole-hour durations are fine under EXACT anchoring (no floor
+	// → no overlap), and sub-hour floored keeps its documented exception
+	// (the floor is skipped).
+	ov = loadOverridesJSON(t, `{
+		"plans": [
+			{"name": "a", "matchers": [{"harness": "x"}], "window": "90m", "window_start": "exact"},
+			{"name": "b", "matchers": [{"harness": "y"}], "window": "30m"}
+		]
+	}`)
+	if len(ov.Plans()) != 2 {
+		t.Fatalf("exact 90m / floored 30m rejected: %+v", ov.Plans())
+	}
 
 	bad := map[string]string{
 		"missing name":   `{"plans": [{"matchers": [{"harness": "h"}], "window": "5h"}]}`,
@@ -1065,6 +1077,11 @@ func TestPlanParsing(t *testing.T) {
 		"unknown plan key":    `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "cap": "1"}]}`,
 		"unknown matcher key": `{"plans": [{"name": "p", "matchers": [{"harnes": "h"}], "window": "5h"}]}`,
 		"invalid window_start": `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "window_start": "rounded"}]}`,
+		// Codex M5 round, finding 3 (MED): hour-floored starts overlap
+		// for non-whole-hour durations ≥ 1h (90m: [09:00,10:30) then
+		// [10:00,11:30)) — rejected at load, by validation not new math.
+		"non-whole-hour floored window": `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "90m"}]}`,
+		"non-whole-hour floored window (explicit)": `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "1h30m", "window_start": "floored"}]}`,
 	}
 	dir := t.TempDir()
 	for name, body := range bad {
@@ -1239,6 +1256,113 @@ func TestApplyPlanIncluded(t *testing.T) {
 	}
 	if l.CostBasis != "local" {
 		t.Fatalf("plan beat the local-provider rule: %+v", l)
+	}
+
+	// Codex M5 round, finding 2 (MED): a PATCHED local model resolves
+	// api_price (the owner's rates beat local zeroing for BILLING — M3
+	// rule) but it is still the owner's metal: the local-provider rule
+	// is evaluated before plan matching UNCONDITIONALLY, patch or no
+	// patch — a plan never captures a vllm* event.
+	pl := loadOverridesJSON(t, `{
+		"prices": {"qwen3.6-27b": {"input_usd_per_mtok": "0.15"}},
+		"plans": [{"name": "trap", "matchers": [{"harness": "opencode"}], "window": "5h"}]
+	}`)
+	pe := core.Event{ID: "p7", Harness: "opencode", Provider: "vllm",
+		Model: "qwen3.6-27b", ModelFamily: "qwen3.6-27b",
+		TS: time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC), TokensInput: 1_000_000}
+	if err := Apply(&pe, pl); err != nil {
+		t.Fatal(err)
+	}
+	if pe.CostBasis != "api_price" || pe.CostUSDMicro == nil || *pe.CostUSDMicro != 150_000 {
+		t.Fatalf("patched local model under a matching plan: basis=%s cost=%v, want api_price at the patch (never plan_included)", pe.CostBasis, pe.CostUSDMicro)
+	}
+}
+
+// Codex M5 round, finding 1 (HIGH): a regime-only override on a model
+// the snapshot cannot price must never price outside-regime events at
+// $0 api_price. Two layers: (b) load-time — an entry whose pricing
+// would be unresolvable outside its regimes is a config error naming
+// the cure; (a) runtime — where validation's reach ends (the snapshot
+// prices the key only under SOME providers), an effective patch with
+// no rates over a snapshot miss falls through to normal resolution:
+// unpriced, never $0.
+func TestRegimeOnlyOverrideCannotPriceZero(t *testing.T) {
+	// (b) snapshot-absent key with only regimes: load error.
+	path := filepath.Join(t.TempDir(), "prices.json")
+	if err := os.WriteFile(path, []byte(`{
+		"prices": {"no-such-model-anywhere": {
+			"regimes": [{"from": "2026-01-01", "until": "2026-02-01",
+				"input_usd_per_mtok": "1.00"}]
+		}}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOverrides(path); err == nil {
+		t.Fatal("regime-only entry on a snapshot-absent model accepted — outside-regime events would price $0")
+	}
+
+	// Top-level rates (a default regime) cure it.
+	loadOverridesJSON(t, `{
+		"prices": {"no-such-model-anywhere": {
+			"input_usd_per_mtok": "2.00",
+			"regimes": [{"from": "2026-01-01", "until": "2026-02-01",
+				"input_usd_per_mtok": "1.00"}]
+		}}
+	}`)
+
+	// A provider-prefixed snapshot key also cures it at load — the
+	// snapshot CAN price nova-lite-v1 (amazon-nova/nova-lite-v1; the
+	// bare key is absent, pinned here so a snapshot refresh that adds
+	// it fails this test loudly instead of silently weakening it).
+	ov := loadOverridesJSON(t, `{
+		"prices": {"nova-lite-v1": {
+			"regimes": [{"from": "2026-01-01", "until": "2026-02-01",
+				"input_usd_per_mtok": "1.00"}]
+		}}
+	}`)
+	if _, ok := snapRates["nova-lite-v1"]; ok {
+		t.Fatal("snapshot now prices bare nova-lite-v1 — pick a new prefixed-only key for this test")
+	}
+
+	// (a) runtime, inside the regime: regime rates, dated provenance.
+	in := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
+	out := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	q, err := Resolve("someprovider", "nova-lite-v1", "nova-lite-v1", in, ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Basis != BasisAPIPrice || q.Rates.Input != 1_000_000 ||
+		q.Snapshot != "override+regime:2026-01-01T00:00:00Z" {
+		t.Fatalf("inside regime: %+v %q", q.Rates, q.Snapshot)
+	}
+	// Outside the regime under a provider the snapshot cannot price:
+	// UNPRICED — the literal finding (was: $0 api_price "override").
+	q, err = Resolve("someprovider", "nova-lite-v1", "nova-lite-v1", out, ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q.Basis != BasisUnknown || q.Rates != nil {
+		t.Fatalf("outside regime, snapshot miss: %+v — must be unpriced, never $0", q)
+	}
+	e := core.Event{ID: "f1", Harness: "opencode", Provider: "someprovider",
+		Model: "nova-lite-v1", ModelFamily: "nova-lite-v1",
+		TS: out, TokensInput: 1000}
+	if err := Apply(&e, ov); err != nil {
+		t.Fatal(err)
+	}
+	if e.CostBasis != "unknown" || e.CostUSDMicro != nil {
+		t.Fatalf("outside-regime event stamped: basis=%s cost=%v, want unknown/NULL", e.CostBasis, e.CostUSDMicro)
+	}
+	// Outside the regime under the provider the snapshot DOES price:
+	// the snapshot's rates and the snapshot's provenance — the override
+	// contributed nothing to this event.
+	q, err = Resolve("amazon-nova", "nova-lite-v1", "nova-lite-v1", out, ov)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ver, _ := SnapshotVersion()
+	if q.Basis != BasisAPIPrice || q.Rates == nil || q.Rates.IsZero() || q.Snapshot != ver {
+		t.Fatalf("outside regime, snapshot hit: %+v %q, want snapshot rates + snapshot provenance", q.Rates, q.Snapshot)
 	}
 }
 
