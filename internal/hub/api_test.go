@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,12 +20,22 @@ import (
 	"github.com/harunaltikaya/tatitok/internal/adapters/claudecode"
 	"github.com/harunaltikaya/tatitok/internal/adapters/codex"
 	"github.com/harunaltikaya/tatitok/internal/adapters/opencode"
+	"github.com/harunaltikaya/tatitok/internal/core"
+	"github.com/harunaltikaya/tatitok/internal/pricing"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
 // seedHub starts a hub (no watchers) on a DB freshly ingested from all
 // three harness fixtures.
 func seedHub(t *testing.T) *Hub {
+	t.Helper()
+	return seedHubWith(t, nil, nil)
+}
+
+// seedHubWith is seedHub with a price-override config applied to both
+// ingest and the hub, plus optional extra events inserted after the
+// fixture ingest (priced by the same overrides).
+func seedHubWith(t *testing.T, ov *pricing.Overrides, extra []core.Event) *Hub {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "seeded.db")
 	st, err := store.Open(dbPath)
@@ -47,15 +58,28 @@ func seedHub(t *testing.T) *Hub {
 		{codex.Adapter{}, adapters.Source{Harness: "codex", Root: cxRoot, Machine: "gx10"}},
 		{opencode.Adapter{}, adapters.Source{Harness: "opencode", Root: ocRoot, Machine: "gx10"}},
 	} {
-		if _, err := adapters.IngestBackfill(ctx, st, in.a, []adapters.Source{in.src}, nil); err != nil {
+		if _, err := adapters.IngestBackfill(ctx, st, in.a, []adapters.Source{in.src}, ov); err != nil {
 			t.Fatalf("%s seed: %v", in.src.Harness, err)
+		}
+	}
+	if len(extra) > 0 {
+		for i := range extra {
+			if err := pricing.Apply(&extra[i], ov); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := st.InsertBatch(ctx, extra, store.SourceInfo{
+			Harness: extra[0].Harness, Machine: "gx10", Path: "synthetic-now.jsonl",
+			MTime: time.Now(), Size: 1, LineCount: len(extra), AdapterVersion: 1,
+		}); err != nil {
+			t.Fatal(err)
 		}
 	}
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	h, err := Start(Config{DBPath: dbPath, Addr: "127.0.0.1:0"})
+	h, err := Start(Config{DBPath: dbPath, Addr: "127.0.0.1:0", Overrides: ov})
 	if err != nil {
 		t.Fatalf("hub start: %v", err)
 	}
@@ -282,7 +306,7 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 	h := seedHub(t)
 	paths := []string{
 		"/api/v1/health", "/api/v1/stats/daily", "/api/v1/totals",
-		"/api/v1/meta/models", "/api/v1/stream",
+		"/api/v1/meta/models", "/api/v1/plans", "/api/v1/stream",
 	}
 	for _, p := range paths {
 		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
@@ -337,6 +361,139 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, wantCT) {
 			t.Errorf("HEAD %s: Content-Type %q, want %s (the GET's headers)", p, ct, wantCT)
 		}
+	}
+}
+
+// TestAPIPlans (M5 Task 2): the window meter + value panel payload over
+// a plan-seeded database — fixture history plus one synthetic event at
+// now, so the current window is live. Every number is asserted equal to
+// the direct store query + the same window math (the api_test
+// discipline).
+func TestAPIPlans(t *testing.T) {
+	ovPath := filepath.Join(t.TempDir(), "prices.json")
+	if err := os.WriteFile(ovPath, []byte(`{
+		"plans": [{
+			"name": "claude-max",
+			"matchers": [{"harness": "claude-code"}],
+			"window": "5h",
+			"weekly_cap_equiv_usd": "120.00",
+			"monthly_price_usd": "200.00"
+		}]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := pricing.LoadOverrides(ovPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	fresh := core.Event{
+		ID: core.EventID("claude-code", "plans-now-msg", "plans-now-req"),
+		TS: now, Machine: "gx10", SourceKind: core.SourceKindHarnessLog,
+		Harness: "claude-code", Provider: "anthropic",
+		Model: "claude-fable-5", ModelFamily: "claude-fable-5",
+		TokensInput: 1000, TokensOutput: 100, Accuracy: core.AccuracyExact,
+	}
+	h := seedHubWith(t, ov, []core.Event{fresh})
+
+	var got struct {
+		TZ    string `json:"tz"`
+		Plans []struct {
+			Name                string `json:"name"`
+			WindowSeconds       int64  `json:"window_seconds"`
+			WeeklyCapEquivMicro *int64 `json:"weekly_cap_equiv_micro"`
+			MonthlyPriceMicro   *int64 `json:"monthly_price_micro"`
+			CurrentWindow       *struct {
+				Start          time.Time `json:"start"`
+				End            time.Time `json:"end"`
+				Events         int64     `json:"events"`
+				Input          int64     `json:"input"`
+				EquivMicro     int64     `json:"cost_api_equiv_micro"`
+				SecondsToReset int64     `json:"seconds_to_reset"`
+			} `json:"current_window"`
+			WeekRaw      json.RawMessage `json:"week"`
+			MonthRaw     json.RawMessage `json:"month"`
+			WindowsTotal int             `json:"windows_total"`
+		} `json:"plans"`
+		UnmatchedPlanEvents int64 `json:"unmatched_plan_events"`
+	}
+	getOK(t, h, "/api/v1/plans", &got)
+	if len(got.Plans) != 1 || got.TZ != "UTC" || got.UnmatchedPlanEvents != 0 {
+		t.Fatalf("plans payload shape: %+v", got)
+	}
+	p := got.Plans[0]
+	if p.Name != "claude-max" || p.WindowSeconds != 5*3600 ||
+		p.WeeklyCapEquivMicro == nil || *p.WeeklyCapEquivMicro != 120_000_000 ||
+		p.MonthlyPriceMicro == nil || *p.MonthlyPriceMicro != 200_000_000 {
+		t.Fatalf("plan declaration not echoed: %+v", p)
+	}
+
+	// Cross-check against the direct store query + the same window math.
+	rows, err := h.st.PlanIncludedEvents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("no plan_included rows after plan-seeded ingest")
+	}
+	we := make([]pricing.WindowEvent, len(rows))
+	for i, e := range rows {
+		we[i] = pricing.WindowEvent{TS: e.TS, Input: e.Input, EquivMicro: e.EquivMicro, Unpriced: e.Unpriced}
+	}
+	windows := pricing.PlanWindows(we, 5*time.Hour)
+	if p.WindowsTotal != len(windows) {
+		t.Errorf("windows_total = %d, want %d", p.WindowsTotal, len(windows))
+	}
+
+	// The synthetic at-now event keeps a window open: the meter ticks.
+	if p.CurrentWindow == nil {
+		t.Fatal("current_window is null despite an event at now")
+	}
+	cur, ok := pricing.CurrentWindow(windows, time.Now().UTC())
+	if !ok {
+		t.Fatal("direct window math has no current window but the API does")
+	}
+	if !p.CurrentWindow.Start.Equal(cur.Start) || !p.CurrentWindow.End.Equal(cur.End) ||
+		p.CurrentWindow.Events != cur.Events || p.CurrentWindow.Input != cur.Input ||
+		p.CurrentWindow.EquivMicro != cur.EquivMicro {
+		t.Errorf("current_window %+v != direct math %+v", p.CurrentWindow, cur)
+	}
+	if p.CurrentWindow.SecondsToReset <= 0 || p.CurrentWindow.SecondsToReset > 5*3600 {
+		t.Errorf("seconds_to_reset = %d, want within (0, 18000]", p.CurrentWindow.SecondsToReset)
+	}
+	// 1000×$10 + 100×$50 per Mtok = 15000 micro — the fresh event's
+	// equivalent is in the current window.
+	if p.CurrentWindow.EquivMicro < 15_000 {
+		t.Errorf("current window equivalent %d lacks the fresh event's 15000", p.CurrentWindow.EquivMicro)
+	}
+
+	// Week and month sums match the direct computation.
+	var week, month planPeriodUsage
+	if err := json.Unmarshal(p.WeekRaw, &week); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(p.MonthRaw, &month); err != nil {
+		t.Fatal(err)
+	}
+	wantWeek := sumPeriod(rows, time.Now().UTC().Add(-7*24*time.Hour))
+	nowUTC := time.Now().UTC()
+	wantMonth := sumPeriod(rows, time.Date(nowUTC.Year(), nowUTC.Month(), 1, 0, 0, 0, 0, time.UTC))
+	if week.Events != wantWeek.Events || week.EquivMicro != wantWeek.EquivMicro {
+		t.Errorf("week = %+v, want %+v", week, wantWeek)
+	}
+	if month.Events != wantMonth.Events || month.EquivMicro != wantMonth.EquivMicro {
+		t.Errorf("month = %+v, want %+v", month, wantMonth)
+	}
+
+	// No plans declared: empty payload, not an error.
+	plain := seedHub(t)
+	var none struct {
+		Plans               []json.RawMessage `json:"plans"`
+		UnmatchedPlanEvents int64             `json:"unmatched_plan_events"`
+	}
+	getOK(t, plain, "/api/v1/plans", &none)
+	if len(none.Plans) != 0 || none.UnmatchedPlanEvents != 0 {
+		t.Fatalf("plan-less hub: %+v", none)
 	}
 }
 

@@ -45,6 +45,47 @@ export interface Health {
   uptime_seconds: number;
 }
 
+// Plan window meter + value panel payload (M5 Task 2). Windows are
+// tatitok-native rolling windows over STAMPED plan_included events —
+// informational, not a parity surface; the API computes them, the UI
+// only renders.
+export interface PlanWindowUsage {
+  start: string;
+  end: string;
+  events: number;
+  input: number;
+  output: number;
+  cache_write: number;
+  cache_read: number;
+  cost_api_equiv_micro: number;
+  events_unpriced: number;
+  seconds_to_reset: number;
+}
+
+export interface PlanPeriod {
+  from: string;
+  events: number;
+  cost_api_equiv_micro: number;
+  events_unpriced: number;
+}
+
+export interface PlanStatus {
+  name: string;
+  window_seconds: number;
+  weekly_cap_equiv_micro: number | null;
+  monthly_price_micro: number | null;
+  current_window: PlanWindowUsage | null;
+  week: PlanPeriod;
+  month: PlanPeriod;
+  windows_total: number;
+}
+
+export interface PlansPayload {
+  now: string;
+  plans: PlanStatus[];
+  unmatched_plan_events: number;
+}
+
 export interface HarnessPass {
   harness: string;
   files: number;
@@ -98,6 +139,10 @@ export function fetchModels(): Promise<{ models: ModelInfo[] }> {
 
 export function fetchHealth(): Promise<Health> {
   return getJSON(`/api/v1/health`);
+}
+
+export function fetchPlans(): Promise<PlansPayload> {
+  return getJSON(`/api/v1/plans`);
 }
 
 // usd renders integer micro-USD; sub-cent totals keep enough digits to

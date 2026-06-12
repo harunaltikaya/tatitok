@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harunaltikaya/tatitok/internal/pricing"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
@@ -88,6 +89,7 @@ func (h *Hub) registerAPI(mux *http.ServeMux) {
 	get("/api/v1/stats/daily", h.apiStatsDaily)
 	get("/api/v1/totals", h.apiTotals)
 	get("/api/v1/meta/models", h.apiMetaModels)
+	get("/api/v1/plans", h.apiPlans)
 	get("/api/v1/stream", h.apiStream)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found",
@@ -268,6 +270,112 @@ func (h *Hub) apiTotals(w http.ResponseWriter, r *http.Request) {
 		"grain": "day", "tz": "UTC",
 		"window": window, "from": from, "to": today,
 		"days": days, "totals": sums,
+	})
+}
+
+// planPeriodUsage sums one fixed lookback (rolling week / calendar
+// month to date) of a plan's stamped usage.
+type planPeriodUsage struct {
+	From       string `json:"from"`
+	Events     int64  `json:"events"`
+	EquivMicro int64  `json:"cost_api_equiv_micro"`
+	Unpriced   int64  `json:"events_unpriced"`
+}
+
+func sumPeriod(rows []store.PlanEventRow, from time.Time) planPeriodUsage {
+	u := planPeriodUsage{From: from.Format(time.RFC3339)}
+	for _, r := range rows {
+		if r.TS.Before(from) {
+			continue
+		}
+		u.Events++
+		u.EquivMicro += r.EquivMicro
+		if r.Unpriced {
+			u.Unpriced++
+		}
+	}
+	return u
+}
+
+// apiPlans (M5 Task 2): the window meter + value panel source. Windows
+// are computed from STAMPED plan_included events — one source of truth,
+// what Apply/recompute wrote — partitioned by each declared plan's
+// window duration. week is the rolling last 7×24h; month is the UTC
+// calendar month to date (the value panel compares its equivalent
+// against the declared monthly price). Events stamped with a plan name
+// no longer declared are counted in unmatched_plan_events — config
+// drift is reported, never papered over.
+func (h *Hub) apiPlans(w http.ResponseWriter, r *http.Request) {
+	if err := checkParams(r); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
+	plans := h.cfg.Overrides.Plans()
+	rows, err := h.st.PlanIncludedEvents(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	now := time.Now().UTC()
+	weekFrom := now.Add(-7 * 24 * time.Hour)
+	monthFrom := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+
+	declared := map[string]bool{}
+	for _, p := range plans {
+		declared[p.Name] = true
+	}
+	byPlan := map[string][]store.PlanEventRow{}
+	var unmatched int64
+	for _, row := range rows {
+		if declared[row.Plan] {
+			byPlan[row.Plan] = append(byPlan[row.Plan], row)
+		} else {
+			unmatched++
+		}
+	}
+
+	type currentWindow struct {
+		pricing.WindowUsage
+		SecondsToReset int64 `json:"seconds_to_reset"`
+	}
+	type planPayload struct {
+		Name                string          `json:"name"`
+		WindowSeconds       int64           `json:"window_seconds"`
+		WeeklyCapEquivMicro *int64          `json:"weekly_cap_equiv_micro"`
+		MonthlyPriceMicro   *int64          `json:"monthly_price_micro"`
+		CurrentWindow       *currentWindow  `json:"current_window"`
+		Week                planPeriodUsage `json:"week"`
+		Month               planPeriodUsage `json:"month"`
+		WindowsTotal        int             `json:"windows_total"`
+	}
+	out := make([]planPayload, 0, len(plans))
+	for _, p := range plans {
+		evs := byPlan[p.Name]
+		we := make([]pricing.WindowEvent, len(evs))
+		for i, e := range evs {
+			we[i] = pricing.WindowEvent{TS: e.TS, Input: e.Input, Output: e.Output,
+				CacheWrite: e.CacheWrite, CacheRead: e.CacheRead,
+				EquivMicro: e.EquivMicro, Unpriced: e.Unpriced}
+		}
+		windows := pricing.PlanWindows(we, p.Window)
+		pp := planPayload{
+			Name:                p.Name,
+			WindowSeconds:       int64(p.Window.Seconds()),
+			WeeklyCapEquivMicro: p.WeeklyCapEquivMicro,
+			MonthlyPriceMicro:   p.MonthlyPriceMicro,
+			Week:                sumPeriod(evs, weekFrom),
+			Month:               sumPeriod(evs, monthFrom),
+			WindowsTotal:        len(windows),
+		}
+		if cur, ok := pricing.CurrentWindow(windows, now); ok {
+			pp.CurrentWindow = &currentWindow{WindowUsage: cur,
+				SecondsToReset: int64(cur.End.Sub(now).Seconds())}
+		}
+		out = append(out, pp)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tz": "UTC", "now": now.Format(time.RFC3339),
+		"plans": out, "unmatched_plan_events": unmatched,
 	})
 }
 

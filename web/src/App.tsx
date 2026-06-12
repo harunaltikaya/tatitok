@@ -5,6 +5,7 @@ import {
   fetchDailyBy,
   fetchHealth,
   fetchModels,
+  fetchPlans,
   fetchTotals,
   usd,
   compactTokens,
@@ -15,11 +16,13 @@ import {
   type DailyRow,
   type Health,
   type ModelInfo,
+  type PlanStatus,
   type Totals,
 } from "./api";
 import { useStream } from "./useStream";
 import Chart from "./components/Chart";
 import Breakdown, { sumByKey } from "./components/Breakdown";
+import PlanCard from "./components/Plans";
 
 const presets = [
   { label: "7d", days: 7 },
@@ -68,6 +71,7 @@ export default function App() {
   const [byModel, setByModel] = useState<DailyByRow[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [today, setToday] = useState<Totals | null>(null);
+  const [plans, setPlans] = useState<PlanStatus[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const stream = useStream();
@@ -96,11 +100,13 @@ export default function App() {
     fetchHealth().then(setHealth).catch(() => {});
   }, [from, to]);
 
-  // Live updates: every pass refreshes the today panel; the range
-  // refetches only when a touched day falls inside it (or when the
-  // stream says we lost events / reconnected: touchedDays empty).
+  // Live updates: every pass refreshes the today panel and the plan
+  // window meters; the range refetches only when a touched day falls
+  // inside it (or when the stream says we lost events / reconnected:
+  // touchedDays empty).
   useEffect(() => {
     fetchTotals("today").then((t) => setToday(t.totals)).catch(() => {});
+    fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
     if (stream.bump === 0 || stream.bump === lastRangeFetch.current) return;
     const touched = stream.touchedDays;
     const inRange = touched.length === 0 || touched.some((d) => d >= from && d <= to);
@@ -212,6 +218,9 @@ export default function App() {
             </div>
           )}
         </div>
+        {plans.map((p) => (
+          <PlanCard key={p.name} plan={p} />
+        ))}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 md:col-span-2">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">range totals</h2>
           <div className="mt-2 flex flex-wrap gap-6 tabular-nums">
