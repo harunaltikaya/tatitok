@@ -62,8 +62,13 @@ func Apply(e *core.Event, ov *Overrides) error {
 	// Precedence: per-model free:true (Resolve's only BasisFree source)
 	// and the local-provider rule beat plans — your own metal is never a
 	// subscription; plans beat source-reported $0 and rate patches.
+	// Codex M5 round, finding 2 (MED): the local check is on the PROVIDER,
+	// not the resolved basis — a patched local model resolves api_price
+	// (the owner's rates beat local zeroing for billing, M3 rule) but is
+	// still the owner's metal; plans never capture vllm* events, patch or
+	// no patch.
 	e.CostAPIEquivMicro = nil
-	if q.Basis != BasisLocal && q.Basis != BasisFree {
+	if q.Basis != BasisLocal && q.Basis != BasisFree && !isLocalProvider(e.Provider) {
 		if plan, ok := ov.PlanFor(e.Harness, e.Provider, e.Model, e.ModelFamily); ok {
 			detail := priceDetail{Rates: Rates{}, Plan: plan.Name}
 			if q.Rates != nil {
