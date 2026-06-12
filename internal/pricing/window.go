@@ -15,7 +15,9 @@ package pricing
 // the exact first-request time. Each plan declares its anchor
 // (window_start: floored|exact, floored default). Floored skips the
 // floor for sub-hour durations — flooring could otherwise close a
-// window before its own opening event.
+// window before its own opening event — and REQUIRES whole-hour
+// durations at or above 1h (load-validated; Codex M5 round, finding 3:
+// a floored 90m window would overlap its successor).
 
 import (
 	"sort"

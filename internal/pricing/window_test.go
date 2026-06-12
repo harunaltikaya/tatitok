@@ -83,6 +83,45 @@ func TestPlanWindowsSubHour(t *testing.T) {
 	}
 }
 
+// Codex M5 round, finding 3 (MED): hour-floored starts overlap for
+// non-whole-hour durations ≥ 1h (90m: [09:00,10:30) then [10:00,11:30)).
+// Load validation rejects that combination; this pins the non-overlap
+// invariant over the ACCEPTED space — whole-hour floored, any-duration
+// exact, sub-hour floored (floor skipped) — on an adversarial event set
+// (boundary-straddling, dense, gapped).
+func TestPlanWindowsNeverOverlap(t *testing.T) {
+	var events []WindowEvent
+	for _, m := range []int{0, 7, 29, 30, 31, 50, 59, 89, 90, 91, 119, 150, 240, 600, 601, 1439} {
+		events = append(events, WindowEvent{TS: at(0, 0).Add(time.Duration(m) * time.Minute)})
+	}
+	accepted := []struct {
+		dur    time.Duration
+		anchor WindowAnchor
+	}{
+		{time.Hour, AnchorFloored}, {2 * time.Hour, AnchorFloored},
+		{5 * time.Hour, AnchorFloored}, {30 * time.Minute, AnchorFloored},
+		{90 * time.Minute, AnchorExact}, {45 * time.Minute, AnchorExact},
+		{5 * time.Hour, AnchorExact},
+	}
+	for _, c := range accepted {
+		w := PlanWindows(events, c.dur, c.anchor)
+		var covered int64
+		for i, win := range w {
+			if !win.End.Equal(win.Start.Add(c.dur)) {
+				t.Errorf("%v/%s: window %d span wrong: %s..%s", c.dur, c.anchor, i, win.Start, win.End)
+			}
+			if i > 0 && w[i-1].End.After(win.Start) {
+				t.Errorf("%v/%s: windows %d and %d OVERLAP (%s..%s then %s..%s)",
+					c.dur, c.anchor, i-1, i, w[i-1].Start, w[i-1].End, win.Start, win.End)
+			}
+			covered += win.Events
+		}
+		if covered != int64(len(events)) {
+			t.Errorf("%v/%s: %d of %d events covered", c.dur, c.anchor, covered, len(events))
+		}
+	}
+}
+
 func TestCurrentWindow(t *testing.T) {
 	w := PlanWindows([]WindowEvent{{TS: at(9, 30)}}, 5*time.Hour, AnchorFloored) // [09:00, 14:00)
 	if cur, ok := CurrentWindow(w, at(13, 59)); !ok || !cur.Start.Equal(at(9, 0)) {
