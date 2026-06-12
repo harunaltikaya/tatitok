@@ -6,9 +6,11 @@
 
 import type { DailyByRow } from "../api";
 import { compactTokens, totalTokens, usd } from "../api";
+import { displayValue } from "../filters";
 
 export interface KeyTotals {
-  key: string;
+  key: string; // display form ("(none)" for the empty value)
+  raw: string; // the stored value — what a click filters on
   tokens: number;
   costMicro: number;
   equivMicro: number;
@@ -18,13 +20,15 @@ export interface KeyTotals {
 export function sumByKey(rows: DailyByRow[]): KeyTotals[] {
   const acc = new Map<string, KeyTotals>();
   for (const r of rows) {
-    const k = r.key === "" ? "(none)" : r.key;
-    const t = acc.get(k) ?? { key: k, tokens: 0, costMicro: 0, equivMicro: 0, unpriced: 0 };
+    const t = acc.get(r.key) ?? {
+      key: displayValue(r.key), raw: r.key,
+      tokens: 0, costMicro: 0, equivMicro: 0, unpriced: 0,
+    };
     t.tokens += totalTokens(r);
     t.costMicro += r.costUSDMicro;
     t.equivMicro += r.costAPIEquivMicro;
     t.unpriced += r.unpricedEvents;
-    acc.set(k, t);
+    acc.set(r.key, t);
   }
   return [...acc.values()].sort((a, b) => b.costMicro - a.costMicro || b.tokens - a.tokens);
 }
@@ -36,10 +40,16 @@ export default function Breakdown({
   title,
   totals,
   bases,
+  onSelect,
+  active,
 }: {
   title: string;
   totals: KeyTotals[];
   bases?: Map<string, string[]>; // model → distinct pricing bases (legend data)
+  // onSelect: table rows are facet filters (M5 Task 4) — a click
+  // toggles the row's RAW value in the global filter state.
+  onSelect?: (raw: string) => void;
+  active?: string[]; // currently filtered raw values for this facet
 }) {
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
@@ -61,7 +71,12 @@ export default function Breakdown({
             </tr>
           )}
           {totals.map((t) => (
-            <tr key={t.key} className="border-t border-zinc-800/60">
+            <tr
+              key={t.key}
+              className={`border-t border-zinc-800/60 ${onSelect ? "cursor-pointer hover:bg-zinc-800/40" : ""} ${active?.includes(t.raw) ? "bg-sky-950/40" : ""}`}
+              onClick={onSelect ? () => onSelect(t.raw) : undefined}
+              title={onSelect ? "click to filter" : undefined}
+            >
               <td className="max-w-48 truncate py-1.5 pr-2 text-zinc-200" title={t.key}>
                 {t.key}
                 {bases?.get(t.key)?.map((b) => (

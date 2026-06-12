@@ -3,6 +3,7 @@ import type { EChartsOption } from "echarts";
 import {
   fetchDaily,
   fetchDailyBy,
+  fetchFacets,
   fetchHealth,
   fetchModels,
   fetchPlans,
@@ -14,15 +15,31 @@ import {
   utcToday,
   type DailyByRow,
   type DailyRow,
+  type FacetValue,
   type Health,
   type ModelInfo,
   type PlanStatus,
   type Totals,
 } from "./api";
+import {
+  countActive,
+  displayValue,
+  emptyFilters,
+  facetDims,
+  filterQuery,
+  filtersFromURL,
+  filtersToURL,
+  rawValue,
+  removeValue,
+  toggleValue,
+  type FacetDim,
+  type FilterState,
+} from "./filters";
 import { useStream } from "./useStream";
 import Chart from "./components/Chart";
 import Breakdown, { sumByKey } from "./components/Breakdown";
 import PlanCard from "./components/Plans";
+import FacetRail from "./components/FacetRail";
 
 const presets = [
   { label: "7d", days: 7 },
@@ -53,7 +70,7 @@ function stackedByProvider(
     xAxis: { type: "category", data: days, axisLabel: axisText },
     yAxis: { type: "value", axisLabel: { ...axisText, formatter: (v: number) => fmt(v) }, splitLine: { lineStyle: { color: "#27272a" } } },
     series: providers.map((p) => ({
-      name: p === "" ? "(none)" : p,
+      name: displayValue(p),
       type: "bar",
       stack: "total",
       emphasis: { focus: "series" },
@@ -63,13 +80,19 @@ function stackedByProvider(
 }
 
 export default function App() {
-  const [from, setFrom] = useState(utcDaysAgo(29));
-  const [to, setTo] = useState(utcToday());
+  // Filter state and the day range live in the URL — shareable,
+  // bookmarkable, survives refresh; no persistence beyond that (M5
+  // Task 4). One state drives every chart, table and total.
+  const initial = useMemo(() => filtersFromURL(window.location.search), []);
+  const [filters, setFilters] = useState<FilterState>(initial.filters);
+  const [from, setFrom] = useState(initial.from ?? utcDaysAgo(29));
+  const [to, setTo] = useState(initial.to ?? utcToday());
   const [daily, setDaily] = useState<DailyRow[]>([]);
   const [byProvider, setByProvider] = useState<DailyByRow[]>([]);
   const [byHarness, setByHarness] = useState<DailyByRow[]>([]);
   const [byModel, setByModel] = useState<DailyByRow[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
+  const [facets, setFacets] = useState<Record<string, FacetValue[]>>({});
   const [today, setToday] = useState<Totals | null>(null);
   const [plans, setPlans] = useState<PlanStatus[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
@@ -77,12 +100,35 @@ export default function App() {
   const stream = useStream();
   const lastRangeFetch = useRef(0);
 
-  const loadRange = (f: string, t: string) => {
+  const fq = useMemo(() => filterQuery(filters), [filters]);
+
+  // URL sync (replaceState — every click is not a history entry) and
+  // back/forward restore.
+  useEffect(() => {
+    const url = filtersToURL(filters, from, to);
+    if (window.location.search !== url) {
+      window.history.replaceState(null, "", url);
+    }
+  }, [filters, from, to]);
+  useEffect(() => {
+    const onPop = () => {
+      const s = filtersFromURL(window.location.search);
+      setFilters(s.filters);
+      if (s.from) setFrom(s.from);
+      if (s.to) setTo(s.to);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const toggle = (dim: FacetDim, value: string) => setFilters((f) => toggleValue(f, dim, value));
+
+  const loadRange = (f: string, t: string, q: string) => {
     Promise.all([
-      fetchDaily(f, t),
-      fetchDailyBy("provider", f, t),
-      fetchDailyBy("harness", f, t),
-      fetchDailyBy("model", f, t),
+      fetchDaily(f, t, q),
+      fetchDailyBy("provider", f, t, q),
+      fetchDailyBy("harness", f, t, q),
+      fetchDailyBy("model", f, t, q),
     ])
       .then(([d, p, h, m]) => {
         setDaily(d.daily ?? []);
@@ -95,28 +141,39 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadRange(from, to);
+    loadRange(from, to, fq);
+    fetchTotals("today", fq).then((t) => setToday(t.totals)).catch(() => {});
     fetchModels().then((m) => setModels(m.models ?? [])).catch(() => {});
+    fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
     fetchHealth().then(setHealth).catch(() => {});
-  }, [from, to]);
+  }, [from, to, fq]);
 
-  // Live updates: every pass refreshes the today panel and the plan
-  // window meters; the range refetches only when a touched day falls
-  // inside it (or when the stream says we lost events / reconnected:
-  // touchedDays empty).
+  // Live updates: every pass refreshes the today panel, the plan window
+  // meters and the facet counts; the range refetches only when a
+  // touched day falls inside it (or when the stream says we lost
+  // events / reconnected: touchedDays empty).
   useEffect(() => {
-    fetchTotals("today").then((t) => setToday(t.totals)).catch(() => {});
+    fetchTotals("today", fq).then((t) => setToday(t.totals)).catch(() => {});
     fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
     if (stream.bump === 0 || stream.bump === lastRangeFetch.current) return;
+    fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
     const touched = stream.touchedDays;
     const inRange = touched.length === 0 || touched.some((d) => d >= from && d <= to);
     if (inRange) {
       lastRangeFetch.current = stream.bump;
-      loadRange(from, to);
+      loadRange(from, to, fq);
     }
   }, [stream.bump]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const costChart = useMemo(
+  // The owner's stop-1 chart direction: API-EQUIVALENT cost is the
+  // primary daily chart; actual out-of-pocket cost gets its own chart —
+  // both truths always visible, no toggle (post-plans, actual-only is
+  // honest but nearly empty).
+  const equivChart = useMemo(
+    () => stackedByProvider(byProvider, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`),
+    [byProvider],
+  );
+  const actualChart = useMemo(
     () => stackedByProvider(byProvider, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`),
     [byProvider],
   );
@@ -124,6 +181,7 @@ export default function App() {
     () => stackedByProvider(byProvider, totalTokens, compactTokens),
     [byProvider],
   );
+  const onProviderSeries = (seriesName: string) => toggle("provider", rawValue(seriesName));
 
   const modelBases = useMemo(() => {
     const m = new Map<string, string[]>();
@@ -139,6 +197,8 @@ export default function App() {
     () => daily.reduce((n, r) => n + r.unpricedEvents, 0),
     [daily],
   );
+
+  const chips = facetDims.flatMap((dim) => filters[dim].map((v) => ({ dim, value: v })));
 
   return (
     <div className="min-h-screen bg-zinc-950 px-6 py-5 text-zinc-100">
@@ -191,86 +251,132 @@ export default function App() {
         </div>
       )}
 
-      <section className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
-            today
-            <span
-              className={`ml-2 inline-block h-2 w-2 rounded-full ${stream.connected ? "bg-emerald-400" : "bg-zinc-600"}`}
-              title={stream.connected ? "live — SSE connected" : "stream disconnected (EventSource will retry; data refetches on reconnect)"}
-            />
-          </h2>
-          <div className="mt-2 text-2xl font-bold tabular-nums">
-            {today ? usd(today.costUSDMicro) : "—"}
-            {today && today.unpricedEvents > 0 && (
-              <span className="cursor-help text-base text-amber-400" title={`${today.unpricedEvents} events today carry no resolvable price — cost is a floor.`}>*</span>
-            )}
-          </div>
-          <div className="text-sm text-zinc-400 tabular-nums">
-            {today ? `${compactTokens(totalTokens(today))} tokens` : "no data yet"}
-          </div>
-          {stream.lastPass && (
-            <div className="mt-2 text-xs text-zinc-500">
-              last pass #{stream.lastPass.pass}:{" "}
-              {stream.lastPass.harnesses
-                .map((h) => `${h.harness} +${h.new}${h.replaced ? ` ~${h.replaced}` : ""}`)
-                .join(", ")}
-            </div>
-          )}
+      {chips.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-xs uppercase tracking-wider text-zinc-500">filters</span>
+          {chips.map((c) => (
+            <button
+              key={`${c.dim}|${c.value}`}
+              className="flex items-center gap-1 rounded-full border border-sky-900 bg-sky-950/60 px-2.5 py-0.5 text-sky-300 hover:bg-sky-900/60"
+              onClick={() => setFilters((f) => removeValue(f, c.dim, c.value))}
+              title={`remove ${c.dim} filter`}
+            >
+              <span className="text-xs text-sky-500">{c.dim}:</span>
+              {displayValue(c.value)}
+              <span aria-hidden>×</span>
+            </button>
+          ))}
+          <button
+            className="text-xs text-zinc-500 underline hover:text-zinc-300"
+            onClick={() => setFilters(emptyFilters())}
+          >
+            clear all
+          </button>
         </div>
-        {plans.map((p) => (
-          <PlanCard key={p.name} plan={p} />
-        ))}
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 md:col-span-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">range totals</h2>
-          <div className="mt-2 flex flex-wrap gap-6 tabular-nums">
-            <div>
-              <div className="text-2xl font-bold">
-                {usd(daily.reduce((n, r) => n + r.costUSDMicro, 0))}
-                {rangeUnpriced > 0 && (
-                  <span className="cursor-help text-base text-amber-400" title={`${rangeUnpriced} events in range carry no resolvable price — cost is a floor (the CLI's asterisk).`}>*</span>
+      )}
+
+      <div className="flex gap-4">
+        <FacetRail facets={facets} filters={filters} onToggle={toggle} />
+
+        <main className="min-w-0 flex-1">
+          <section className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
+                today
+                <span
+                  className={`ml-2 inline-block h-2 w-2 rounded-full ${stream.connected ? "bg-emerald-400" : "bg-zinc-600"}`}
+                  title={stream.connected ? "live — SSE connected" : "stream disconnected (EventSource will retry; data refetches on reconnect)"}
+                />
+                {countActive(filters) > 0 && (
+                  <span className="ml-2 text-[10px] font-normal normal-case text-sky-400">filtered</span>
+                )}
+              </h2>
+              <div className="mt-2 text-2xl font-bold tabular-nums">
+                {today ? usd(today.costUSDMicro) : "—"}
+                {today && today.unpricedEvents > 0 && (
+                  <span className="cursor-help text-base text-amber-400" title={`${today.unpricedEvents} events today carry no resolvable price — cost is a floor.`}>*</span>
                 )}
               </div>
-              <div className="text-xs text-zinc-500">cost ({from} → {to})</div>
+              <div className="text-sm text-zinc-400 tabular-nums">
+                {today ? `${compactTokens(totalTokens(today))} tokens` : "no data yet"}
+              </div>
+              {today && today.costAPIEquivMicro > 0 && (
+                <div className="text-xs text-zinc-500 tabular-nums">≈ {usd(today.costAPIEquivMicro)} API-equiv</div>
+              )}
+              {stream.lastPass && (
+                <div className="mt-2 text-xs text-zinc-500">
+                  last pass #{stream.lastPass.pass}:{" "}
+                  {stream.lastPass.harnesses
+                    .map((h) => `${h.harness} +${h.new}${h.replaced ? ` ~${h.replaced}` : ""}`)
+                    .join(", ")}
+                </div>
+              )}
             </div>
-            <div>
-              <div className="text-2xl font-bold">{compactTokens(daily.reduce((n, r) => n + totalTokens(r), 0))}</div>
-              <div className="text-xs text-zinc-500">tokens</div>
+            {plans.map((p) => (
+              <PlanCard key={p.name} plan={p} />
+            ))}
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 md:col-span-2">
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">range totals</h2>
+              <div className="mt-2 flex flex-wrap gap-6 tabular-nums">
+                <div>
+                  <div className="text-2xl font-bold">
+                    {usd(daily.reduce((n, r) => n + r.costAPIEquivMicro, 0))}
+                  </div>
+                  <div className="text-xs text-zinc-500">API-equivalent ({from} → {to})</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold">
+                    {usd(daily.reduce((n, r) => n + r.costUSDMicro, 0))}
+                    {rangeUnpriced > 0 && (
+                      <span className="cursor-help text-base text-amber-400" title={`${rangeUnpriced} events in range carry no resolvable price — cost is a floor (the CLI's asterisk).`}>*</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-zinc-500">actual cost</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold">{compactTokens(daily.reduce((n, r) => n + totalTokens(r), 0))}</div>
+                  <div className="text-xs text-zinc-500">tokens</div>
+                </div>
+                <div>
+                  <div className="text-2xl font-bold">{daily.length}</div>
+                  <div className="text-xs text-zinc-500">active days</div>
+                </div>
+              </div>
             </div>
-            <div>
-              <div className="text-2xl font-bold">{compactTokens(daily.reduce((n, r) => n + r.reasoningTokens, 0))}</div>
-              <div className="text-xs text-zinc-500">reasoning</div>
-            </div>
-            <div>
-              <div className="text-2xl font-bold">{daily.length}</div>
-              <div className="text-xs text-zinc-500">active days</div>
-            </div>
-          </div>
-        </div>
-      </section>
+          </section>
 
-      <section className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-zinc-400">daily cost (by provider)</h2>
-          <Chart option={costChart} />
-        </div>
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-zinc-400">daily tokens (by provider)</h2>
-          <Chart option={tokenChart} />
-        </div>
-      </section>
+          <section className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+              <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-zinc-400">daily API-equivalent (by provider)</h2>
+              <Chart option={equivChart} onSeriesClick={onProviderSeries} />
+            </div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+              <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-zinc-400">daily actual cost (by provider)</h2>
+              <Chart option={actualChart} onSeriesClick={onProviderSeries} />
+            </div>
+          </section>
 
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Breakdown title="by harness" totals={sumByKey(byHarness)} />
-        <Breakdown title="by provider" totals={sumByKey(byProvider)} />
-        <Breakdown title="by model" totals={sumByKey(byModel)} bases={modelBases} />
-      </section>
+          <section className="mb-5 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-zinc-400">daily tokens (by provider)</h2>
+            <Chart option={tokenChart} onSeriesClick={onProviderSeries} />
+          </section>
 
-      <footer className="mt-6 text-xs text-zinc-600">
-        {health
-          ? `tatitok ${health.version} · snapshot ${health.price_snapshot} · ${health.overrides} overrides / ${health.reference_models} reference models · db ${health.db_hash} · up ${Math.floor(health.uptime_seconds / 60)}m`
-          : "hub unreachable"}
-      </footer>
+          <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <Breakdown title="by harness" totals={sumByKey(byHarness)}
+              onSelect={(raw) => toggle("harness", raw)} active={filters.harness} />
+            <Breakdown title="by provider" totals={sumByKey(byProvider)}
+              onSelect={(raw) => toggle("provider", raw)} active={filters.provider} />
+            <Breakdown title="by model" totals={sumByKey(byModel)} bases={modelBases}
+              onSelect={(raw) => toggle("model", raw)} active={filters.model} />
+          </section>
+
+          <footer className="mt-6 text-xs text-zinc-600">
+            {health
+              ? `tatitok ${health.version} · snapshot ${health.price_snapshot} · ${health.overrides} overrides / ${health.reference_models} reference models · db ${health.db_hash} · up ${Math.floor(health.uptime_seconds / 60)}m`
+              : "hub unreachable"}
+          </footer>
+        </main>
+      </div>
     </div>
   );
 }

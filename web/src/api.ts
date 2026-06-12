@@ -117,24 +117,38 @@ async function getJSON<T>(path: string): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
-export function fetchDaily(from: string, to: string): Promise<{ daily: DailyRow[] }> {
-  return getJSON(`/api/v1/stats/daily?from=${from}&to=${to}`);
+// The fq argument is the global facet filter state rendered as
+// repeated query params (filters.ts filterQuery) — every data fetch
+// obeys the one state (M5 Task 4). source declares the serving path
+// ("rollup"|"events" — the API's honesty field).
+export function fetchDaily(from: string, to: string, fq = ""): Promise<{ source: string; daily: DailyRow[] }> {
+  return getJSON(`/api/v1/stats/daily?from=${from}&to=${to}${fq}`);
 }
 
 export function fetchDailyBy(
   by: "harness" | "provider" | "model" | "project",
   from: string,
   to: string,
-): Promise<{ daily_by: DailyByRow[] }> {
-  return getJSON(`/api/v1/stats/daily?by=${by}&from=${from}&to=${to}`);
+  fq = "",
+): Promise<{ source: string; daily_by: DailyByRow[] }> {
+  return getJSON(`/api/v1/stats/daily?by=${by}&from=${from}&to=${to}${fq}`);
 }
 
-export function fetchTotals(window: string): Promise<{ days: number; totals: Totals }> {
-  return getJSON(`/api/v1/totals?window=${window}`);
+export function fetchTotals(window: string, fq = ""): Promise<{ days: number; totals: Totals }> {
+  return getJSON(`/api/v1/totals?window=${window}${fq}`);
 }
 
 export function fetchModels(): Promise<{ models: ModelInfo[] }> {
   return getJSON(`/api/v1/meta/models`);
+}
+
+export interface FacetValue {
+  value: string;
+  events: number;
+}
+
+export function fetchFacets(): Promise<{ facets: Record<string, FacetValue[]> }> {
+  return getJSON(`/api/v1/meta/facets`);
 }
 
 export function fetchHealth(): Promise<Health> {

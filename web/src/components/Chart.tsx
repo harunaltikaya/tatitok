@@ -9,11 +9,26 @@
 import { useEffect, useRef } from "react";
 import * as echarts from "echarts";
 
-export default function Chart({ option, height = 280 }: { option: echarts.EChartsOption; height?: number }) {
+// onSeriesClick (M5 Task 4): chart segments and legend entries are
+// facet filters — a click on either reports the series name to the
+// global filter state. Legend clicks are intercepted: the default
+// hide-series toggle is undone (filtering changes the DATA, not the
+// rendering), then reported like a segment click.
+export default function Chart({
+  option,
+  height = 280,
+  onSeriesClick,
+}: {
+  option: echarts.EChartsOption;
+  height?: number;
+  onSeriesClick?: (seriesName: string) => void;
+}) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<echarts.ECharts | null>(null);
   const latest = useRef(option);
   latest.current = option;
+  const clickRef = useRef(onSeriesClick);
+  clickRef.current = onSeriesClick;
 
   useEffect(() => {
     const node = el.current;
@@ -25,6 +40,17 @@ export default function Chart({ option, height = 280 }: { option: echarts.EChart
       if (!chart.current) {
         chart.current = echarts.init(node);
         chart.current.setOption(latest.current, { notMerge: true });
+        chart.current.on("click", (params) => {
+          const name = (params as { seriesName?: string }).seriesName;
+          if (name) clickRef.current?.(name);
+        });
+        chart.current.on("legendselectchanged", (params) => {
+          const name = (params as { name?: string }).name;
+          if (!name) return;
+          // Undo the visibility toggle, then filter instead.
+          chart.current?.dispatchAction({ type: "legendSelect", name });
+          clickRef.current?.(name);
+        });
       } else {
         chart.current.resize();
       }
