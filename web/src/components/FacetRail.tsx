@@ -1,6 +1,7 @@
 import type { FacetValue } from "../api";
 import { compactTokens } from "../api";
 import { displayValue, facetDims, hasValue, type FacetDim, type FilterState } from "../filters";
+import Card from "../ui/Card";
 
 // The left facet rail (M5 Task 4, the owner's Qlik-style direction):
 // every filterable dimension with its stored values and event counts
@@ -19,27 +20,35 @@ export default function FacetRail({
   onToggle: (dim: FacetDim, value: string) => void;
 }) {
   return (
-    <aside className="w-56 shrink-0 space-y-4">
+    <aside className="w-56 shrink-0 space-y-3">
       {facetDims.map((dim) => {
         const vals = facets[dim] ?? [];
         if (vals.length === 0) return null;
         return (
-          <section key={dim} className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">{dim}</h3>
-            <ul className="space-y-0.5 text-sm">
+          <Card key={dim} padding={12} title={dim}>
+            <ul className="space-y-px text-sm">
               {vals.map((v) => {
                 const selected = hasValue(filters, dim, v.value);
                 return (
                   <li key={v.value}>
                     <button
-                      className={`flex w-full items-center justify-between rounded px-1.5 py-0.5 text-left hover:bg-zinc-800 ${
-                        selected ? "bg-sky-950/60 text-sky-300" : "text-zinc-300"
-                      }`}
+                      className="flex w-full items-center justify-between rounded-[6px] px-1.5 py-1 text-left"
+                      style={
+                        selected
+                          ? { background: "var(--accent-soft)", color: "var(--accent)" }
+                          : { background: "transparent", color: "var(--text-secondary)" }
+                      }
+                      onMouseEnter={(e) => {
+                        if (!selected) e.currentTarget.style.background = "var(--surface-hover)";
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!selected) e.currentTarget.style.background = "transparent";
+                      }}
                       onClick={() => onToggle(dim, v.value)}
                       title={`${displayValue(v.value)} — ${v.events} events (click to ${selected ? "unfilter" : "filter"})`}
                     >
                       <span className="truncate">{displayValue(v.value)}</span>
-                      <span className="ml-2 shrink-0 text-xs tabular-nums text-zinc-500">
+                      <span className="ml-2 shrink-0 text-xs tabular-nums" style={{ color: "var(--text-faint)" }}>
                         {compactTokens(v.events)}
                       </span>
                     </button>
@@ -47,7 +56,7 @@ export default function FacetRail({
                 );
               })}
             </ul>
-          </section>
+          </Card>
         );
       })}
     </aside>

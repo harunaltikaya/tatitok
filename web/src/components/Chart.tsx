@@ -40,7 +40,10 @@ export default function Chart({
         return; // not laid out yet — init would bake in 0×0
       }
       if (!chart.current) {
-        chart.current = echarts.init(node);
+        // SVG renderer + animation:false (per the design system) for crisp,
+        // capturable output. The init is still deferred to the first nonzero
+        // measurement; the click + legend-intercept handlers are unchanged.
+        chart.current = echarts.init(node, null, { renderer: "svg" });
         chart.current.setOption(latest.current, { notMerge: true });
         chart.current.on("click", (params) => {
           const name = (params as { seriesName?: string }).seriesName;

@@ -45,10 +45,10 @@ export default function Panel({
       : "overflow-auto";
   return (
     <section
-      className={`flex flex-col rounded-xl border border-zinc-800 ${
-        fullscreen ? "fixed inset-3 z-50 bg-zinc-900 shadow-2xl shadow-black/60" : "bg-zinc-900/60"
+      className={`flex flex-col rounded-[14px] border-[0.5px] border-hairline ${
+        fullscreen ? "fixed inset-3 z-50 bg-raised" : "bg-card"
       } ${dragging ? "opacity-40" : ""}`}
-      style={fullscreen ? undefined : { gridColumn: `span ${span} / span ${span}` }}
+      style={fullscreen ? { boxShadow: "var(--shadow-overlay)" } : { gridColumn: `span ${span} / span ${span}` }}
       onDragOver={onDragOver}
       onDrop={onDrop}
       aria-label={def.title}
@@ -59,14 +59,14 @@ export default function Panel({
         onDragStart={onDragStart}
         title={fullscreen ? undefined : "drag to reorder"}
       >
-        <h2 className={`truncate text-sm font-semibold uppercase tracking-wider text-zinc-400 ${fullscreen ? "" : "cursor-move"}`}>
+        <h2 className={`truncate text-xs font-medium text-tertiary ${fullscreen ? "" : "cursor-move"}`}>
           {def.title}
         </h2>
-        <div className="ml-auto flex shrink-0 items-center gap-0.5 text-zinc-500">
+        <div className="ml-auto flex shrink-0 items-center gap-0.5 text-tertiary">
           {!fullscreen && (
             <>
               <button
-                className="rounded px-1.5 py-0.5 hover:bg-zinc-800 hover:text-zinc-200"
+                className="rounded-[6px] px-1.5 py-0.5 hover:bg-[var(--surface-hover)] hover:text-primary"
                 onClick={onShrink}
                 aria-label={`make ${def.title} narrower`}
                 title="narrower"
@@ -74,7 +74,7 @@ export default function Panel({
                 −
               </button>
               <button
-                className="rounded px-1.5 py-0.5 hover:bg-zinc-800 hover:text-zinc-200"
+                className="rounded-[6px] px-1.5 py-0.5 hover:bg-[var(--surface-hover)] hover:text-primary"
                 onClick={onGrow}
                 aria-label={`make ${def.title} wider`}
                 title="wider"
@@ -84,7 +84,7 @@ export default function Panel({
             </>
           )}
           <button
-            className="rounded px-1.5 py-0.5 hover:bg-zinc-800 hover:text-zinc-200"
+            className="rounded-[6px] px-1.5 py-0.5 hover:bg-[var(--surface-hover)] hover:text-primary"
             onClick={onToggleFullscreen}
             aria-label={fullscreen ? `exit fullscreen for ${def.title}` : `fullscreen ${def.title}`}
             title={fullscreen ? "exit fullscreen (Esc)" : "fullscreen"}

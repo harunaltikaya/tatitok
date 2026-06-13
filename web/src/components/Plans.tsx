@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
 import { usd, compactTokens, type PlanStatus, type PlanWindowUsage } from "../api";
+import Card from "../ui/Card";
+import Stat from "../ui/Stat";
+import MeterBar from "../ui/MeterBar";
+import Badge from "../ui/Badge";
 
 // Plan cards (M5 Task 2): one card per owner-declared plan — the
 // rolling-window meter (current usage, time to reset, weekly cap when
@@ -43,72 +47,67 @@ export default function PlanCard({ plan }: { plan: PlanStatus }) {
       : null;
 
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-      <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
-        {plan.name}
-        <span className="ml-2 font-normal normal-case text-zinc-600">
-          {durationLabel(plan.window_seconds)} windows
+    <Card
+      title={
+        <span>
+          {plan.name}
+          <span className="ml-2" style={{ color: "var(--text-faint)" }}>
+            · {durationLabel(plan.window_seconds)} windows
+          </span>
         </span>
-      </h2>
-
+      }
+    >
       {w ? (
         <>
-          <div className="mt-2 text-2xl font-bold tabular-nums">
-            {usd(w.cost_api_equiv_micro)}
-            <span className="ml-1 text-sm font-normal text-zinc-500">API-equiv</span>
-            {w.events_unpriced > 0 && (
-              <span
-                className="cursor-help text-base text-amber-400"
-                title={`${w.events_unpriced} events in this window carry no resolvable rates — the equivalent is a floor.`}
-              >
-                *
-              </span>
-            )}
-          </div>
-          <div className="text-sm text-zinc-400 tabular-nums">
-            {compactTokens(windowTokens(w))} tokens · {w.events} events
-          </div>
-          <div className="mt-1 text-xs text-zinc-500" title={`window ${w.start} → ${w.end} (UTC)`}>
+          <Stat
+            size="lg"
+            value={
+              <>
+                {usd(w.cost_api_equiv_micro)}
+                <span className="ml-1 text-sm text-tertiary">API-equiv</span>
+              </>
+            }
+            unpriced={w.events_unpriced > 0}
+            unpricedTitle={`${w.events_unpriced} events in this window carry no resolvable rates — the equivalent is a floor.`}
+            sub={`${compactTokens(windowTokens(w))} tokens · ${w.events} events`}
+          />
+          <div className="mt-1 text-xs text-faint" title={`window ${w.start} → ${w.end} (UTC)`}>
             {remainingLabel(w.end, nowMs)}
           </div>
         </>
       ) : (
-        <div className="mt-2 text-sm text-zinc-500">no active window — the next event opens one</div>
+        <div className="text-sm text-tertiary">no active window — the next event opens one</div>
       )}
 
       {weekPct !== null && (
-        <div className="mt-3">
-          <div className="flex justify-between text-xs text-zinc-500 tabular-nums">
+        <div className="mt-3.5">
+          <div className="mb-1.5 flex justify-between text-xs text-tertiary tabular-nums">
             <span>week</span>
             <span>
               {usd(plan.week.cost_api_equiv_micro)} of {usd(plan.weekly_cap_equiv_micro!)} cap
             </span>
           </div>
-          <div className="mt-1 h-1.5 rounded bg-zinc-800">
-            <div
-              className={`h-1.5 rounded ${weekPct >= 90 ? "bg-amber-400" : "bg-emerald-500"}`}
-              style={{ width: `${weekPct}%` }}
-            />
-          </div>
+          <MeterBar value={plan.week.cost_api_equiv_micro} max={plan.weekly_cap_equiv_micro!} />
         </div>
       )}
 
       {plan.monthly_price_micro !== null && (
         <div
-          className="mt-3 border-t border-zinc-800 pt-2 text-sm tabular-nums"
+          className="mt-3.5 flex flex-wrap items-baseline gap-1.5 border-t-[0.5px] border-hairline pt-3 text-sm tabular-nums"
           title="API-equivalent value of plan-covered usage this UTC calendar month vs. the declared subscription price."
         >
-          <span className="font-semibold">{usd(plan.month.cost_api_equiv_micro)}</span>
-          <span className="text-zinc-500"> extracted vs </span>
-          <span className="font-semibold">{usd(plan.monthly_price_micro)}</span>
-          <span className="text-zinc-500">/mo</span>
+          <span style={{ color: "var(--text-positive)", fontWeight: "var(--weight-medium)" }}>
+            {usd(plan.month.cost_api_equiv_micro)}
+          </span>
+          <span className="text-tertiary">extracted vs</span>
+          <span className="text-primary">{usd(plan.monthly_price_micro)}/mo</span>
           {plan.monthly_price_micro > 0 && (
-            <span className="ml-2 text-xs text-zinc-500">
+            <Badge tone="positive">
               {(plan.month.cost_api_equiv_micro / plan.monthly_price_micro).toFixed(1)}×
-            </span>
+            </Badge>
           )}
         </div>
       )}
-    </div>
+    </Card>
   );
 }

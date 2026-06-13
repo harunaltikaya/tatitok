@@ -7,6 +7,7 @@
 import type { DailyByRow } from "../api";
 import { compactTokens, totalTokens, usd } from "../api";
 import { displayValue } from "../filters";
+import Badge from "../ui/Badge";
 
 export interface KeyTotals {
   key: string; // display form ("(none)" for the empty value)
@@ -55,54 +56,52 @@ export default function Breakdown({
 }) {
   return (
     <table className="w-full text-sm">
-        <thead>
-          <tr className="text-left text-xs text-zinc-500">
-            <th className="pb-1 font-normal">key</th>
-            <th className="pb-1 text-right font-normal">tokens</th>
-            <th className="pb-1 text-right font-normal">cost</th>
+      <thead>
+        <tr className="text-left text-xs text-tertiary">
+          <th className="pb-2 font-normal">key</th>
+          <th className="pb-2 text-right font-normal">tokens</th>
+          <th className="pb-2 text-right font-normal">cost</th>
+        </tr>
+      </thead>
+      <tbody>
+        {totals.length === 0 && (
+          <tr>
+            <td colSpan={3} className="py-2 text-tertiary">
+              no data in range
+            </td>
           </tr>
-        </thead>
-        <tbody>
-          {totals.length === 0 && (
-            <tr>
-              <td colSpan={3} className="py-2 text-zinc-500">
-                no data in range
-              </td>
-            </tr>
-          )}
-          {totals.map((t) => (
-            <tr
-              key={t.key}
-              className={`border-t border-zinc-800/60 ${onSelect ? "cursor-pointer hover:bg-zinc-800/40" : ""} ${active?.includes(t.raw) ? "bg-sky-950/40" : ""}`}
-              onClick={onSelect ? () => onSelect(t.raw) : undefined}
-              title={onSelect ? "click to filter" : undefined}
-            >
-              <td className="max-w-48 truncate py-1.5 pr-2 text-zinc-200" title={t.key}>
-                {t.key}
-                {bases?.get(t.key)?.map((b) => (
-                  <span
-                    key={b}
-                    className="ml-1.5 rounded bg-zinc-800 px-1 py-0.5 text-[10px] text-zinc-400"
-                  >
-                    {b}
-                  </span>
-                ))}
-              </td>
-              <td className="py-1.5 text-right tabular-nums text-zinc-300">{compactTokens(t.tokens)}</td>
-              <td className="py-1.5 text-right tabular-nums">
-                <span className="text-zinc-100">{usd(t.costMicro)}</span>
-                {t.unpriced > 0 && (
-                  <span className="cursor-help text-amber-400" title={unpricedTip(t.unpriced)}>
-                    *
-                  </span>
-                )}
-                {t.costMicro === 0 && t.equivMicro > 0 && (
-                  <div className="text-xs text-zinc-500">≈ {usd(t.equivMicro)} API-equiv</div>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+        )}
+        {totals.map((t) => (
+          <tr
+            key={t.key}
+            className={`border-t-[0.5px] border-hairline ${onSelect ? "cursor-pointer hover:bg-[var(--surface-hover)]" : ""}`}
+            style={active?.includes(t.raw) ? { background: "var(--accent-soft)" } : undefined}
+            onClick={onSelect ? () => onSelect(t.raw) : undefined}
+            title={onSelect ? "click to filter" : undefined}
+          >
+            <td className="max-w-48 truncate py-1.5 pr-2 text-primary" title={t.key}>
+              {t.key}
+              {bases?.get(t.key)?.map((b) => (
+                <Badge key={b} tone="tag" className="ml-1.5">
+                  {b}
+                </Badge>
+              ))}
+            </td>
+            <td className="py-1.5 text-right tabular-nums text-secondary">{compactTokens(t.tokens)}</td>
+            <td className="py-1.5 text-right tabular-nums">
+              <span className="text-primary">{usd(t.costMicro)}</span>
+              {t.unpriced > 0 && (
+                <span className="cursor-help text-warning" title={unpricedTip(t.unpriced)}>
+                  *
+                </span>
+              )}
+              {t.costMicro === 0 && t.equivMicro > 0 && (
+                <div className="text-xs text-tertiary">≈ {usd(t.equivMicro)} API-equiv</div>
+              )}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

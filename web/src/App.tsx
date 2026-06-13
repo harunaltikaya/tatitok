@@ -47,11 +47,20 @@ import {
   type Layout,
 } from "./layout";
 import { useStream } from "./useStream";
+import { THEMES, loadTheme, saveTheme, applyTheme } from "./theme";
 import Chart from "./components/Chart";
 import Breakdown, { sumByKey } from "./components/Breakdown";
 import PlanCard from "./components/Plans";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
+import Mark from "./ui/Mark";
+import ClassDot from "./ui/ClassDot";
+import Button from "./ui/Button";
+import Select from "./ui/Select";
+import FilterChip from "./ui/FilterChip";
+import Badge from "./ui/Badge";
+import Card from "./ui/Card";
+import Stat from "./ui/Stat";
 
 const presets = [
   { label: "7d", days: 7 },
@@ -60,7 +69,24 @@ const presets = [
   { label: "all", days: 0 },
 ] as const;
 
-const axisText = { color: "#a1a1aa", fontSize: 11 };
+const axisText = { color: "#a1a1aa", fontSize: 11, fontFamily: "Jost, sans-serif" };
+
+// Stable per-entity series colors (M7 Task 3). The design system forbids
+// rainbow series palettes; instead an entity (provider/model/harness) keeps
+// ONE calm hue across every chart, assigned by a stable hash of its key so
+// the color is independent of which other entities are present in a stack.
+// The palette is the four economic-class hues plus two muted tones (used
+// only when a stack carries >4 providers). Concrete hexes — ECharts
+// itemStyle.color does not resolve CSS vars, and the class hues are fixed
+// across the dark tones anyway. (Full class-ENCODED coloring — color means
+// the economic class — awaits the M8 class model + chart group-by; here the
+// color only has to be calm, non-rainbow, and stable per entity.)
+const SERIES_PALETTE = ["#a78bfa", "#38bdf8", "#f5b547", "#4ade80", "#6b7fd7", "#c98bb0"];
+function seriesColor(key: string): string {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return SERIES_PALETTE[h % SERIES_PALETTE.length];
+}
 
 // dailyProviderChart is the stacked-by-provider daily bar chart. Its
 // tooltip (M6 Task 3) shows a day-total line above the per-provider
@@ -80,10 +106,16 @@ function dailyProviderChart(
   for (const r of rows) byCell.set(`${r.date}|${r.key}`, value(r));
   return {
     backgroundColor: "transparent",
+    animation: false,
     legend: { textStyle: axisText, top: 0 },
     grid: { left: 56, right: 12, top: 32, bottom: 24 },
     tooltip: {
       trigger: "axis",
+      backgroundColor: "var(--surface-raised)",
+      borderColor: "var(--border-hairline)",
+      borderWidth: 0.5,
+      textStyle: { color: "var(--text-secondary)", fontSize: 12, fontFamily: "Jost, sans-serif" },
+      extraCssText: "box-shadow: var(--shadow-overlay); border-radius: 10px; font-variant-numeric: tabular-nums;",
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           axisValue?: string; seriesName?: string; value?: number | null; marker?: string;
@@ -91,7 +123,7 @@ function dailyProviderChart(
         if (arr.length === 0) return "";
         const day = String(arr[0]?.axisValue ?? "");
         const parts = [
-          `<div style="font-weight:600">${day}</div>`,
+          `<div style="font-weight:500">${day}</div>`,
           `<div>total <b>${fmt(dayTotal(rows, day, value))}</b></div>`,
         ];
         const seriesLines = arr
@@ -101,7 +133,7 @@ function dailyProviderChart(
         if (modelBreakdown) {
           const models = topModelsAtDay(modelBreakdown.rows, day, modelBreakdown.value);
           if (models.length > 0) {
-            parts.push(`<div style="margin-top:4px;color:#a1a1aa">by model</div>`);
+            parts.push(`<div style="margin-top:4px;color:var(--text-secondary)">by model</div>`);
             parts.push(models.map((m) => `${displayValue(m.key)} <b>${fmt(m.value)}</b>`).join("<br/>"));
           }
         }
@@ -114,6 +146,7 @@ function dailyProviderChart(
       name: displayValue(p),
       type: "bar",
       stack: "total",
+      itemStyle: { color: seriesColor(p) },
       emphasis: { focus: "series" },
       data: days.map((d) => byCell.get(`${d}|${p}`) ?? 0),
     })),
@@ -152,6 +185,9 @@ export default function App() {
     loadLayout(typeof localStorage !== "undefined" ? localStorage.getItem(LAYOUT_KEY) : null),
   );
   const [fullscreen, setFullscreen] = useState<string | null>(null);
+  // Dark tone (M7 Task 2): LOCAL presentation state like the panel layout
+  // — browser only, never the URL. Lazy-init from localStorage.
+  const [theme, setTheme] = useState(loadTheme);
   const stream = useStream();
   const lastRangeFetch = useRef(0);
   // Request-generation guard (M6 Codex F5): each loadRange bumps this; a
@@ -190,6 +226,13 @@ export default function App() {
       /* private mode / storage disabled — layout just won't persist */
     }
   }, [layout]);
+  // Dark tone persists to the browser ONLY (like the layout) and reflects
+  // onto <html data-theme>, which the themes.css [data-theme] blocks
+  // override the canvas + surface steps on.
+  useEffect(() => {
+    applyTheme(theme);
+    saveTheme(theme);
+  }, [theme]);
   // Escape exits fullscreen (transient — never persisted, never in URL).
   useEffect(() => {
     if (!fullscreen) return;
@@ -310,24 +353,25 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-950 px-6 py-5 text-zinc-100">
+    <div className="mx-auto min-h-screen max-w-[var(--content-max)] bg-app px-6 py-5 text-primary">
       <header className="mb-5 flex flex-wrap items-center gap-4">
-        <h1 className="text-xl font-bold tracking-tight">
-          tatitok
-          <span className="ml-2 text-sm font-normal text-zinc-500">local AI usage</span>
-        </h1>
+        <div className="flex items-center gap-3">
+          <span className="text-primary"><Mark size={26} /></span>
+          <span className="text-[21px] font-medium tracking-[-0.01em]">tatitok</span>
+          <span className="text-sm text-faint">local AI usage</span>
+        </div>
         <div className="ml-auto flex flex-wrap items-center gap-2 text-sm">
           {presets.map((p) => (
-            <button
+            <Button
               key={p.label}
-              className="rounded-lg border border-zinc-800 px-2.5 py-1 text-zinc-300 hover:bg-zinc-800"
+              size="sm"
               onClick={() => {
                 setFrom(p.days === 0 ? "1970-01-01" : daysAgoInTZ(tz, p.days - 1));
                 setTo(todayInTZ(tz));
               }}
             >
               {p.label}
-            </button>
+            </Button>
           ))}
           <input
             type="date"
@@ -336,9 +380,9 @@ export default function App() {
             aria-label={`range start (${tz} day)`}
             value={from}
             onChange={(e) => e.target.value && setFrom(e.target.value)}
-            className="rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1 text-zinc-300"
+            className="h-[30px] rounded-[10px] border-[0.5px] border-hairline bg-card px-2 text-secondary"
           />
-          <span className="text-zinc-600">→</span>
+          <span className="text-faint">→</span>
           <input
             type="date"
             id="range-to"
@@ -346,7 +390,7 @@ export default function App() {
             aria-label={`range end (${tz} day)`}
             value={to}
             onChange={(e) => e.target.value && setTo(e.target.value)}
-            className="rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1 text-zinc-300"
+            className="h-[30px] rounded-[10px] border-[0.5px] border-hairline bg-card px-2 text-secondary"
           />
           {/* Days bucket in the selected zone (M6 Task 2). UTC stays the
               storage/parity truth; the server resolves this IANA name
@@ -354,24 +398,33 @@ export default function App() {
               path back. The path badge makes the hard-stop-1 drive
               glanceable: rollup for whole-hour zones, events for
               fractional offsets. */}
-          <label className="flex items-center gap-1 text-xs text-zinc-500">
-            <span className="uppercase tracking-wider">days in</span>
-            <select
+          <label className="flex items-center gap-1.5 text-xs text-tertiary">
+            <span>days in</span>
+            <Select
               id="timezone"
               name="timezone"
               aria-label="timezone for day bucketing"
               value={tz}
               onChange={(e) => setTz(e.target.value)}
-              className="max-w-[12rem] rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1 text-zinc-300"
-            >
-              {tzOptions.map((z) => (
-                <option key={z} value={z}>{z}</option>
-              ))}
-            </select>
+              options={tzOptions}
+              style={{ maxWidth: "12rem" }}
+            />
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-tertiary">
+            <span>theme</span>
+            <Select
+              id="theme"
+              name="theme"
+              aria-label="dark theme tone"
+              value={theme}
+              onChange={(e) => setTheme(e.target.value)}
+              options={THEMES.map((t) => ({ value: t.id, label: t.label }))}
+            />
           </label>
           {source && (
-            <span
-              className="cursor-help text-[10px] uppercase tracking-wider text-zinc-600"
+            <Badge
+              tone="tag"
+              style={{ cursor: "help" }}
               title={
                 source === "rollup"
                   ? `served from rollups — ${tz} is a whole-hour offset, so local days map to whole UTC hours`
@@ -379,38 +432,38 @@ export default function App() {
               }
             >
               · {source}
-            </span>
+            </Badge>
           )}
         </div>
       </header>
 
       {err && (
-        <div className="mb-4 rounded-lg border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">
+        <div
+          className="mb-4 rounded-[10px] border-[0.5px] px-3 py-2 text-sm"
+          style={{
+            color: "var(--color-danger)",
+            borderColor: "color-mix(in oklab, var(--color-danger) 30%, transparent)",
+            background: "color-mix(in oklab, var(--color-danger) 12%, transparent)",
+          }}
+        >
           {err}
         </div>
       )}
 
       {chips.length > 0 && (
         <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-xs uppercase tracking-wider text-zinc-500">filters</span>
+          <span className="text-xs text-tertiary">filters</span>
           {chips.map((c) => (
-            <button
+            <FilterChip
               key={`${c.dim}|${c.value}`}
-              className="flex items-center gap-1 rounded-full border border-sky-900 bg-sky-950/60 px-2.5 py-0.5 text-sky-300 hover:bg-sky-900/60"
-              onClick={() => setFilters((f) => removeValue(f, c.dim, c.value))}
-              title={`remove ${c.dim} filter`}
-            >
-              <span className="text-xs text-sky-500">{c.dim}:</span>
-              {displayValue(c.value)}
-              <span aria-hidden>×</span>
-            </button>
+              dim={c.dim}
+              value={displayValue(c.value)}
+              onRemove={() => setFilters((f) => removeValue(f, c.dim, c.value))}
+            />
           ))}
-          <button
-            className="text-xs text-zinc-500 underline hover:text-zinc-300"
-            onClick={() => setFilters(emptyFilters())}
-          >
+          <Button variant="subtle" size="sm" onClick={() => setFilters(emptyFilters())}>
             clear all
-          </button>
+          </Button>
         </div>
       )}
 
@@ -419,69 +472,59 @@ export default function App() {
 
         <main className="min-w-0 flex-1">
           <section className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">
-                today
-                <span
-                  className={`ml-2 inline-block h-2 w-2 rounded-full ${stream.connected ? "bg-emerald-400" : "bg-zinc-600"}`}
-                  title={stream.connected ? "live — SSE connected" : "stream disconnected (EventSource will retry; data refetches on reconnect)"}
-                />
-                {countActive(filters) > 0 && (
-                  <span className="ml-2 text-[10px] font-normal normal-case text-sky-400">filtered</span>
-                )}
-              </h2>
-              <div className="mt-2 text-2xl font-bold tabular-nums">
-                {today ? usd(today.costUSDMicro) : "—"}
-                {today && today.unpricedEvents > 0 && (
-                  <span className="cursor-help text-base text-amber-400" title={`${today.unpricedEvents} events today carry no resolvable price — cost is a floor.`}>*</span>
-                )}
-              </div>
-              <div className="text-sm text-zinc-400 tabular-nums">
-                {today ? `${compactTokens(totalTokens(today))} tokens` : "no data yet"}
-              </div>
+            <Card
+              title={
+                <span className="inline-flex items-center gap-2">
+                  today
+                  <ClassDot
+                    tone={stream.connected ? "live" : "neutral"}
+                    pulse={stream.connected}
+                    title={stream.connected ? "live — SSE connected" : "stream disconnected (EventSource will retry; data refetches on reconnect)"}
+                  />
+                  {countActive(filters) > 0 && (
+                    <span className="text-[11px]" style={{ color: "var(--accent)" }}>filtered</span>
+                  )}
+                </span>
+              }
+            >
+              <Stat
+                size="lg"
+                value={today ? usd(today.costUSDMicro) : "—"}
+                unpriced={!!today && today.unpricedEvents > 0}
+                unpricedTitle={today ? `${today.unpricedEvents} events today carry no resolvable price — cost is a floor.` : undefined}
+                sub={today ? `${compactTokens(totalTokens(today))} tokens` : "no data yet"}
+              />
               {today && today.costAPIEquivMicro > 0 && (
-                <div className="text-xs text-zinc-500 tabular-nums">≈ {usd(today.costAPIEquivMicro)} API-equiv</div>
+                <div className="mt-1 text-xs text-tertiary tabular-nums">≈ {usd(today.costAPIEquivMicro)} API-equiv</div>
               )}
               {stream.lastPass && (
-                <div className="mt-2 text-xs text-zinc-500">
+                <div className="mt-2 text-xs text-faint tabular-nums">
                   last pass #{stream.lastPass.pass}:{" "}
                   {stream.lastPass.harnesses
                     .map((h) => `${h.harness} +${h.new}${h.replaced ? ` ~${h.replaced}` : ""}`)
                     .join(", ")}
                 </div>
               )}
-            </div>
+            </Card>
             {plans.map((p) => (
               <PlanCard key={p.name} plan={p} />
             ))}
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 md:col-span-2">
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-400">range totals</h2>
-              <div className="mt-2 flex flex-wrap gap-6 tabular-nums">
-                <div>
-                  <div className="text-2xl font-bold">
-                    {usd(daily.reduce((n, r) => n + r.costAPIEquivMicro, 0))}
-                  </div>
-                  <div className="text-xs text-zinc-500">API-equivalent ({from} → {to})</div>
-                </div>
-                <div>
-                  <div className="text-2xl font-bold">
-                    {usd(daily.reduce((n, r) => n + r.costUSDMicro, 0))}
-                    {rangeUnpriced > 0 && (
-                      <span className="cursor-help text-base text-amber-400" title={`${rangeUnpriced} events in range carry no resolvable price — cost is a floor (the CLI's asterisk).`}>*</span>
-                    )}
-                  </div>
-                  <div className="text-xs text-zinc-500">actual cost</div>
-                </div>
-                <div>
-                  <div className="text-2xl font-bold">{compactTokens(daily.reduce((n, r) => n + totalTokens(r), 0))}</div>
-                  <div className="text-xs text-zinc-500">tokens</div>
-                </div>
-                <div>
-                  <div className="text-2xl font-bold">{daily.length}</div>
-                  <div className="text-xs text-zinc-500">active days</div>
-                </div>
+            <Card className="md:col-span-2" title="range totals">
+              <div className="flex flex-wrap gap-x-10 gap-y-4">
+                <Stat
+                  value={usd(daily.reduce((n, r) => n + r.costAPIEquivMicro, 0))}
+                  sub={`API-equivalent (${from} → ${to})`}
+                />
+                <Stat
+                  value={usd(daily.reduce((n, r) => n + r.costUSDMicro, 0))}
+                  unpriced={rangeUnpriced > 0}
+                  unpricedTitle={`${rangeUnpriced} events in range carry no resolvable price — cost is a floor (the CLI's asterisk).`}
+                  sub="actual cost"
+                />
+                <Stat value={compactTokens(daily.reduce((n, r) => n + totalTokens(r), 0))} sub="tokens" />
+                <Stat value={String(daily.length)} sub="active days" />
               </div>
-            </div>
+            </Card>
           </section>
 
           {/* Panel grid (M6 Task 4): charts and breakdowns become
@@ -489,16 +532,18 @@ export default function App() {
               browser-local (never the URL); a reset restores defaults.
               Filter interactions inside the panels survive every layout
               state — the same elements are reframed, never remounted. */}
-          <div className="mb-2 flex items-center gap-2 text-xs text-zinc-500">
-            <span className="uppercase tracking-wider">panels</span>
-            <span className="hidden text-zinc-600 sm:inline">drag header to reorder · −/+ to resize · ⤢ fullscreen (Esc)</span>
-            <button
-              className="ml-auto rounded-lg border border-zinc-800 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          <div className="mb-2 flex items-center gap-2 text-xs text-tertiary">
+            <span>panels</span>
+            <span className="hidden text-faint sm:inline">drag header to reorder · −/+ to resize · ⤢ fullscreen (Esc)</span>
+            <Button
+              className="ml-auto"
+              variant="subtle"
+              size="sm"
               onClick={() => setLayout(defaultLayout())}
               title="restore the default panel order and sizes"
             >
               reset layout
-            </button>
+            </Button>
           </div>
           <PanelGrid
             layout={layout}
@@ -508,7 +553,7 @@ export default function App() {
             onFullscreen={setFullscreen}
           />
 
-          <footer className="mt-6 text-xs text-zinc-600">
+          <footer className="mt-6 text-xs text-faint tabular-nums">
             {health
               ? `tatitok ${health.version} · snapshot ${health.price_snapshot} · ${health.overrides} overrides / ${health.reference_models} reference models · db ${health.db_hash} · up ${Math.floor(health.uptime_seconds / 60)}m`
               : "hub unreachable"}
