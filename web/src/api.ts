@@ -17,7 +17,7 @@ export interface CostSums {
 }
 
 export interface DailyRow extends TokenSums, CostSums {
-  date: string; // YYYY-MM-DD (UTC)
+  date: string; // YYYY-MM-DD in the query timezone (UTC by default)
 }
 
 export interface DailyByRow extends TokenSums, CostSums {
@@ -119,10 +119,12 @@ async function getJSON<T>(path: string): Promise<T> {
 
 // The fq argument is the global facet filter state rendered as
 // repeated query params (filters.ts filterQuery) — every data fetch
-// obeys the one state (M5 Task 4). source declares the serving path
-// ("rollup"|"events" — the API's honesty field).
-export function fetchDaily(from: string, to: string, fq = ""): Promise<{ source: string; daily: DailyRow[] }> {
-  return getJSON(`/api/v1/stats/daily?from=${from}&to=${to}${fq}`);
+// obeys the one state (M5 Task 4). tz is the IANA timezone the days
+// bucket in (M6 Task 2); the SERVER resolves it against the binary's
+// embedded tzdata and declares it back. source declares the serving
+// path ("rollup"|"events" — the API's honesty field).
+export function fetchDaily(from: string, to: string, fq = "", tz = "UTC"): Promise<{ tz: string; source: string; daily: DailyRow[] }> {
+  return getJSON(`/api/v1/stats/daily?from=${from}&to=${to}&timezone=${encodeURIComponent(tz)}${fq}`);
 }
 
 export function fetchDailyBy(
@@ -130,12 +132,13 @@ export function fetchDailyBy(
   from: string,
   to: string,
   fq = "",
-): Promise<{ source: string; daily_by: DailyByRow[] }> {
-  return getJSON(`/api/v1/stats/daily?by=${by}&from=${from}&to=${to}${fq}`);
+  tz = "UTC",
+): Promise<{ tz: string; source: string; daily_by: DailyByRow[] }> {
+  return getJSON(`/api/v1/stats/daily?by=${by}&from=${from}&to=${to}&timezone=${encodeURIComponent(tz)}${fq}`);
 }
 
-export function fetchTotals(window: string, fq = ""): Promise<{ days: number; totals: Totals }> {
-  return getJSON(`/api/v1/totals?window=${window}${fq}`);
+export function fetchTotals(window: string, fq = "", tz = "UTC"): Promise<{ tz: string; days: number; totals: Totals }> {
+  return getJSON(`/api/v1/totals?window=${window}&timezone=${encodeURIComponent(tz)}${fq}`);
 }
 
 export function fetchModels(): Promise<{ models: ModelInfo[] }> {
@@ -180,14 +183,50 @@ export function totalTokens(t: TokenSums): number {
   return t.inputTokens + t.outputTokens + t.cacheCreationTokens + t.cacheReadTokens;
 }
 
-// UTC day arithmetic for the range picker — days are UTC everywhere in
-// the rollup-backed API and the UI says so.
-export function utcToday(): string {
-  return new Date().toISOString().slice(0, 10);
+// Timezone helpers for the range picker (M6 Task 2). The browser only
+// detects the IANA NAME (Intl) and picks default range bounds; the
+// SERVER does the authoritative day bucketing against its embedded
+// tzdata — the browser's own zone math never decides the data.
+export function browserTZ(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
 }
 
-export function utcDaysAgo(n: number): string {
+// availableTZs is the IANA list for the selector — the full supported
+// set where the browser exposes it, always including UTC and the
+// detected zone, sorted.
+export function availableTZs(): string[] {
+  let list: string[] = [];
+  try {
+    const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
+    if (typeof sv === "function") list = sv("timeZone");
+  } catch {
+    /* older engine — fall back to UTC + browser zone only */
+  }
+  const set = new Set<string>(list);
+  set.add("UTC");
+  set.add(browserTZ());
+  return [...set].sort();
+}
+
+// dayInTZ formats an instant as its YYYY-MM-DD calendar day in tz
+// (en-CA renders ISO order). todayInTZ / daysAgoInTZ drive the range
+// presets so "today" and "last N days" mean the viewer's local days.
+export function dayInTZ(date: Date, tz: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(date);
+}
+
+export function todayInTZ(tz: string): string {
+  return dayInTZ(new Date(), tz);
+}
+
+export function daysAgoInTZ(tz: string, n: number): string {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - n);
-  return d.toISOString().slice(0, 10);
+  return dayInTZ(d, tz);
 }

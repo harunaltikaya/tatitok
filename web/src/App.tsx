@@ -11,8 +11,10 @@ import {
   usd,
   compactTokens,
   totalTokens,
-  utcDaysAgo,
-  utcToday,
+  browserTZ,
+  availableTZs,
+  todayInTZ,
+  daysAgoInTZ,
   type DailyByRow,
   type DailyRow,
   type FacetValue,
@@ -35,6 +37,7 @@ import {
   type FacetDim,
   type FilterState,
 } from "./filters";
+import { dayTotal, topModelsAtDay } from "./tooltip";
 import { useStream } from "./useStream";
 import Chart from "./components/Chart";
 import Breakdown, { sumByKey } from "./components/Breakdown";
@@ -50,10 +53,17 @@ const presets = [
 
 const axisText = { color: "#a1a1aa", fontSize: 11 };
 
-function stackedByProvider(
+// dailyProviderChart is the stacked-by-provider daily bar chart. Its
+// tooltip (M6 Task 3) shows a day-total line above the per-provider
+// breakdown; passing modelBreakdown adds a by-model section (top 5 +
+// "other") for the tokens and API-equivalent charts. Every tooltip
+// number is computed from the SAME filtered, timezoned daily_by rows the
+// bars render, so the tooltip cannot disagree with its chart.
+function dailyProviderChart(
   rows: DailyByRow[],
   value: (r: DailyByRow) => number,
   fmt: (v: number) => string,
+  modelBreakdown?: { rows: DailyByRow[]; value: (r: DailyByRow) => number },
 ): EChartsOption {
   const days = [...new Set(rows.map((r) => r.date))].sort();
   const providers = [...new Set(rows.map((r) => r.key))].sort();
@@ -65,7 +75,29 @@ function stackedByProvider(
     grid: { left: 56, right: 12, top: 32, bottom: 24 },
     tooltip: {
       trigger: "axis",
-      valueFormatter: (v) => fmt(Number(v ?? 0)),
+      formatter: (params: unknown) => {
+        const arr = (Array.isArray(params) ? params : [params]) as Array<{
+          axisValue?: string; seriesName?: string; value?: number | null; marker?: string;
+        }>;
+        if (arr.length === 0) return "";
+        const day = String(arr[0]?.axisValue ?? "");
+        const parts = [
+          `<div style="font-weight:600">${day}</div>`,
+          `<div>total <b>${fmt(dayTotal(rows, day, value))}</b></div>`,
+        ];
+        const seriesLines = arr
+          .filter((p) => Number(p.value ?? 0) !== 0)
+          .map((p) => `${p.marker ?? ""}${p.seriesName ?? ""} <b>${fmt(Number(p.value ?? 0))}</b>`);
+        if (seriesLines.length > 0) parts.push(seriesLines.join("<br/>"));
+        if (modelBreakdown) {
+          const models = topModelsAtDay(modelBreakdown.rows, day, modelBreakdown.value);
+          if (models.length > 0) {
+            parts.push(`<div style="margin-top:4px;color:#a1a1aa">by model</div>`);
+            parts.push(models.map((m) => `${displayValue(m.key)} <b>${fmt(m.value)}</b>`).join("<br/>"));
+          }
+        }
+        return parts.join("");
+      },
     },
     xAxis: { type: "category", data: days, axisLabel: axisText },
     yAxis: { type: "value", axisLabel: { ...axisText, formatter: (v: number) => fmt(v) }, splitLine: { lineStyle: { color: "#27272a" } } },
@@ -84,9 +116,16 @@ export default function App() {
   // bookmarkable, survives refresh; no persistence beyond that (M5
   // Task 4). One state drives every chart, table and total.
   const initial = useMemo(() => filtersFromURL(window.location.search), []);
+  // Timezone (M6 Task 2): the day-bucketing zone. Defaults to the
+  // browser's IANA zone, overridable via the header selector, and lives
+  // in the URL like every other filter. The server resolves the name
+  // against its embedded tzdata and declares it back.
+  const initialTZ = initial.tz ?? browserTZ();
+  const [tz, setTz] = useState(initialTZ);
+  const tzOptions = useMemo(() => availableTZs(), []);
   const [filters, setFilters] = useState<FilterState>(initial.filters);
-  const [from, setFrom] = useState(initial.from ?? utcDaysAgo(29));
-  const [to, setTo] = useState(initial.to ?? utcToday());
+  const [from, setFrom] = useState(initial.from ?? daysAgoInTZ(initialTZ, 29));
+  const [to, setTo] = useState(initial.to ?? todayInTZ(initialTZ));
   const [daily, setDaily] = useState<DailyRow[]>([]);
   const [byProvider, setByProvider] = useState<DailyByRow[]>([]);
   const [byHarness, setByHarness] = useState<DailyByRow[]>([]);
@@ -96,6 +135,7 @@ export default function App() {
   const [today, setToday] = useState<Totals | null>(null);
   const [plans, setPlans] = useState<PlanStatus[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
+  const [source, setSource] = useState(""); // serving path of the day query ("rollup"|"events")
   const [err, setErr] = useState<string | null>(null);
   const stream = useStream();
   const lastRangeFetch = useRef(0);
@@ -103,19 +143,20 @@ export default function App() {
   const fq = useMemo(() => filterQuery(filters), [filters]);
 
   // URL sync (replaceState — every click is not a history entry) and
-  // back/forward restore.
+  // back/forward restore. tz round-trips alongside filters and range.
   useEffect(() => {
-    const url = filtersToURL(filters, from, to);
+    const url = filtersToURL(filters, from, to, tz);
     if (window.location.search !== url) {
       window.history.replaceState(null, "", url);
     }
-  }, [filters, from, to]);
+  }, [filters, from, to, tz]);
   useEffect(() => {
     const onPop = () => {
       const s = filtersFromURL(window.location.search);
       setFilters(s.filters);
       if (s.from) setFrom(s.from);
       if (s.to) setTo(s.to);
+      if (s.tz) setTz(s.tz);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -123,37 +164,38 @@ export default function App() {
 
   const toggle = (dim: FacetDim, value: string) => setFilters((f) => toggleValue(f, dim, value));
 
-  const loadRange = (f: string, t: string, q: string) => {
+  const loadRange = (f: string, t: string, q: string, z: string) => {
     Promise.all([
-      fetchDaily(f, t, q),
-      fetchDailyBy("provider", f, t, q),
-      fetchDailyBy("harness", f, t, q),
-      fetchDailyBy("model", f, t, q),
+      fetchDaily(f, t, q, z),
+      fetchDailyBy("provider", f, t, q, z),
+      fetchDailyBy("harness", f, t, q, z),
+      fetchDailyBy("model", f, t, q, z),
     ])
       .then(([d, p, h, m]) => {
         setDaily(d.daily ?? []);
         setByProvider(p.daily_by ?? []);
         setByHarness(h.daily_by ?? []);
         setByModel(m.daily_by ?? []);
+        setSource(d.source);
         setErr(null);
       })
       .catch((e) => setErr(String(e)));
   };
 
   useEffect(() => {
-    loadRange(from, to, fq);
-    fetchTotals("today", fq).then((t) => setToday(t.totals)).catch(() => {});
+    loadRange(from, to, fq, tz);
+    fetchTotals("today", fq, tz).then((t) => setToday(t.totals)).catch(() => {});
     fetchModels().then((m) => setModels(m.models ?? [])).catch(() => {});
     fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
     fetchHealth().then(setHealth).catch(() => {});
-  }, [from, to, fq]);
+  }, [from, to, fq, tz]);
 
   // Live updates: every pass refreshes the today panel, the plan window
   // meters and the facet counts; the range refetches only when a
   // touched day falls inside it (or when the stream says we lost
   // events / reconnected: touchedDays empty).
   useEffect(() => {
-    fetchTotals("today", fq).then((t) => setToday(t.totals)).catch(() => {});
+    fetchTotals("today", fq, tz).then((t) => setToday(t.totals)).catch(() => {});
     fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
     if (stream.bump === 0 || stream.bump === lastRangeFetch.current) return;
     fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
@@ -161,7 +203,7 @@ export default function App() {
     const inRange = touched.length === 0 || touched.some((d) => d >= from && d <= to);
     if (inRange) {
       lastRangeFetch.current = stream.bump;
-      loadRange(from, to, fq);
+      loadRange(from, to, fq, tz);
     }
   }, [stream.bump]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -169,17 +211,23 @@ export default function App() {
   // primary daily chart; actual out-of-pocket cost gets its own chart —
   // both truths always visible, no toggle (post-plans, actual-only is
   // honest but nearly empty).
+  // Day-total + by-model tooltip on the tokens and API-equivalent charts
+  // (M6 Task 3); the actual-cost chart gets the day total only (post-plans
+  // it is near-empty, so a model breakdown of ~$0 adds nothing). byModel
+  // is the same filtered/timezoned set the bars use.
   const equivChart = useMemo(
-    () => stackedByProvider(byProvider, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`),
-    [byProvider],
+    () => dailyProviderChart(byProvider, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`,
+      { rows: byModel, value: (r) => r.costAPIEquivMicro / 1e6 }),
+    [byProvider, byModel],
   );
   const actualChart = useMemo(
-    () => stackedByProvider(byProvider, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`),
+    () => dailyProviderChart(byProvider, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`),
     [byProvider],
   );
   const tokenChart = useMemo(
-    () => stackedByProvider(byProvider, totalTokens, compactTokens),
-    [byProvider],
+    () => dailyProviderChart(byProvider, totalTokens, compactTokens,
+      { rows: byModel, value: totalTokens }),
+    [byProvider, byModel],
   );
   const onProviderSeries = (seriesName: string) => toggle("provider", rawValue(seriesName));
 
@@ -207,14 +255,14 @@ export default function App() {
           tatitok
           <span className="ml-2 text-sm font-normal text-zinc-500">local AI usage</span>
         </h1>
-        <div className="ml-auto flex items-center gap-2 text-sm">
+        <div className="ml-auto flex flex-wrap items-center gap-2 text-sm">
           {presets.map((p) => (
             <button
               key={p.label}
               className="rounded-lg border border-zinc-800 px-2.5 py-1 text-zinc-300 hover:bg-zinc-800"
               onClick={() => {
-                setFrom(p.days === 0 ? "1970-01-01" : utcDaysAgo(p.days - 1));
-                setTo(utcToday());
+                setFrom(p.days === 0 ? "1970-01-01" : daysAgoInTZ(tz, p.days - 1));
+                setTo(todayInTZ(tz));
               }}
             >
               {p.label}
@@ -224,7 +272,7 @@ export default function App() {
             type="date"
             id="range-from"
             name="range-from"
-            aria-label="range start (UTC day)"
+            aria-label={`range start (${tz} day)`}
             value={from}
             onChange={(e) => e.target.value && setFrom(e.target.value)}
             className="rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1 text-zinc-300"
@@ -234,14 +282,44 @@ export default function App() {
             type="date"
             id="range-to"
             name="range-to"
-            aria-label="range end (UTC day)"
+            aria-label={`range end (${tz} day)`}
             value={to}
             onChange={(e) => e.target.value && setTo(e.target.value)}
             className="rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1 text-zinc-300"
           />
-          <span className="cursor-help text-xs text-zinc-500" title="Rollup-backed days are UTC buckets — same numbers as `tatitok stats --daily --timezone UTC`. Exact local-timezone serving stays in the CLI this milestone.">
-            days are UTC
-          </span>
+          {/* Days bucket in the selected zone (M6 Task 2). UTC stays the
+              storage/parity truth; the server resolves this IANA name
+              against its embedded tzdata and declares it + the serving
+              path back. The path badge makes the hard-stop-1 drive
+              glanceable: rollup for whole-hour zones, events for
+              fractional offsets. */}
+          <label className="flex items-center gap-1 text-xs text-zinc-500">
+            <span className="uppercase tracking-wider">days in</span>
+            <select
+              id="timezone"
+              name="timezone"
+              aria-label="timezone for day bucketing"
+              value={tz}
+              onChange={(e) => setTz(e.target.value)}
+              className="max-w-[12rem] rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1 text-zinc-300"
+            >
+              {tzOptions.map((z) => (
+                <option key={z} value={z}>{z}</option>
+              ))}
+            </select>
+          </label>
+          {source && (
+            <span
+              className="cursor-help text-[10px] uppercase tracking-wider text-zinc-600"
+              title={
+                source === "rollup"
+                  ? `served from rollups — ${tz} is a whole-hour offset, so local days map to whole UTC hours`
+                  : `served from exact events — ${tz} is a fractional offset (or a basis filter is active), so the UTC-hour rollups cannot serve it`
+              }
+            >
+              · {source}
+            </span>
+          )}
         </div>
       </header>
 

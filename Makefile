@@ -19,10 +19,12 @@ lint:
 	golangci-lint run
 
 # Dashboard bundle (M4 Task 4): pinned toolchain (web/.nvmrc,
-# package-lock.json), embedded via go:embed. The origin check runs after
-# every bundle build — the served dashboard makes no external requests.
+# package-lock.json), embedded via go:embed. Frontend unit tests run via
+# Node's built-in runner (M6 Task 3, no test-runner dependency); the
+# origin check runs after every bundle build — the served dashboard
+# makes no external requests.
 web:
-	cd web && npm ci && npm run build
+	cd web && npm ci && npm test && npm run build
 	go test -count=1 -run 'TestDistNoExternalOrigins$$' ./web
 
 build: web

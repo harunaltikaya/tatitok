@@ -57,19 +57,23 @@ export function filterQuery(f: FilterState): string {
   return s === "" ? "" : `&${s}`;
 }
 
-// URL round-trip: filters (and the day range) are the URL's query
-// string; popstate/refresh restore them exactly.
-export function filtersFromURL(search: string): { filters: FilterState; from: string | null; to: string | null } {
+// URL round-trip: filters, the day range AND the timezone are the URL's
+// query string; popstate/refresh restore them exactly (M6 Task 2 adds
+// tz — the viewer's chosen zone is shareable like every other filter).
+// Layout is deliberately NOT here (Task 4): URLs share what you are
+// looking at, not how your panels are arranged.
+export function filtersFromURL(search: string): { filters: FilterState; from: string | null; to: string | null; tz: string | null } {
   const p = new URLSearchParams(search);
   const filters = emptyFilters();
   for (const dim of facetDims) filters[dim] = p.getAll(dim);
-  return { filters, from: p.get("from"), to: p.get("to") };
+  return { filters, from: p.get("from"), to: p.get("to"), tz: p.get("tz") };
 }
 
-export function filtersToURL(f: FilterState, from: string, to: string): string {
+export function filtersToURL(f: FilterState, from: string, to: string, tz: string): string {
   const p = new URLSearchParams();
   p.set("from", from);
   p.set("to", to);
+  p.set("tz", tz);
   for (const dim of facetDims) {
     for (const v of f[dim]) p.append(dim, v);
   }
