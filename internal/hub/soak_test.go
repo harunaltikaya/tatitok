@@ -213,6 +213,14 @@ func TestWatcherSoak(t *testing.T) {
 	// The rollup property under watcher load — the question this soak
 	// answers (M3 report open question 4).
 	assertRollupsConsistent(t, h.st)
+	// Hour grain (M6 Task 1): the conservation law holds under concurrent
+	// watcher ingest too, not only in the isolated property tests — every
+	// daily row equals the sum of its hourly rows byte-equal.
+	if viol, err := h.st.VerifyRollupConservation(ctx); err != nil {
+		t.Fatal(err)
+	} else if len(viol) != 0 {
+		t.Fatalf("after soak: %d rollup conservation violation(s): %+v", len(viol), viol)
+	}
 	for _, harness := range []string{"claude-code", "codex", "opencode"} {
 		f := store.Filters{Harness: []string{harness}}
 		direct, err := h.st.Daily(ctx, time.UTC, f)
