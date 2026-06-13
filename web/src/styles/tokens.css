@@ -1,0 +1,15 @@
+/* ============================================================
+   tatitok design-system tokens — vendored entry point.
+
+   Mirrors the design system's styles.css (an @import manifest of the
+   token layer), adapted for the app: the base element reset lives in
+   index.css under Tailwind's @layer base (so utilities still win the
+   cascade), and the [data-theme] dark tones live in tokens/themes.css.
+   These files are plain custom-property declarations + @font-face only.
+   ============================================================ */
+
+@import "./tokens/fonts.css";
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
+@import "./tokens/themes.css";

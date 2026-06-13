@@ -5,9 +5,10 @@
 // versions pinned in .nvmrc / package-lock.json) so the binary always
 // embeds a fresh bundle. Without the bundle the hub serves an explainer
 // instead of the dashboard. Everything the dashboard needs ships inside
-// the bundle — fonts are the system stack, echarts is vendored by the
-// bundler — so serving it makes no external requests (verified by
-// TestDistNoExternalOrigins after every web build).
+// the bundle — the Jost webfont is self-hosted (woff2 fingerprinted into
+// the bundle, M7), echarts is vendored by the bundler — so serving it
+// makes no external requests (verified by TestDistNoExternalOrigins after
+// every web build).
 package web
 
 import "embed"

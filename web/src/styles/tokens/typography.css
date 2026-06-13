@@ -1,0 +1,33 @@
+/* ============================================================
+   tatitok — typography  (vendored from the design system)
+   One family (Jost), two weights (400 regular, 500 medium).
+   Large, quiet hero numbers; small, muted labels. Sentence case
+   everywhere — never ALL-CAPS. Numbers always tabular.
+   ============================================================ */
+
+:root {
+  --font-sans: "Jost", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --weight-regular: 400;
+  --weight-medium:  500;
+
+  /* type scale (px) — tuned for a dense dashboard at desktop */
+  --text-hero:  44px;  /* the value-extracted number */
+  --text-2xl:   30px;  /* stat-card numbers */
+  --text-xl:    22px;
+  --text-lg:    18px;
+  --text-md:    15px;
+  --text-base:  14px;  /* body / table cells */
+  --text-sm:    13px;
+  --text-xs:    12px;  /* labels */
+  --text-2xs:   11px;  /* axis ticks, micro-meta */
+
+  --leading-tight:  1.1;
+  --leading-snug:   1.3;
+  --leading-normal: 1.5;
+
+  --tracking-tight:  -0.02em;  /* big numbers */
+  --tracking-normal: 0;
+  --tracking-label:  0.005em;  /* small labels — gentle, never wide caps */
+}

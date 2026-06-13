@@ -1,4 +1,115 @@
 @import "tailwindcss";
+@import "./styles/tokens.css";
 
-/* System font stack only — nothing is fetched at runtime (the
-   no-external-origins rule; assets are embedded in the Go binary). */
+/* ============================================================
+   tatitok design tokens → Tailwind v4 theme (M7 Task 1).
+
+   The design system is the single styling source. Its token layer is
+   imported above as live CSS custom properties; this block exposes them
+   to Tailwind so utilities resolve to tokens, never ad-hoc hexes.
+
+   - @theme (concrete): Jost as the default family, and the DS neutral
+     scale overriding Tailwind's built-in zinc so existing zinc-* utilities
+     render the exact DS values.
+   - @theme inline (live): the SEMANTIC tokens (surfaces, text tiers,
+     accent, status, the four economic-class hues). `inline` makes each
+     generated utility reference the live var() rather than copy its value,
+     so the [data-theme] dark tones (themes.css) cascade through them.
+   ============================================================ */
+@theme {
+  --font-sans: "Jost", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* DS neutral scale (warm-cool zinc) — overrides Tailwind's built-ins */
+  --color-zinc-50:  #fafafa;
+  --color-zinc-100: #f4f4f5;
+  --color-zinc-200: #e4e4e7;
+  --color-zinc-300: #d4d4d8;
+  --color-zinc-400: #a1a1aa;
+  --color-zinc-500: #71717a;
+  --color-zinc-600: #52525b;
+  --color-zinc-700: #3f3f46;
+  --color-zinc-800: #27272a;
+  --color-zinc-900: #161618;
+  --color-zinc-950: #09090b;
+}
+
+@theme inline {
+  /* surfaces */
+  --color-app:     var(--bg-app);
+  --color-subtle:  var(--bg-subtle);
+  --color-card:    var(--surface-card);
+  --color-raised:  var(--surface-raised);
+  --color-inset:   var(--surface-inset);
+
+  /* borders (color tokens; the 0.5px width is applied per-element) */
+  --color-hairline: var(--border-hairline);
+  --color-strong:   var(--border-strong);
+
+  /* text tiers */
+  --color-primary:   var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-tertiary:  var(--text-tertiary);
+  --color-faint:     var(--text-faint);
+  --color-positive:  var(--text-positive);
+
+  /* status */
+  --color-warning: var(--color-warning);
+  --color-danger:  var(--color-danger);
+  --color-live:    var(--color-live);
+
+  /* economic-class hues — the ONLY categorical colors */
+  --color-class-subscription: var(--class-subscription);
+  --color-class-metered:      var(--class-metered);
+  --color-class-local:        var(--class-local);
+  --color-class-free:         var(--class-free);
+
+  /* neutral interactive accent — brand green at low key, NOT a class hue */
+  --color-accent:        var(--accent);
+  --color-accent-soft:   var(--accent-soft);
+  --color-accent-border: var(--accent-border);
+}
+
+/* ============================================================
+   Base reset (design-system base.css, layered so Tailwind utilities still
+   win). Dark canvas, Jost default, quiet headings, tabular figures on
+   numeric contexts, branded scrollbars, reduced-motion honored.
+   ============================================================ */
+@layer base {
+  body {
+    background: var(--bg-app);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-weight: var(--weight-regular);
+    font-size: var(--text-base);
+    line-height: var(--leading-normal);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1, h2, h3, h4 {
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-snug);
+  }
+
+  /* Numbers read as data: tabular everywhere they cluster. */
+  table, .tabular, .num { font-variant-numeric: tabular-nums; }
+
+  ::selection { background: var(--accent-soft); }
+
+  /* Thin, branded scrollbars in dark surfaces */
+  * { scrollbar-width: thin; scrollbar-color: var(--zinc-700) transparent; }
+  *::-webkit-scrollbar { width: 9px; height: 9px; }
+  *::-webkit-scrollbar-thumb {
+    background: var(--zinc-700);
+    border-radius: var(--radius-pill);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

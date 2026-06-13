@@ -1,0 +1,17 @@
+/* tatitok webfonts — Jost (geometric, airy; the brand wordmark face).
+   Vendored from the design system. Single variable file spans the weight
+   axis; the system uses only two instances: 400 (regular) and 500
+   (medium). Self-hosted and embedded in the Go binary so the served
+   dashboard fetches nothing from a third-party origin (the product's
+   no-external-origins rule; verified by TestDistNoExternalOrigins).
+
+   The url() is resolved + fingerprinted by Vite into the bundle at build
+   time, so the reference in the shipped CSS is a same-origin asset path. */
+
+@font-face {
+  font-family: "Jost";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../../fonts/jost-var.woff2") format("woff2");
+}

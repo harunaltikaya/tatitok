@@ -1,0 +1,66 @@
+/* ============================================================
+   tatitok — dark theme tones  (M7 Task 2)
+
+   tatitok ships DARK ONLY. This is a choice between two DISTINCT dark
+   canvases — never a light/white mode (a warm third tone is parked at the
+   bottom of this file, dropped from the shipping set at Stop 1). Each block
+   re-tunes ONLY the canvas + surface steps + the hairline (and, where a
+   shipping tone needs it, a text tier) relative to its own canvas, so
+   the surface hierarchy (app < inset < card < raised) stays legible on
+   each. The four economic-class hues, the positive green, the accent and
+   the text tiers are inherited from colors.css and held FIXED across all
+   tones — per the milestone, a tone that fails contrast for a class hue
+   or the hairline is dropped, not patched with per-hue overrides.
+
+   Finalized at Stop 1: dark-gray is the default, light-gray the alternate.
+   The DS is silent on multi-dark, so this whole file is a documented M7
+   divergence.
+
+   <html data-theme="…"> selects the tone; theme.ts reflects the choice.
+   ============================================================ */
+
+/* light gray — the lightest of the three: a lifted neutral canvas,
+   still unmistakably dark, no color cast. */
+[data-theme="light-gray"] {
+  --bg-app:         #1d1d20;
+  --bg-subtle:      #202024;
+  --surface-inset:  #232327;
+  --surface-card:   #2a2b2f;
+  --surface-raised: #323338;
+  /* lighter canvas → a touch more hairline so structure still reads */
+  --border-hairline: rgba(255, 255, 255, 0.12);
+  --border-strong:   rgba(255, 255, 255, 0.20);
+  /* light-gray ships, so lift the faint meta tier off the lifted canvas:
+     the base #52525b reads ~1.8:1 here (too quiet); #67676f reads ~2.5:1 —
+     legible but still below the tertiary tier. Text-tier tweak only; the
+     class hues stay fixed. */
+  --text-faint: #67676f;
+}
+
+/* dark gray — a deeper neutral charcoal; lifted off true near-black but
+   clearly darker than light-gray, no color cast. */
+[data-theme="dark-gray"] {
+  --bg-app:         #131316;
+  --bg-subtle:      #171719;
+  --surface-inset:  #1a1a1d;
+  --surface-card:   #202023;
+  --surface-raised: #27272b;
+  --border-hairline: rgba(255, 255, 255, 0.10);
+  --border-strong:   rgba(255, 255, 255, 0.17);
+}
+
+/* warm gray — PARKED (dropped from the shipping set at Stop 1; may revisit).
+   Re-derived as a neutral warm charcoal (a whisper of warmth, no amber), but
+   the owner settled on two tones — dark-gray (default) + light-gray. Kept
+   here so a future revisit is free. To re-enable: restore the rule below as
+   [data-theme="warm-gray"], and add it back to THEMES (theme.ts) + the
+   no-flash allowlist (index.html).
+
+     --bg-app:         #151411;
+     --bg-subtle:      #191815;
+     --surface-inset:  #1c1b18;
+     --surface-card:   #23211e;
+     --surface-raised: #2c2a27;
+     --border-hairline: rgba(255, 253, 248, 0.10);
+     --border-strong:   rgba(255, 253, 248, 0.17);
+*/
