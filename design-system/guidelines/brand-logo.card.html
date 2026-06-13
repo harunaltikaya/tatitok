@@ -1,0 +1,64 @@
+<!-- @dsCard group="Brand" viewport="700x190" name="Logo & mark" subtitle="The [ • ] viewfinder bracket with the brand-green dot" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; padding: 24px; background: var(--bg-app); font-family: var(--font-sans); }
+  .grid { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 16px; align-items: stretch; }
+  .tile { border-radius: var(--radius-lg); border: 0.5px solid var(--border-hairline); display: flex; align-items: center; justify-content: center; gap: 16px; height: 120px; }
+  .lockup { display: flex; align-items: center; gap: 16px; }
+  .word { font-size: 40px; font-weight: 500; letter-spacing: -0.01em; color: var(--text-primary); }
+  .cap { margin-top: 9px; font-size: 12px; color: var(--text-tertiary); text-align: center; }
+  .markimg { width: 52px; height: 52px; }
+  .mark { display: inline-flex; }
+</style>
+</head>
+<body>
+<div class="grid">
+  <div>
+    <div class="tile" style="background: var(--surface-card)">
+      <div class="lockup">
+        <span class="mark" style="color: var(--text-primary)">
+          <svg width="52" height="52" viewBox="0 0 120 120" fill="none" aria-hidden="true">
+            <g stroke="currentColor" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M50 16 H18 V104 H50"/><path d="M70 16 H102 V104 H70"/>
+            </g><circle cx="60" cy="60" r="14" fill="#1c9d74"/>
+          </svg>
+        </span>
+        <span class="word">tatitok</span>
+      </div>
+    </div>
+    <div class="cap">primary lockup · dark</div>
+  </div>
+  <div>
+    <div class="tile" style="background: var(--surface-card)">
+      <span class="mark" style="color: var(--text-primary)">
+        <svg width="64" height="64" viewBox="0 0 120 120" fill="none" aria-hidden="true">
+          <g stroke="currentColor" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M50 16 H18 V104 H50"/><path d="M70 16 H102 V104 H70"/>
+          </g><circle cx="60" cy="60" r="14" fill="#1c9d74"/>
+        </svg>
+      </span>
+    </div>
+    <div class="cap">mark · currentColor + green dot</div>
+  </div>
+  <div>
+    <div class="tile" style="background: #d4d4d8; border-color: rgba(0,0,0,0.12)">
+      <div class="lockup">
+        <span class="mark" style="color: #18181b">
+          <svg width="48" height="48" viewBox="0 0 120 120" fill="none" aria-hidden="true">
+            <g stroke="currentColor" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M50 16 H18 V104 H50"/><path d="M70 16 H102 V104 H70"/>
+            </g><circle cx="60" cy="60" r="14" fill="#15936a"/>
+          </svg>
+        </span>
+        <span class="word" style="color: #18181b">tatitok</span>
+      </div>
+    </div>
+    <div class="cap">primary lockup · neutral gray</div>
+  </div>
+</div>
+</body>
+</html>

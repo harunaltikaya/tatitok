@@ -1,0 +1,40 @@
+<!-- @dsCard group="Colors" viewport="700x190" name="Economic class" subtitle="The only categorical hues — color encodes the economic class of usage" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<link rel="stylesheet" href="../styles.css" />
+<style>
+  body { margin: 0; padding: 24px; background: var(--bg-app); font-family: var(--font-sans); }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .sw { border-radius: var(--radius-md); height: 76px; border: 0.5px solid var(--border-hairline); display: flex; align-items: flex-end; padding: 10px; }
+  .name { margin-top: 10px; font-size: 13px; color: var(--text-primary); font-weight: var(--weight-medium); }
+  .meta { font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+  .dot { width: 12px; height: 12px; border-radius: 999px; }
+</style>
+</head>
+<body>
+<div class="grid">
+  <div>
+    <div class="sw" style="background: var(--class-subscription-soft)"><span class="dot" style="background: var(--class-subscription)"></span></div>
+    <div class="name">subscription</div>
+    <div class="meta">plan-included · #a78bfa</div>
+  </div>
+  <div>
+    <div class="sw" style="background: var(--class-metered-soft)"><span class="dot" style="background: var(--class-metered)"></span></div>
+    <div class="name">metered API</div>
+    <div class="meta">pay-per-token · #f5b547</div>
+  </div>
+  <div>
+    <div class="sw" style="background: var(--class-local-soft)"><span class="dot" style="background: var(--class-local)"></span></div>
+    <div class="name">local</div>
+    <div class="meta">self-hosted · #38bdf8</div>
+  </div>
+  <div>
+    <div class="sw" style="background: var(--class-free-soft)"><span class="dot" style="background: var(--class-free)"></span></div>
+    <div class="name">free</div>
+    <div class="meta">no cost · #4ade80</div>
+  </div>
+</div>
+</body>
+</html>

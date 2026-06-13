@@ -1,0 +1,11 @@
+/* ============================================================
+   tatitok design system — global entry point.
+   Consumers link THIS file only. It is an @import manifest:
+   tokens + fonts + a thin base reset. No rules live here.
+   ============================================================ */
+
+@import "./tokens/fonts.css";
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
+@import "./tokens/base.css";

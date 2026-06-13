@@ -1,0 +1,13 @@
+/* tatitok webfonts — Jost (geometric, airy; the brand wordmark face).
+   Single variable file spans the weight axis; the system uses only two
+   instances: 400 (regular) and 500 (medium). Self-hosted so a consuming
+   build ships nothing to a third-party origin — same spirit as the
+   product's no-external-origins rule. */
+
+@font-face {
+  font-family: "Jost";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../fonts/jost-var.woff2") format("woff2");
+}

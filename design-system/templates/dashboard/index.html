@@ -1,0 +1,108 @@
+<!-- @template name="tatitok dashboard" description="A dark-first usage dashboard scaffold — header, hero value, stat cards, plan meter, and a class breakdown, built on the tatitok primitives." -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>tatitok dashboard — template</title>
+<link rel="icon" href="../../assets/favicon.svg" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="./ds-base.js"></script>
+<style>
+  html, body { margin: 0; background: var(--bg-app, #09090b); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+// ── Edit the NS name only if check_design_system reports a different namespace.
+window.addEventListener("load", () => {
+  const NS = window.TatitokDesignSystem_b39a28;
+  if (!NS) { document.getElementById("root").textContent = "design system bundle not loaded — see ds-base.js"; return; }
+  const { Button, Card, Stat, Badge, ClassDot, MeterBar, Select, Switch, Tabs } = NS;
+  const { useState } = React;
+
+  // ── Replace this with your real data. One number format everywhere.
+  const usd = (v) => "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const classes = [
+    { key: "subscription", label: "subscription", value: 3330.58 },
+    { key: "metered", label: "metered API", value: 908.49 },
+    { key: "local", label: "local", value: 895.96 },
+    { key: "free", label: "free", value: 41.20 },
+  ];
+  const total = classes.reduce((a, c) => a + c.value, 0);
+
+  function Template() {
+    const [page, setPage] = useState("overview");
+    const [range, setRange] = useState("30d");
+    const [theme, setTheme] = useState("dark");
+    function onTheme(e) {
+      const t = e.target.checked ? "light" : "dark";
+      setTheme(t);
+      document.documentElement.setAttribute("data-theme", t === "light" ? "light" : "");
+    }
+    return (
+      <div style={{ minHeight: "100vh", color: "var(--text-primary)", padding: "20px 24px" }}>
+        <div style={{ maxWidth: "var(--content-max)", margin: "0 auto", display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+          {/* header */}
+          <header style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+            <span style={{ color: "var(--text-primary)", display: "inline-flex" }}>
+              <svg width="26" height="26" viewBox="0 0 120 120" fill="none" aria-hidden="true">
+                <g stroke="currentColor" strokeWidth="12" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M50 16 H18 V104 H50" /><path d="M70 16 H102 V104 H70" />
+                </g><circle cx="60" cy="60" r="14" fill="#1c9d74" />
+              </svg>
+            </span>
+            <span style={{ fontSize: 21, fontWeight: 500, letterSpacing: "-0.01em" }}>tatitok</span>
+            <span style={{ fontSize: 13, color: "var(--text-faint)" }}>local AI usage</span>
+            <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+              {["7d", "30d", "90d", "all"].map((p) => (
+                <Button key={p} size="sm" active={range === p} onClick={() => setRange(p)}>{p}</Button>
+              ))}
+              <Switch checked={theme === "light"} onChange={onTheme} aria-label="light mode" />
+            </span>
+          </header>
+
+          <Tabs value={page} onChange={setPage} tabs={["overview", "explore", "live"]} />
+
+          {/* stat strip */}
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: "var(--space-4)" }}>
+            <Card title="value extracted">
+              <Stat value={usd(total)} positive size="hero" sub="5.7× your $920/mo in plans" />
+            </Card>
+            <Card title={<span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>today <ClassDot tone="live" size={8} pulse /></span>}>
+              <Stat value={usd(27.41)} size="lg" sub="6.81M tokens" />
+            </Card>
+            <Card title="plan window · 5h">
+              <Stat value={usd(41.20)} size="lg" sub="resets in 2h 14m" />
+              <div style={{ marginTop: 12 }}><MeterBar value={41.2} max={120} /></div>
+            </Card>
+          </div>
+
+          {/* class breakdown */}
+          <Card title="value by class">
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 4 }}>
+              {classes.map((c) => (
+                <div key={c.key} style={{ display: "grid", gridTemplateColumns: "150px 1fr 96px", alignItems: "center", gap: 14 }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14, color: "var(--text-secondary)" }}>
+                    <ClassDot tone={c.key} /> {c.label}
+                  </span>
+                  <div style={{ height: 8, borderRadius: "var(--radius-pill)", background: "var(--surface-inset)", overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: (c.value / total * 100) + "%", background: `var(--class-${c.key})`, borderRadius: "var(--radius-pill)" }} />
+                  </div>
+                  <span style={{ textAlign: "right", fontVariantNumeric: "tabular-nums", color: "var(--text-primary)" }}>{usd(c.value)}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      </div>
+    );
+  }
+  ReactDOM.createRoot(document.getElementById("root")).render(<Template />);
+});
+</script>
+</body>
+</html>

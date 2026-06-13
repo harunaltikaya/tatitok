@@ -1,0 +1,50 @@
+/* ============================================================
+   tatitok — spacing, radii, borders, motion
+   4px base grid. Flat surfaces: no drop shadows, no glow — only
+   thin hairline borders separate planes. Calm, quick motion.
+   ============================================================ */
+
+:root {
+  /* ---- spacing (4px grid) ------------------------------- */
+  --space-0:  0;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ---- corner radii ------------------------------------- */
+  --radius-xs:  4px;
+  --radius-sm:  6px;
+  --radius-md:  10px;  /* default card / control radius */
+  --radius-lg:  14px;  /* panels */
+  --radius-xl:  18px;
+  --radius-pill: 999px;
+
+  /* ---- borders ------------------------------------------ */
+  --hairline: 0.5px;   /* the brand's signature thin border */
+  --border-card:  var(--hairline) solid var(--border-hairline);
+
+  /* ---- elevation ---------------------------------------- */
+  /* Flat by design. The ONLY shadow in the system is a soft
+     separation for true overlays (dialogs, tooltips, menus). */
+  --shadow-none: none;
+  --shadow-overlay: 0 8px 28px -8px rgba(0,0,0,0.55);
+
+  /* ---- motion ------------------------------------------- */
+  --ease-out: cubic-bezier(0.2, 0.7, 0.3, 1);      /* @kind other */
+  --ease-in-out: cubic-bezier(0.5, 0, 0.2, 1);     /* @kind other */
+  --dur-fast: 110ms;                                /* @kind other */
+  --dur-base: 170ms;                                /* @kind other */
+  --dur-slow: 280ms;                                /* @kind other */
+
+  /* ---- layout knobs ------------------------------------- */
+  --rail-width: 224px;       /* facet rail */
+  --content-max: 1320px;
+  --gap-grid: var(--space-4);
+}
