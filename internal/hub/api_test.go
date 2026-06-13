@@ -277,10 +277,15 @@ func TestAPITimezone(t *testing.T) {
 	// Invalid IANA names are rejected loudly, on both endpoints.
 	assertErrEnvelope(t, h, "/api/v1/stats/daily?timezone=Not/AZone", http.StatusBadRequest)
 	assertErrEnvelope(t, h, "/api/v1/totals?timezone=Mars/Phobos", http.StatusBadRequest)
-	// "Local" is host-dependent — the /etc/timezone trap — and rejected
-	// (M6 Codex F4); a declared payload must name a real IANA zone.
-	assertErrEnvelope(t, h, "/api/v1/stats/daily?timezone=Local", http.StatusBadRequest)
-	assertErrEnvelope(t, h, "/api/v1/totals?timezone=Local", http.StatusBadRequest)
+	// Host-magic names are host-dependent (the /etc/timezone trap) and
+	// rejected by IANA membership (M6 Codex F4) — time.LoadLocation would
+	// resolve "localtime"/"posixrules" from a host zoneinfo dir, so the
+	// validation is an allowlist, not "LoadLocation succeeded". A declared
+	// payload must name a real IANA zone.
+	for _, magic := range []string{"Local", "localtime", "posixrules"} {
+		assertErrEnvelope(t, h, "/api/v1/stats/daily?timezone="+magic, http.StatusBadRequest)
+		assertErrEnvelope(t, h, "/api/v1/totals?timezone="+magic, http.StatusBadRequest)
+	}
 }
 
 func TestAPIStatsDailyBy(t *testing.T) {

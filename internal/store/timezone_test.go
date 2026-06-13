@@ -103,6 +103,32 @@ func TestWholeHourZoneBoundaryPlacement(t *testing.T) {
 	if wholeHourZone(mustLoad(t, "Asia/Kolkata"), mustTime(t, "2026-06-12T00:00:00Z"), mustTime(t, "2026-06-12T23:59:59Z")) {
 		t.Error("Asia/Kolkata single day should be unservable (boundary at :30 past a UTC hour)")
 	}
+
+	// Shifted-midnight case (M6 Codex F3 coverage): Asia/Colombo moved its
+	// clocks AT midnight in 1996 (the +05:30↔+06:30 changes), so the
+	// local-day boundary lands mid-UTC-hour — the boundary-placement check
+	// must route that span to events.
+	if wholeHourZone(mustLoad(t, "Asia/Colombo"), mustTime(t, "1996-05-01T00:00:00Z"), mustTime(t, "1996-12-31T23:59:59Z")) {
+		t.Error("Asia/Colombo 1996 (midnight shift) must be unservable → events")
+	}
+}
+
+// F3 coverage through the serving path: a shifted-midnight zone routes a
+// query to exact events (not the hourly rollups).
+func TestDailyServedShiftedMidnightUsesEvents(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	e := event("c1", "r1", "model-a", "s1", mustTime(t, "1996-06-15T12:00:00Z"), TokenSums{Input: 5, Output: 1})
+	if _, err := s.InsertBatch(ctx, []core.Event{e}, testSource(1)); err != nil {
+		t.Fatal(err)
+	}
+	_, src, err := s.DailyServed(ctx, mustLoad(t, "Asia/Colombo"), Filters{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src != "events" {
+		t.Errorf("Asia/Colombo (shifted midnight) served from %q, want events", src)
+	}
 }
 
 func TestDailyServedPathSelection(t *testing.T) {
