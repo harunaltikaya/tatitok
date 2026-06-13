@@ -45,8 +45,8 @@ export default function Panel({
       : "overflow-auto";
   return (
     <section
-      className={`flex flex-col rounded-xl border border-zinc-800 bg-zinc-900/60 ${
-        fullscreen ? "fixed inset-3 z-50 shadow-2xl shadow-black/60" : ""
+      className={`flex flex-col rounded-xl border border-zinc-800 ${
+        fullscreen ? "fixed inset-3 z-50 bg-zinc-900 shadow-2xl shadow-black/60" : "bg-zinc-900/60"
       } ${dragging ? "opacity-40" : ""}`}
       style={fullscreen ? undefined : { gridColumn: `span ${span} / span ${span}` }}
       onDragOver={onDragOver}

@@ -38,6 +38,7 @@ import {
   type FilterState,
 } from "./filters";
 import { dayTotal, topModelsAtDay } from "./tooltip";
+import { touchedInRange } from "./invalidate";
 import {
   LAYOUT_KEY,
   defaultLayout,
@@ -153,6 +154,10 @@ export default function App() {
   const [fullscreen, setFullscreen] = useState<string | null>(null);
   const stream = useStream();
   const lastRangeFetch = useRef(0);
+  // Request-generation guard (M6 Codex F5): each loadRange bumps this; a
+  // response whose generation is no longer current is discarded, so a
+  // slow earlier fetch can't overwrite newer filter/timezone/range state.
+  const rangeGen = useRef(0);
 
   const fq = useMemo(() => filterQuery(filters), [filters]);
 
@@ -198,6 +203,7 @@ export default function App() {
   const toggle = (dim: FacetDim, value: string) => setFilters((f) => toggleValue(f, dim, value));
 
   const loadRange = (f: string, t: string, q: string, z: string) => {
+    const gen = ++rangeGen.current;
     Promise.all([
       fetchDaily(f, t, q, z),
       fetchDailyBy("provider", f, t, q, z),
@@ -205,6 +211,7 @@ export default function App() {
       fetchDailyBy("model", f, t, q, z),
     ])
       .then(([d, p, h, m]) => {
+        if (gen !== rangeGen.current) return; // superseded by a newer request
         setDaily(d.daily ?? []);
         setByProvider(p.daily_by ?? []);
         setByHarness(h.daily_by ?? []);
@@ -212,7 +219,9 @@ export default function App() {
         setSource(d.source);
         setErr(null);
       })
-      .catch((e) => setErr(String(e)));
+      .catch((e) => {
+        if (gen === rangeGen.current) setErr(String(e));
+      });
   };
 
   useEffect(() => {
@@ -232,9 +241,9 @@ export default function App() {
     fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
     if (stream.bump === 0 || stream.bump === lastRangeFetch.current) return;
     fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
-    const touched = stream.touchedDays;
-    const inRange = touched.length === 0 || touched.some((d) => d >= from && d <= to);
-    if (inRange) {
+    // SSE touched-days are UTC; the visible range is local — map before
+    // comparing so a boundary event invalidates the right local day (F1).
+    if (touchedInRange(stream.touchedDays, tz, from, to)) {
       lastRangeFetch.current = stream.bump;
       loadRange(from, to, fq, tz);
     }
