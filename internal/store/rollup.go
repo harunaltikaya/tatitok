@@ -77,16 +77,19 @@ func (s *Store) RecomputeRollups(ctx context.Context) (dailyRows, hourlyRows int
 	return dailyRows, hourlyRows, tx.Commit()
 }
 
-// ConservationRow is one (UTC day, dimension combination) where
-// rollup_daily and the sum of its rollup_hourly rows disagree on an
-// additive measure, or where one grain carries a row the other lacks.
+// ConservationRow is one (bucket, dimension combination) where two
+// sources disagree on an additive measure, or where one carries a row
+// the other lacks. Check names the comparison; Side names the source the
+// unmatched row was found in. Bucket is a UTC day for the day-grain
+// checks and a UTC hour ("YYYY-MM-DDTHH") for the hourly↔events check.
 // The conservation law (M6 Task 1) is defined over the additive measures
 // ONLY; the advisory version columns (map_version, snapshot_version —
 // MAX semantics, M3.1 ruling) are excluded, exact only after
-// recompute --rollups. Side names the grain the row was found in.
+// recompute --rollups.
 type ConservationRow struct {
-	Side        string `json:"side"` // "daily" | "hourly"
-	Day         string `json:"day"`
+	Check       string `json:"check"` // daily_vs_events | hourly_vs_events | daily_vs_hourly
+	Side        string `json:"side"`
+	Bucket      string `json:"bucket"`
 	Machine     string `json:"machine"`
 	Harness     string `json:"harness"`
 	Provider    string `json:"provider"`
@@ -104,57 +107,86 @@ type ConservationRow struct {
 	Unpriced    int64  `json:"events_unpriced"`
 }
 
-// conservationCols are the conservation tuple — day, the seven
-// dimensions, and the nine additive measures (version columns excluded).
-const conservationCols = `day_utc, machine, harness, provider, model,
-	model_family, project, events, tokens_input, tokens_output,
-	tokens_cache_write, tokens_cache_read, tokens_reasoning,
-	cost_usd_micro, cost_api_equiv_micro, events_unpriced`
+// conservationMeasures are the seven dimensions and nine additive
+// measures of the conservation tuple (the leading bucket column is
+// supplied per source). Version columns are excluded — advisory (M3.1).
+const conservationMeasures = `machine, harness, provider, model, model_family,
+	project, events, tokens_input, tokens_output, tokens_cache_write,
+	tokens_cache_read, tokens_reasoning, cost_usd_micro,
+	cost_api_equiv_micro, events_unpriced`
 
-// VerifyRollupConservation checks the conservation law of the grain:
-// every rollup_daily row equals the sum of its rollup_hourly rows
-// (grouped back to the UTC day via substr(hour_utc,1,10)) byte-equal on
-// the additive measures, for every dimension combination. It returns
-// every row present in one grain but not byte-identically in the other —
-// an empty result means the two grains agree exactly. Runnable against
-// the live DB (`doctor --rollups`); the hard-stop-0 conservation
-// ceremony is "this returns nothing across full history".
+// eventsAgg projects usage_events into the conservation tuple at the
+// given bucket width (10 = UTC day, 13 = UTC hour) — the SAME mapping
+// rollupRebuildSQL uses, so it is the GROUND TRUTH a correct rollup must
+// equal exactly.
+func eventsAgg(bucketLen int) string {
+	return fmt.Sprintf(`SELECT substr(ts, 1, %d), machine, COALESCE(harness, ''),
+			provider, model, model_family, COALESCE(project, ''),
+			COUNT(*), SUM(tokens_input), SUM(tokens_output),
+			SUM(tokens_cache_write), SUM(tokens_cache_read),
+			SUM(COALESCE(tokens_reasoning, 0)), SUM(COALESCE(cost_usd_micro, 0)),
+			SUM(COALESCE(cost_api_equiv_micro, 0)), SUM(cost_usd_micro IS NULL)
+		FROM usage_events GROUP BY 1, 2, 3, 4, 5, 6, 7`, bucketLen)
+}
+
+// VerifyRollupConservation checks the conservation law of the rollup
+// grains against the EVENTS — the ground truth, not merely against each
+// other (M6 Codex F2: two grains sharing an identical error would pass a
+// purely grain↔grain check). Three comparisons run, each a symmetric
+// EXCEPT over the additive-measure tuple for every dimension
+// combination:
+//
+//   - daily_vs_events:  rollup_daily  == events bucketed by UTC day
+//   - hourly_vs_events: rollup_hourly == events bucketed by UTC hour
+//   - daily_vs_hourly:  rollup_daily  == the hourly rows summed to day
+//
+// The grain↔events checks establish correctness; the grain↔grain check
+// is kept (Codex ruling). It returns every row present in one source but
+// not byte-identically in the other — an empty result means "clean" =
+// "matches the events". Runnable against the live DB (`doctor
+// --rollups`); the hard-stop-0 ceremony is "this returns nothing across
+// full history".
 func (s *Store) VerifyRollupConservation(ctx context.Context) ([]ConservationRow, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		WITH hourly_as_daily AS (
-			SELECT substr(hour_utc, 1, 10) AS day_utc, machine, harness,
-				provider, model, model_family, project,
-				SUM(events) AS events,
-				SUM(tokens_input) AS tokens_input,
-				SUM(tokens_output) AS tokens_output,
-				SUM(tokens_cache_write) AS tokens_cache_write,
-				SUM(tokens_cache_read) AS tokens_cache_read,
-				SUM(tokens_reasoning) AS tokens_reasoning,
-				SUM(cost_usd_micro) AS cost_usd_micro,
-				SUM(cost_api_equiv_micro) AS cost_api_equiv_micro,
-				SUM(events_unpriced) AS events_unpriced
-			FROM rollup_hourly GROUP BY 1, 2, 3, 4, 5, 6, 7
-		)
-		SELECT 'daily' AS side, t.* FROM (
-			SELECT `+conservationCols+` FROM rollup_daily
-			EXCEPT
-			SELECT `+conservationCols+` FROM hourly_as_daily
-		) t
-		UNION ALL
-		SELECT 'hourly' AS side, t.* FROM (
-			SELECT `+conservationCols+` FROM hourly_as_daily
-			EXCEPT
-			SELECT `+conservationCols+` FROM rollup_daily
-		) t
-		ORDER BY 2, 3, 4, 5, 6, 7, 8`)
+	const hourlyAsDaily = `SELECT substr(hour_utc, 1, 10), machine, harness,
+			provider, model, model_family, project,
+			SUM(events), SUM(tokens_input), SUM(tokens_output),
+			SUM(tokens_cache_write), SUM(tokens_cache_read),
+			SUM(tokens_reasoning), SUM(cost_usd_micro),
+			SUM(cost_api_equiv_micro), SUM(events_unpriced)
+		FROM rollup_hourly GROUP BY 1, 2, 3, 4, 5, 6, 7`
+	checks := []struct{ name, left, leftSide, right, rightSide string }{
+		{"daily_vs_events", `SELECT day_utc, ` + conservationMeasures + ` FROM rollup_daily`, "daily", eventsAgg(10), "events"},
+		{"hourly_vs_events", `SELECT hour_utc, ` + conservationMeasures + ` FROM rollup_hourly`, "hourly", eventsAgg(13), "events"},
+		{"daily_vs_hourly", `SELECT day_utc, ` + conservationMeasures + ` FROM rollup_daily`, "daily", hourlyAsDaily, "hourly"},
+	}
+	var out []ConservationRow
+	for _, c := range checks {
+		got, err := s.conservationDiff(ctx, c.name, c.left, c.leftSide, c.right, c.rightSide)
+		if err != nil {
+			return nil, fmt.Errorf("conservation check %s: %w", c.name, err)
+		}
+		out = append(out, got...)
+	}
+	return out, nil
+}
+
+// conservationDiff runs a symmetric EXCEPT between two conservation-tuple
+// SELECTs and returns the rows present in one side but not the other,
+// tagged with the check name and the side they came from.
+func (s *Store) conservationDiff(ctx context.Context, check, left, leftSide, right, rightSide string) ([]ConservationRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT ?1 AS s, t.* FROM (`+left+` EXCEPT `+right+`) t
+		 UNION ALL
+		 SELECT ?2 AS s, t.* FROM (`+right+` EXCEPT `+left+`) t
+		 ORDER BY 2, 3, 4, 5, 6, 7, 8`, leftSide, rightSide)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	var out []ConservationRow
 	for rows.Next() {
-		var r ConservationRow
-		if err := rows.Scan(&r.Side, &r.Day, &r.Machine, &r.Harness,
+		r := ConservationRow{Check: check}
+		if err := rows.Scan(&r.Side, &r.Bucket, &r.Machine, &r.Harness,
 			&r.Provider, &r.Model, &r.ModelFamily, &r.Project, &r.Events,
 			&r.Input, &r.Output, &r.CacheWrite, &r.CacheRead, &r.Reasoning,
 			&r.CostMicro, &r.EquivMicro, &r.Unpriced); err != nil {

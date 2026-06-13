@@ -260,27 +260,27 @@ func doctorRollups(ctx context.Context, st *store.Store, asJSON bool) error {
 	}
 	fmt.Printf("rollup grains: %s daily rows, %s hourly rows over %s events\n",
 		formatTokens(dailyRows), formatTokens(hourlyRows), formatTokens(events))
-	fmt.Println("conservation law: every daily row = sum of its hourly rows (additive measures; version columns advisory)")
+	fmt.Println("conservation law: each grain matches event aggregation (ground truth), and daily = sum of its hourly rows (additive measures; version columns advisory)")
 	if len(violations) == 0 {
-		fmt.Println("rollup conservation: clean — hourly sums to daily byte-equal across every dimension combination")
+		fmt.Println("rollup conservation: clean — both grains match the events byte-equal across every dimension combination")
 		return nil
 	}
-	fmt.Printf("\n%d CONSERVATION VIOLATION(S) — hourly does not sum to daily (the row is shown from the grain that holds it):\n",
+	fmt.Printf("\n%d CONSERVATION VIOLATION(S) — a grain disagrees with the events or with its sibling (the row is shown from the source that holds it):\n",
 		len(violations))
-	fmt.Printf("%-7s %-12s %-12s %-12s %-20s %-26s %12s %14s %14s\n",
-		"SIDE", "DAY", "MACHINE", "HARNESS", "PROVIDER", "MODEL", "EVENTS", "INPUT", "OUTPUT")
+	fmt.Printf("%-18s %-7s %-15s %-12s %-12s %-20s %-26s %12s %14s\n",
+		"CHECK", "SIDE", "BUCKET", "MACHINE", "HARNESS", "PROVIDER", "MODEL", "EVENTS", "INPUT")
 	const sample = 40
 	for i, v := range violations {
 		if i == sample {
 			fmt.Printf("    … and %d more (re-run with --json for the full list)\n", len(violations)-sample)
 			break
 		}
-		fmt.Printf("%-7s %-12s %-12s %-12s %-20s %-26s %12s %14s %14s\n",
-			v.Side, v.Day, v.Machine, v.Harness, v.Provider, v.Model,
-			formatTokens(v.Events), formatTokens(v.Input), formatTokens(v.Output))
+		fmt.Printf("%-18s %-7s %-15s %-12s %-12s %-20s %-26s %12s %14s\n",
+			v.Check, v.Side, v.Bucket, v.Machine, v.Harness, v.Provider, v.Model,
+			formatTokens(v.Events), formatTokens(v.Input))
 	}
 	return exitError{code: 1, msg: fmt.Sprintf(
-		"rollup conservation: %d row(s) where hourly does not sum to daily — run: tatitok recompute --rollups and investigate (stored events were NOT modified)",
+		"rollup conservation: %d row(s) where a grain disagrees with the events (or its sibling) — run: tatitok recompute --rollups and investigate (stored events were NOT modified)",
 		len(violations))}
 }
 

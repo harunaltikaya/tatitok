@@ -271,6 +271,54 @@ func TestVerifyRollupConservationDetectsSkew(t *testing.T) {
 	}
 }
 
+// F2: a grain↔grain check alone would pass when BOTH grains share an
+// identical error while the events stay correct. The verify must anchor
+// to the events (ground truth): inject the same divergence into both
+// grains so daily still sums to hourly, and confirm the grain↔events
+// checks catch it while the sibling check stays clean.
+func TestVerifyRollupConservationAnchorsToEvents(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	batch := []core.Event{
+		event("m1", "r1", "model-a", "s1", ts, TokenSums{Input: 10, Output: 20}),
+		event("m2", "r2", "model-a", "s1", ts.Add(2*time.Hour), TokenSums{Input: 5, Output: 7}),
+	}
+	if _, err := s.InsertBatch(ctx, batch, testSource(len(batch))); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inflate the daily row AND one of its hourly rows by the same amount:
+	// daily (1015) still equals the hourly sum (1010+5), so daily↔hourly
+	// is clean — but both now disagree with the events (15).
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE rollup_daily SET tokens_input = tokens_input + 1000 WHERE day_utc = '2026-06-10'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE rollup_hourly SET tokens_input = tokens_input + 1000 WHERE hour_utc = '2026-06-10T12'`); err != nil {
+		t.Fatal(err)
+	}
+
+	viol, err := s.VerifyRollupConservation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := map[string]int{}
+	for _, v := range viol {
+		checks[v.Check]++
+	}
+	if checks["daily_vs_events"] == 0 {
+		t.Error("grain↔events did not catch the daily divergence from the events (F2)")
+	}
+	if checks["hourly_vs_events"] == 0 {
+		t.Error("grain↔events did not catch the hourly divergence from the events (F2)")
+	}
+	if checks["daily_vs_hourly"] != 0 {
+		t.Errorf("daily↔hourly should stay clean here (both grains share the error), got %d", checks["daily_vs_hourly"])
+	}
+}
+
 // Migration 11 backfills rollup_hourly for events that predate the hour
 // grain — the same backfill discipline migration 9 applied to the day
 // grain — and the backfilled grains conserve.
