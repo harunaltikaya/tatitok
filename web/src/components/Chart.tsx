@@ -16,11 +16,13 @@ import * as echarts from "echarts";
 // rendering), then reported like a segment click.
 export default function Chart({
   option,
-  height = 280,
+  height = "100%",
   onSeriesClick,
 }: {
   option: echarts.EChartsOption;
-  height?: number;
+  // height fills the panel body by default (M6 Task 4) so fullscreen and
+  // resize grow the chart; the ResizeObserver below owns the redraw.
+  height?: number | string;
   onSeriesClick?: (seriesName: string) => void;
 }) {
   const el = useRef<HTMLDivElement>(null);

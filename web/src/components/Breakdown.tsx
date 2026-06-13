@@ -36,14 +36,16 @@ export function sumByKey(rows: DailyByRow[]): KeyTotals[] {
 const unpricedTip = (n: number) =>
   `${n} event${n === 1 ? "" : "s"} in this range carry no resolvable price — the cost shown is a floor, not a total (same convention as the CLI's asterisk).`;
 
+// Breakdown renders the table only — the surrounding panel chrome
+// (border, title, layout controls) is the Panel's job (M6 Task 4), so
+// this drops the old <section>/<h2> wrapper and is reused unchanged
+// inside the panel grid.
 export default function Breakdown({
-  title,
   totals,
   bases,
   onSelect,
   active,
 }: {
-  title: string;
   totals: KeyTotals[];
   bases?: Map<string, string[]>; // model → distinct pricing bases (legend data)
   // onSelect: table rows are facet filters (M5 Task 4) — a click
@@ -52,9 +54,7 @@ export default function Breakdown({
   active?: string[]; // currently filtered raw values for this facet
 }) {
   return (
-    <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-zinc-400">{title}</h2>
-      <table className="w-full text-sm">
+    <table className="w-full text-sm">
         <thead>
           <tr className="text-left text-xs text-zinc-500">
             <th className="pb-1 font-normal">key</th>
@@ -104,6 +104,5 @@ export default function Breakdown({
           ))}
         </tbody>
       </table>
-    </section>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { EChartsOption } from "echarts";
 import {
   fetchDaily,
@@ -38,11 +38,19 @@ import {
   type FilterState,
 } from "./filters";
 import { dayTotal, topModelsAtDay } from "./tooltip";
+import {
+  LAYOUT_KEY,
+  defaultLayout,
+  loadLayout,
+  serializeLayout,
+  type Layout,
+} from "./layout";
 import { useStream } from "./useStream";
 import Chart from "./components/Chart";
 import Breakdown, { sumByKey } from "./components/Breakdown";
 import PlanCard from "./components/Plans";
 import FacetRail from "./components/FacetRail";
+import PanelGrid from "./components/PanelGrid";
 
 const presets = [
   { label: "7d", days: 7 },
@@ -137,6 +145,12 @@ export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [source, setSource] = useState(""); // serving path of the day query ("rollup"|"events")
   const [err, setErr] = useState<string | null>(null);
+  // Panel layout (M6 Task 4) is LOCAL presentation state: it lives in the
+  // browser only, never the URL. fullscreen is transient (never persisted).
+  const [layout, setLayout] = useState<Layout>(() =>
+    loadLayout(typeof localStorage !== "undefined" ? localStorage.getItem(LAYOUT_KEY) : null),
+  );
+  const [fullscreen, setFullscreen] = useState<string | null>(null);
   const stream = useStream();
   const lastRangeFetch = useRef(0);
 
@@ -161,6 +175,25 @@ export default function App() {
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
+
+  // Layout persists to the browser ONLY — deliberately not the URL
+  // (M6 Task 4: URLs share filters/range/timezone, not panel arrangement).
+  useEffect(() => {
+    try {
+      localStorage.setItem(LAYOUT_KEY, serializeLayout(layout));
+    } catch {
+      /* private mode / storage disabled — layout just won't persist */
+    }
+  }, [layout]);
+  // Escape exits fullscreen (transient — never persisted, never in URL).
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
 
   const toggle = (dim: FacetDim, value: string) => setFilters((f) => toggleValue(f, dim, value));
 
@@ -247,6 +280,25 @@ export default function App() {
   );
 
   const chips = facetDims.flatMap((dim) => filters[dim].map((v) => ({ dim, value: v })));
+
+  // Panel content keyed by panel id (M6 Task 4): the charts and tables,
+  // each with its filter handlers intact. PanelGrid only positions and
+  // frames these — the handlers (click-to-filter, legend interception,
+  // row select) ride along into every layout state, fullscreen included.
+  const panelContent: Record<string, ReactNode> = {
+    "chart-equiv": <Chart option={equivChart} onSeriesClick={onProviderSeries} />,
+    "chart-actual": <Chart option={actualChart} onSeriesClick={onProviderSeries} />,
+    "chart-tokens": <Chart option={tokenChart} onSeriesClick={onProviderSeries} />,
+    "break-harness": (
+      <Breakdown totals={sumByKey(byHarness)} onSelect={(raw) => toggle("harness", raw)} active={filters.harness} />
+    ),
+    "break-provider": (
+      <Breakdown totals={sumByKey(byProvider)} onSelect={(raw) => toggle("provider", raw)} active={filters.provider} />
+    ),
+    "break-model": (
+      <Breakdown totals={sumByKey(byModel)} bases={modelBases} onSelect={(raw) => toggle("model", raw)} active={filters.model} />
+    ),
+  };
 
   return (
     <div className="min-h-screen bg-zinc-950 px-6 py-5 text-zinc-100">
@@ -423,30 +475,29 @@ export default function App() {
             </div>
           </section>
 
-          <section className="mb-5 grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-              <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-zinc-400">daily API-equivalent (by provider)</h2>
-              <Chart option={equivChart} onSeriesClick={onProviderSeries} />
-            </div>
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-              <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-zinc-400">daily actual cost (by provider)</h2>
-              <Chart option={actualChart} onSeriesClick={onProviderSeries} />
-            </div>
-          </section>
-
-          <section className="mb-5 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wider text-zinc-400">daily tokens (by provider)</h2>
-            <Chart option={tokenChart} onSeriesClick={onProviderSeries} />
-          </section>
-
-          <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-            <Breakdown title="by harness" totals={sumByKey(byHarness)}
-              onSelect={(raw) => toggle("harness", raw)} active={filters.harness} />
-            <Breakdown title="by provider" totals={sumByKey(byProvider)}
-              onSelect={(raw) => toggle("provider", raw)} active={filters.provider} />
-            <Breakdown title="by model" totals={sumByKey(byModel)} bases={modelBases}
-              onSelect={(raw) => toggle("model", raw)} active={filters.model} />
-          </section>
+          {/* Panel grid (M6 Task 4): charts and breakdowns become
+              reorderable, resizable, fullscreen-able panels. Layout is
+              browser-local (never the URL); a reset restores defaults.
+              Filter interactions inside the panels survive every layout
+              state — the same elements are reframed, never remounted. */}
+          <div className="mb-2 flex items-center gap-2 text-xs text-zinc-500">
+            <span className="uppercase tracking-wider">panels</span>
+            <span className="hidden text-zinc-600 sm:inline">drag header to reorder · −/+ to resize · ⤢ fullscreen (Esc)</span>
+            <button
+              className="ml-auto rounded-lg border border-zinc-800 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+              onClick={() => setLayout(defaultLayout())}
+              title="restore the default panel order and sizes"
+            >
+              reset layout
+            </button>
+          </div>
+          <PanelGrid
+            layout={layout}
+            content={panelContent}
+            fullscreen={fullscreen}
+            onLayout={setLayout}
+            onFullscreen={setFullscreen}
+          />
 
           <footer className="mt-6 text-xs text-zinc-600">
             {health
