@@ -4,6 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>tatitok</title>
+    <script>
+      // Apply the saved dark tone before first paint (no flash of the
+      // default canvas). Mirrors theme.ts (key + ids + default); the React
+      // side re-applies and validates on mount. Same-origin inline only.
+      (function () {
+        try {
+          var t = localStorage.getItem("tatitok.theme.v1");
+          var ok = ["dark-gray", "light-gray"];
+          document.documentElement.dataset.theme = ok.indexOf(t) >= 0 ? t : "dark-gray";
+        } catch (e) { /* storage disabled — CSS :root base shows */ }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
