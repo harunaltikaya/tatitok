@@ -39,6 +39,7 @@ Usage:
   tatitok doctor --scan-content [--db PATH] [LITERAL...]
   tatitok doctor --provenance [--db PATH] [--json]
   tatitok doctor --pricing [--db PATH]
+  tatitok doctor --rollups [--db PATH] [--json]
   tatitok recompute --provenance [--dry-run] [--db PATH] [--source NAME]
   tatitok recompute --model-map  [--dry-run] [--db PATH]
   tatitok recompute --pricing    [--dry-run] [--db PATH]
@@ -55,6 +56,10 @@ must not appear anywhere in stored raw/meta.
 doctor --provenance lists stored row counts by adapter@version.
 doctor --pricing reconciles our computed costs against source-reported
 costs (opencode store-and-compare) — a report, never a correction.
+doctor --rollups verifies the conservation law of the rollup grains:
+every daily rollup row equals the sum of its hourly rows, byte-equal on
+the additive measures (the hard-stop-0 ceremony). Any violation exits 1
+and names the fix (recompute --rollups); stored events are never touched.
 recompute --provenance re-reads the source files through the current
 adapters and fills NULL adapter_version/source-link columns on stored
 events — after verifying each stored payload is identical to the
@@ -596,24 +601,26 @@ func cmdRecomputeRollups(dbPath string, dryRun bool) error {
 	defer func() { _ = st.Close() }()
 	ctx := context.Background()
 
-	rollupRows, events, err := st.RollupCounts(ctx)
+	dailyRows, hourlyRows, events, err := st.RollupCounts(ctx)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("rollup_daily: %s rows over %s events — full rebuild from the event table\n",
-		formatTokens(rollupRows), formatTokens(events))
+	fmt.Printf("rollup_daily: %s rows, rollup_hourly: %s rows over %s events — full rebuild of both grains from the event table\n",
+		formatTokens(dailyRows), formatTokens(hourlyRows), formatTokens(events))
 	if dryRun {
 		fmt.Println("\ndry run — no changes made")
 		return nil
 	}
 	slog.Info("recompute --rollups starting", "db", dbPath,
-		"rollup_rows", rollupRows, "events", events)
-	rows, err := st.RecomputeRollups(ctx)
+		"rollup_daily_rows", dailyRows, "rollup_hourly_rows", hourlyRows, "events", events)
+	newDaily, newHourly, err := st.RecomputeRollups(ctx)
 	if err != nil {
 		return err
 	}
-	slog.Info("recompute --rollups complete", "rollup_rows", rows)
-	fmt.Printf("\nrebuilt rollup_daily: %s rows\n", formatTokens(rows))
+	slog.Info("recompute --rollups complete",
+		"rollup_daily_rows", newDaily, "rollup_hourly_rows", newHourly)
+	fmt.Printf("\nrebuilt rollup_daily: %s rows, rollup_hourly: %s rows\n",
+		formatTokens(newDaily), formatTokens(newHourly))
 	return nil
 }
 
@@ -622,17 +629,18 @@ func cmdDoctor(args []string) error {
 	scan := fs.Bool("scan-content", false, "verify no prompt/response text is stored")
 	provenance := fs.Bool("provenance", false, "list row counts by adapter@version")
 	prices := fs.Bool("pricing", false, "reconcile our computed costs against source-reported costs (opencode)")
-	asJSON := fs.Bool("json", false, "JSON output (with --provenance)")
+	rollups := fs.Bool("rollups", false, "verify hourly rollups sum to daily byte-equal (the conservation law)")
+	asJSON := fs.Bool("json", false, "JSON output (with --provenance or --rollups)")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	_ = fs.Parse(args)
 	modes := 0
-	for _, m := range []bool{*scan, *provenance, *prices} {
+	for _, m := range []bool{*scan, *provenance, *prices, *rollups} {
 		if m {
 			modes++
 		}
 	}
 	if modes != 1 {
-		return fmt.Errorf("pass exactly one of --scan-content, --provenance or --pricing")
+		return fmt.Errorf("pass exactly one of --scan-content, --provenance, --pricing or --rollups")
 	}
 	st, err := openStore(*dbPath)
 	if err != nil {
@@ -642,6 +650,9 @@ func cmdDoctor(args []string) error {
 
 	if *provenance {
 		return doctorProvenance(context.Background(), st, *asJSON)
+	}
+	if *rollups {
+		return doctorRollups(context.Background(), st, *asJSON)
 	}
 	if *prices {
 		// The override file's explained_divergences declassify ruled

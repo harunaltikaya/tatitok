@@ -235,6 +235,61 @@ var migrations = []string{
 		` + rollupAddNewMaxSQL + `
 		` + rollupCleanupOldSQL + `
 	END;`,
+	// Hourly rollups (M6 Task 1, migration 11). The hour grain mirrors
+	// rollup_daily exactly — same dimensional PK, same MAX-semantics
+	// version columns, the same trigger discipline inside every write
+	// transaction — bucketed on the UTC hour (substr(ts,1,13) =
+	// "YYYY-MM-DDTHH") instead of the UTC day. It exists to SERVE
+	// (whole-hour-offset local days, M6 Task 2), never to chart.
+	//
+	// The conservation law of the grain: every rollup_daily row equals
+	// the sum of its (≤24) rollup_hourly rows for the same dimension
+	// combination, byte-equal on the additive measures —
+	// substr(hour_utc,1,10) = day_utc by construction. The triggers
+	// carry MAX version semantics from the start (no migration-9→10
+	// replay), so the incremental path agrees with the rebuild's MAX();
+	// version columns stay advisory (M3.1), exact after
+	// `+"`recompute --rollups`"+`. VerifyRollupConservation asserts the
+	// law against the live DB; the rollup property tests pin it over
+	// fixtures and randomized trigger paths.
+	//
+	// The backfill at the end constructs hourly rollups for pre-existing
+	// events (new derived data — no historical numbers change), exactly
+	// as migration 9 did for the day grain.
+	`CREATE TABLE rollup_hourly (
+		hour_utc             TEXT NOT NULL,
+		machine              TEXT NOT NULL,
+		harness              TEXT NOT NULL,
+		provider             TEXT NOT NULL,
+		model                TEXT NOT NULL,
+		model_family         TEXT NOT NULL,
+		project              TEXT NOT NULL,
+		events               INTEGER NOT NULL DEFAULT 0,
+		tokens_input         INTEGER NOT NULL DEFAULT 0,
+		tokens_output        INTEGER NOT NULL DEFAULT 0,
+		tokens_cache_write   INTEGER NOT NULL DEFAULT 0,
+		tokens_cache_read    INTEGER NOT NULL DEFAULT 0,
+		tokens_reasoning     INTEGER NOT NULL DEFAULT 0,
+		cost_usd_micro       INTEGER NOT NULL DEFAULT 0,
+		cost_api_equiv_micro INTEGER NOT NULL DEFAULT 0,
+		events_unpriced      INTEGER NOT NULL DEFAULT 0,
+		map_version          INTEGER,
+		snapshot_version     TEXT,
+		PRIMARY KEY (hour_utc, machine, harness, provider, model, model_family, project)
+	) WITHOUT ROWID;
+	CREATE TRIGGER rollup_hourly_ai AFTER INSERT ON usage_events BEGIN
+		` + rollupHourlyAddNewMaxSQL + `
+	END;
+	CREATE TRIGGER rollup_hourly_au AFTER UPDATE ON usage_events BEGIN
+		` + rollupHourlySubtractOldSQL + `
+		` + rollupHourlyAddNewMaxSQL + `
+		` + rollupHourlyCleanupOldSQL + `
+	END;
+	CREATE TRIGGER rollup_hourly_ad AFTER DELETE ON usage_events BEGIN
+		` + rollupHourlySubtractOldSQL + `
+		` + rollupHourlyCleanupOldSQL + `
+	END;
+	` + rollupHourlyRebuildSQL,
 }
 
 // rollupKeyOld matches a rollup row by the OLD event values (NULL-safe
@@ -328,6 +383,81 @@ const rollupRebuildSQL = `INSERT INTO rollup_daily (day_utc, machine, harness,
 		tokens_reasoning, cost_usd_micro, cost_api_equiv_micro,
 		events_unpriced, map_version, snapshot_version)
 	SELECT substr(ts, 1, 10), machine, COALESCE(harness, ''), provider,
+		model, model_family, COALESCE(project, ''),
+		COUNT(*), SUM(tokens_input), SUM(tokens_output),
+		SUM(tokens_cache_write), SUM(tokens_cache_read),
+		SUM(COALESCE(tokens_reasoning, 0)), SUM(COALESCE(cost_usd_micro, 0)),
+		SUM(COALESCE(cost_api_equiv_micro, 0)), SUM(cost_usd_micro IS NULL),
+		MAX(map_version), MAX(price_snapshot)
+	FROM usage_events
+	GROUP BY 1, 2, 3, 4, 5, 6, 7;`
+
+// The hour-grain rollup SQL (M6 Task 1) mirrors the day-grain constants
+// above verbatim except for the table (rollup_hourly), the bucket column
+// (hour_utc) and the bucket expression (substr(ts,1,13) = the UTC hour
+// "YYYY-MM-DDTHH" vs substr(ts,1,10) = the UTC day). Kept as parallel
+// literals — not generated — so the trigger bodies read identically to
+// the day grain a reviewer already trusts; VerifyRollupConservation and
+// the rollup property tests are the guarantee the two grains agree.
+
+// rollupHourlyKeyOld matches a rollup_hourly row by the OLD event values.
+const rollupHourlyKeyOld = `hour_utc = substr(old.ts, 1, 13) AND machine = old.machine
+	AND harness = COALESCE(old.harness, '') AND provider = old.provider
+	AND model = old.model AND model_family = old.model_family
+	AND project = COALESCE(old.project, '')`
+
+// rollupHourlyAddNewMaxSQL upserts the NEW event's contribution with MAX
+// version semantics (the day grain's migration-10 form, from the start).
+const rollupHourlyAddNewMaxSQL = `INSERT INTO rollup_hourly (hour_utc, machine, harness,
+		provider, model, model_family, project, events, tokens_input,
+		tokens_output, tokens_cache_write, tokens_cache_read,
+		tokens_reasoning, cost_usd_micro, cost_api_equiv_micro,
+		events_unpriced, map_version, snapshot_version)
+	VALUES (substr(new.ts, 1, 13), new.machine, COALESCE(new.harness, ''),
+		new.provider, new.model, new.model_family, COALESCE(new.project, ''),
+		1, new.tokens_input, new.tokens_output, new.tokens_cache_write,
+		new.tokens_cache_read, COALESCE(new.tokens_reasoning, 0),
+		COALESCE(new.cost_usd_micro, 0), COALESCE(new.cost_api_equiv_micro, 0),
+		(new.cost_usd_micro IS NULL), new.map_version, new.price_snapshot)
+	ON CONFLICT (hour_utc, machine, harness, provider, model, model_family, project)
+	DO UPDATE SET
+		events = events + 1,
+		tokens_input = tokens_input + new.tokens_input,
+		tokens_output = tokens_output + new.tokens_output,
+		tokens_cache_write = tokens_cache_write + new.tokens_cache_write,
+		tokens_cache_read = tokens_cache_read + new.tokens_cache_read,
+		tokens_reasoning = tokens_reasoning + COALESCE(new.tokens_reasoning, 0),
+		cost_usd_micro = cost_usd_micro + COALESCE(new.cost_usd_micro, 0),
+		cost_api_equiv_micro = cost_api_equiv_micro + COALESCE(new.cost_api_equiv_micro, 0),
+		events_unpriced = events_unpriced + (new.cost_usd_micro IS NULL),
+		map_version = COALESCE(MAX(map_version, new.map_version), map_version, new.map_version),
+		snapshot_version = COALESCE(MAX(snapshot_version, new.price_snapshot), snapshot_version, new.price_snapshot);`
+
+// rollupHourlySubtractOldSQL removes the OLD event's contribution.
+const rollupHourlySubtractOldSQL = `UPDATE rollup_hourly SET
+		events = events - 1,
+		tokens_input = tokens_input - old.tokens_input,
+		tokens_output = tokens_output - old.tokens_output,
+		tokens_cache_write = tokens_cache_write - old.tokens_cache_write,
+		tokens_cache_read = tokens_cache_read - old.tokens_cache_read,
+		tokens_reasoning = tokens_reasoning - COALESCE(old.tokens_reasoning, 0),
+		cost_usd_micro = cost_usd_micro - COALESCE(old.cost_usd_micro, 0),
+		cost_api_equiv_micro = cost_api_equiv_micro - COALESCE(old.cost_api_equiv_micro, 0),
+		events_unpriced = events_unpriced - (old.cost_usd_micro IS NULL)
+	WHERE ` + rollupHourlyKeyOld + `;`
+
+// rollupHourlyCleanupOldSQL drops the old hour bucket when it emptied.
+const rollupHourlyCleanupOldSQL = `DELETE FROM rollup_hourly
+	WHERE events = 0 AND ` + rollupHourlyKeyOld + `;`
+
+// rollupHourlyRebuildSQL constructs rollup_hourly from usage_events — the
+// migration-11 backfill and `recompute --rollups`.
+const rollupHourlyRebuildSQL = `INSERT INTO rollup_hourly (hour_utc, machine, harness,
+		provider, model, model_family, project, events, tokens_input,
+		tokens_output, tokens_cache_write, tokens_cache_read,
+		tokens_reasoning, cost_usd_micro, cost_api_equiv_micro,
+		events_unpriced, map_version, snapshot_version)
+	SELECT substr(ts, 1, 13), machine, COALESCE(harness, ''), provider,
 		model, model_family, COALESCE(project, ''),
 		COUNT(*), SUM(tokens_input), SUM(tokens_output),
 		SUM(tokens_cache_write), SUM(tokens_cache_read),

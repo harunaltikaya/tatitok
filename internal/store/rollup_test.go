@@ -66,6 +66,34 @@ func assertRollupConsistent(t *testing.T, s *Store, when string) {
 	if d != r {
 		t.Fatalf("%s: rollup sums diverged\nrollup: %+v\ndirect: %+v", when, r, d)
 	}
+
+	// Hour grain (M6 Task 1): the grand totals over rollup_hourly equal
+	// the event grand totals too (same lane as the daily check above)…
+	var hr struct {
+		events, in, out, cw, cr, reasoning, cost, equiv, unpriced int64
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(events),0),
+			COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_output),0),
+			COALESCE(SUM(tokens_cache_write),0), COALESCE(SUM(tokens_cache_read),0),
+			COALESCE(SUM(tokens_reasoning),0),
+			COALESCE(SUM(cost_usd_micro),0), COALESCE(SUM(cost_api_equiv_micro),0),
+			COALESCE(SUM(events_unpriced),0)
+		FROM rollup_hourly`).Scan(&hr.events, &hr.in, &hr.out, &hr.cw, &hr.cr,
+		&hr.reasoning, &hr.cost, &hr.equiv, &hr.unpriced); err != nil {
+		t.Fatal(err)
+	}
+	if d != hr {
+		t.Fatalf("%s: hourly rollup sums diverged from events\nhourly: %+v\ndirect: %+v", when, hr, d)
+	}
+	// …and the conservation law holds: every daily row equals the sum of
+	// its hourly rows, byte-equal on the additive measures.
+	viol, err := s.VerifyRollupConservation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(viol) != 0 {
+		t.Fatalf("%s: %d rollup conservation violation(s): %+v", when, len(viol), viol)
+	}
 }
 
 // Randomized subsets and orders of ingestion, with payload-changing
@@ -146,8 +174,8 @@ func TestRollupConsistencyRandomized(t *testing.T) {
 			}
 			assertRollupConsistent(t, s, "after recompute --pricing")
 
-			// The explicit rebuild produces the same table.
-			if _, err := s.RecomputeRollups(ctx); err != nil {
+			// The explicit rebuild produces the same tables (both grains).
+			if _, _, err := s.RecomputeRollups(ctx); err != nil {
 				t.Fatal(err)
 			}
 			assertRollupConsistent(t, s, "after recompute --rollups")
@@ -195,10 +223,78 @@ func TestRollupVersionColumnsMaxSemantics(t *testing.T) {
 	check("incremental (last-written would say 1/snap-a)")
 
 	// The rebuild agrees — incremental and rebuild share MAX semantics.
-	if _, err := s.RecomputeRollups(ctx); err != nil {
+	if _, _, err := s.RecomputeRollups(ctx); err != nil {
 		t.Fatal(err)
 	}
 	check("after rebuild")
+}
+
+// VerifyRollupConservation must actually DETECT a divergence — a verify
+// that can only ever return empty is a dead check. Corrupt one hourly
+// bucket directly (bypassing the triggers) and confirm it is reported
+// from both grains, then prove recompute --rollups heals it.
+func TestVerifyRollupConservationDetectsSkew(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	batch := []core.Event{
+		event("m1", "r1", "model-a", "s1", ts, TokenSums{Input: 10, Output: 20}),
+		event("m2", "r2", "model-a", "s1", ts.Add(2*time.Hour), TokenSums{Input: 5, Output: 7}),
+	}
+	if _, err := s.InsertBatch(ctx, batch, testSource(len(batch))); err != nil {
+		t.Fatal(err)
+	}
+	if viol, err := s.VerifyRollupConservation(ctx); err != nil || len(viol) != 0 {
+		t.Fatalf("clean DB: %d violation(s) (err %v), want 0", len(viol), err)
+	}
+
+	// Inflate one hourly bucket directly — no trigger fires on rollup_hourly.
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE rollup_hourly SET tokens_input = tokens_input + 1000 WHERE hour_utc = ?`,
+		ts.Format("2006-01-02T15")); err != nil {
+		t.Fatal(err)
+	}
+	viol, err := s.VerifyRollupConservation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(viol) == 0 {
+		t.Fatal("conservation verify did not detect the injected skew")
+	}
+
+	// The rebuild restores both grains from the events — heals it.
+	if _, _, err := s.RecomputeRollups(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if viol, err := s.VerifyRollupConservation(ctx); err != nil || len(viol) != 0 {
+		t.Fatalf("after recompute --rollups: %d violation(s) (err %v), want 0", len(viol), err)
+	}
+}
+
+// Migration 11 backfills rollup_hourly for events that predate the hour
+// grain — the same backfill discipline migration 9 applied to the day
+// grain — and the backfilled grains conserve.
+func TestMigration11BackfillsHourly(t *testing.T) {
+	path := buildV4DB(t)
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	var rows int64
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM rollup_hourly`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows == 0 {
+		t.Fatal("migration 11 left rollup_hourly empty over a populated event table")
+	}
+	viol, err := s.VerifyRollupConservation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(viol) != 0 {
+		t.Fatalf("after migration 11 backfill: %d conservation violation(s): %+v", len(viol), viol)
+	}
 }
 
 // Migration 9 backfills rollups for events that predate the triggers.

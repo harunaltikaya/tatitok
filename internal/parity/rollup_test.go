@@ -38,6 +38,16 @@ func assertRollupDaily(t *testing.T, st *store.Store, when string) {
 			t.Fatalf("%s (harness %q): rollup-served daily != direct aggregation", when, harness)
 		}
 	}
+	// The conservation law of the grain (M6 Task 1), over the real
+	// three-harness fixture corpus: every daily rollup row equals the
+	// sum of its hourly rows, byte-equal on the additive measures.
+	viol, err := st.VerifyRollupConservation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(viol) != 0 {
+		t.Fatalf("%s: %d rollup conservation violation(s): %+v", when, len(viol), viol)
+	}
 }
 
 func TestRollupConsistencyFixtures(t *testing.T) {
@@ -65,12 +75,12 @@ func TestRollupConsistencyFixtures(t *testing.T) {
 	}
 	assertRollupDaily(t, st, "after recompute --pricing")
 
-	rows, err := st.RecomputeRollups(ctx)
+	dailyRows, hourlyRows, err := st.RecomputeRollups(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rows == 0 {
-		t.Fatal("rebuild produced an empty rollup table")
+	if dailyRows == 0 || hourlyRows == 0 {
+		t.Fatalf("rebuild produced an empty rollup table (daily=%d, hourly=%d)", dailyRows, hourlyRows)
 	}
 	assertRollupDaily(t, st, "after recompute --rollups")
 }

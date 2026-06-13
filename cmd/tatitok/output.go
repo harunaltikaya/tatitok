@@ -225,6 +225,65 @@ func doctorProvenance(ctx context.Context, st *store.Store, asJSON bool) error {
 	return nil
 }
 
+// doctorRollups verifies the conservation law of the rollup grains (M6
+// Task 1): every rollup_daily row equals the sum of its rollup_hourly
+// rows, byte-equal on the additive measures (version columns are
+// advisory MAX, M3.1). The hard-stop-0 conservation ceremony is this
+// reporting clean across the full live history. Any violation → exit 1
+// (the grains disagree — run recompute --rollups and investigate; stored
+// events are never touched).
+func doctorRollups(ctx context.Context, st *store.Store, asJSON bool) error {
+	dailyRows, hourlyRows, events, err := st.RollupCounts(ctx)
+	if err != nil {
+		return err
+	}
+	violations, err := st.VerifyRollupConservation(ctx)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		if err := printJSON(map[string]any{
+			"rollup_daily_rows":  dailyRows,
+			"rollup_hourly_rows": hourlyRows,
+			"events":             events,
+			"conserved":          len(violations) == 0,
+			"violations":         violations,
+		}); err != nil {
+			return err
+		}
+		if len(violations) > 0 {
+			return exitError{code: 1, msg: fmt.Sprintf(
+				"rollup conservation: %d row(s) where hourly does not sum to daily — run: tatitok recompute --rollups",
+				len(violations))}
+		}
+		return nil
+	}
+	fmt.Printf("rollup grains: %s daily rows, %s hourly rows over %s events\n",
+		formatTokens(dailyRows), formatTokens(hourlyRows), formatTokens(events))
+	fmt.Println("conservation law: every daily row = sum of its hourly rows (additive measures; version columns advisory)")
+	if len(violations) == 0 {
+		fmt.Println("rollup conservation: clean — hourly sums to daily byte-equal across every dimension combination")
+		return nil
+	}
+	fmt.Printf("\n%d CONSERVATION VIOLATION(S) — hourly does not sum to daily (the row is shown from the grain that holds it):\n",
+		len(violations))
+	fmt.Printf("%-7s %-12s %-12s %-12s %-20s %-26s %12s %14s %14s\n",
+		"SIDE", "DAY", "MACHINE", "HARNESS", "PROVIDER", "MODEL", "EVENTS", "INPUT", "OUTPUT")
+	const sample = 40
+	for i, v := range violations {
+		if i == sample {
+			fmt.Printf("    … and %d more (re-run with --json for the full list)\n", len(violations)-sample)
+			break
+		}
+		fmt.Printf("%-7s %-12s %-12s %-12s %-20s %-26s %12s %14s %14s\n",
+			v.Side, v.Day, v.Machine, v.Harness, v.Provider, v.Model,
+			formatTokens(v.Events), formatTokens(v.Input), formatTokens(v.Output))
+	}
+	return exitError{code: 1, msg: fmt.Sprintf(
+		"rollup conservation: %d row(s) where hourly does not sum to daily — run: tatitok recompute --rollups and investigate (stored events were NOT modified)",
+		len(violations))}
+}
+
 // pricingTolerance is the documented reconciliation tolerance: a
 // (provider, model) group passes when |ours − source| is within 1% of
 // the source total or within 1000 micro-USD ($0.001) absolute —
