@@ -331,24 +331,18 @@ func cmdStats(args []string) error {
 		printDailyByTable(*by, rows)
 		return nil
 	case *daily:
-		// UTC daily is served from the pre-aggregated rollup table —
-		// byte-equal to direct aggregation by construction (property
-		// tested) — unless a basis filter forces the exact event path
-		// (the rollup grain lacks basis; M5 Task 3). Other timezones
-		// aggregate events exactly (rollup days are UTC buckets; M3).
-		var rows []store.DailyRow
-		source := "events"
-		if tz.String() == "UTC" && filters.RollupServable() {
-			source = "rollup"
-			rows, err = st.DailyFromRollups(ctx, filters)
-		} else {
-			rows, err = st.Daily(ctx, tz, filters)
-		}
+		// Path selection (M6 Task 2): UTC days serve from rollup_daily,
+		// whole-hour-offset zones from the hourly rollups, and fractional
+		// offsets or basis filters from exact events — all byte-equal,
+		// the path declared in --json. The default zone stays `local`
+		// (the ccusage parity rule, M1) — a default change is a contract
+		// change with no evidence behind it.
+		rows, source, err := st.DailyServed(ctx, tz, filters)
 		if err != nil {
 			return err
 		}
 		if *asJSON {
-			return printJSON(map[string]any{"source": source, "daily": rows})
+			return printJSON(map[string]any{"source": source, "timezone": tz.String(), "daily": rows})
 		}
 		printDailyTable(rows)
 		return nil

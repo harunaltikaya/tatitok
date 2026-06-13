@@ -153,6 +153,24 @@ func inRange(day, from, to string) bool {
 	return (from == "" || day >= from) && (to == "" || day <= to)
 }
 
+// parseTimezone reads the optional timezone= parameter (IANA name),
+// defaulting to UTC — the API's day-bucketing zone, declared in every
+// payload alongside `source` (M6 Task 2). An unresolvable name is a loud
+// bad_param, like any other invalid value. Resolution uses the binary's
+// embedded tzdata (cmd/tatitok imports time/tzdata) — never
+// /etc/timezone, the standing trap.
+func parseTimezone(r *http.Request) (*time.Location, error) {
+	name := r.URL.Query().Get("timezone")
+	if name == "" {
+		return time.UTC, nil
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, fmt.Errorf("timezone: %q is not a known IANA timezone name", name)
+	}
+	return loc, nil
+}
+
 // filterParamNames are the M5 Task 3 facet filter query parameters —
 // repeatable (OR within a dimension, AND across dimensions), matching
 // the dashboard semantics exactly. Unknown VALUES are not errors (an
@@ -178,7 +196,7 @@ func parseFilters(r *http.Request) store.Filters {
 // "rollup"|"events") — honesty about the path survives into the
 // response.
 func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
-	if err := checkParams(r, append([]string{"from", "to", "by"}, filterParamNames...)...); err != nil {
+	if err := checkParams(r, append([]string{"from", "to", "by", "timezone"}, filterParamNames...)...); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
 		return
 	}
@@ -187,15 +205,20 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
 		return
 	}
+	tz, err := parseTimezone(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
 	ctx := r.Context()
 	f := parseFilters(r)
-	base := map[string]any{"grain": "day", "tz": "UTC"}
+	base := map[string]any{"grain": "day", "tz": tz.String()}
 	if !f.IsZero() {
 		base["filters"] = f
 	}
 
 	if by := r.URL.Query().Get("by"); by != "" {
-		rows, err := h.st.DailyBy(ctx, time.UTC, by, f)
+		rows, err := h.st.DailyBy(ctx, tz, by, f)
 		if err != nil {
 			if strings.Contains(err.Error(), "unknown --by dimension") {
 				writeErr(w, http.StatusBadRequest, "bad_param",
@@ -218,18 +241,12 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var rows []store.DailyRow
-	if f.RollupServable() {
-		base["source"] = "rollup"
-		rows, err = h.st.DailyFromRollups(ctx, f)
-	} else {
-		base["source"] = "events"
-		rows, err = h.st.Daily(ctx, time.UTC, f)
-	}
+	rows, source, err := h.st.DailyServed(ctx, tz, f)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
 	}
+	base["source"] = source
 	filtered := make([]store.DailyRow, 0, len(rows))
 	for _, row := range rows {
 		if inRange(row.Date, from, to) {
@@ -247,7 +264,12 @@ var windowRe = regexp.MustCompile(`^([1-9][0-9]{0,2})d$`)
 // (declared as "source"). window: "all" (default), "today", or "Nd"
 // (last N UTC days including today, N ≤ 365).
 func (h *Hub) apiTotals(w http.ResponseWriter, r *http.Request) {
-	if err := checkParams(r, append([]string{"window"}, filterParamNames...)...); err != nil {
+	if err := checkParams(r, append([]string{"window", "timezone"}, filterParamNames...)...); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
+	tz, err := parseTimezone(r)
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
 		return
 	}
@@ -255,7 +277,9 @@ func (h *Hub) apiTotals(w http.ResponseWriter, r *http.Request) {
 	if window == "" {
 		window = "all"
 	}
-	today := time.Now().UTC().Format(dayFormat)
+	// The window's reference "today" and lookback are in the requested
+	// zone — the rows bucket in tz, so the bounds must too.
+	today := time.Now().In(tz).Format(dayFormat)
 	from := ""
 	switch window {
 	case "all":
@@ -274,19 +298,11 @@ func (h *Hub) apiTotals(w http.ResponseWriter, r *http.Request) {
 				fmt.Sprintf("window: want all, today or Nd (N ≤ 365), got %q", window))
 			return
 		}
-		from = time.Now().UTC().AddDate(0, 0, -(n - 1)).Format(dayFormat)
+		from = time.Now().In(tz).AddDate(0, 0, -(n - 1)).Format(dayFormat)
 	}
 
 	f := parseFilters(r)
-	source := "rollup"
-	var rows []store.DailyRow
-	var err error
-	if f.RollupServable() {
-		rows, err = h.st.DailyFromRollups(r.Context(), f)
-	} else {
-		source = "events"
-		rows, err = h.st.Daily(r.Context(), time.UTC, f)
-	}
+	rows, source, err := h.st.DailyServed(r.Context(), tz, f)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
@@ -311,7 +327,7 @@ func (h *Hub) apiTotals(w http.ResponseWriter, r *http.Request) {
 		sums.UnpricedEvents += row.UnpricedEvents
 	}
 	payload := map[string]any{
-		"grain": "day", "tz": "UTC", "source": source,
+		"grain": "day", "tz": tz.String(), "source": source,
 		"window": window, "from": from, "to": today,
 		"days": days, "totals": sums,
 	}

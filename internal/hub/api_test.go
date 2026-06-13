@@ -214,6 +214,71 @@ func TestAPIStatsDaily(t *testing.T) {
 	}
 }
 
+// TestAPITimezone (M6 Task 2): the timezone= parameter buckets days in
+// the requested zone and declares it in the payload; whole-hour-offset
+// zones serve from the hourly rollups, fractional zones from events —
+// each declared in `source`, and the served rows equal exact event
+// aggregation in that zone byte-equal (the rollup fast-path is correct,
+// not merely present). Invalid IANA names are rejected loudly. UTC
+// stays the default (asserted in TestAPIStatsDaily).
+func TestAPITimezone(t *testing.T) {
+	h := seedHub(t)
+	ctx := context.Background()
+
+	check := func(zone, wantSource string) {
+		t.Helper()
+		var got struct {
+			TZ     string           `json:"tz"`
+			Source string           `json:"source"`
+			Daily  []store.DailyRow `json:"daily"`
+		}
+		getOK(t, h, "/api/v1/stats/daily?timezone="+zone, &got)
+		if got.TZ != zone {
+			t.Errorf("%s: payload tz = %q, want %q", zone, got.TZ, zone)
+		}
+		if got.Source != wantSource {
+			t.Errorf("%s: source = %q, want %q", zone, got.Source, wantSource)
+		}
+		loc, err := time.LoadLocation(zone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Ground truth is exact event aggregation in the zone; the served
+		// path (hourly rollups for whole-hour zones) must equal it.
+		want, err := h.st.Daily(ctx, loc, store.Filters{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(want) == 0 {
+			t.Fatalf("%s: fixture corpus produced no rows", zone)
+		}
+		gj, _ := json.Marshal(got.Daily)
+		wj, _ := json.Marshal(want)
+		if string(gj) != string(wj) {
+			t.Errorf("%s: %s-served daily != exact event aggregation\ngot  %s\nwant %s",
+				zone, wantSource, gj, wj)
+		}
+	}
+
+	check("Asia/Tokyo", "rollup")       // +09:00, whole-hour
+	check("America/New_York", "rollup") // whole-hour DST
+	check("Asia/Kolkata", "events")     // +05:30, fractional
+
+	// Totals declare the zone and serving path too.
+	var totals struct {
+		TZ     string `json:"tz"`
+		Source string `json:"source"`
+	}
+	getOK(t, h, "/api/v1/totals?timezone=Asia/Tokyo", &totals)
+	if totals.TZ != "Asia/Tokyo" || totals.Source != "rollup" {
+		t.Errorf("totals timezone: tz=%q source=%q, want Asia/Tokyo/rollup", totals.TZ, totals.Source)
+	}
+
+	// Invalid IANA names are rejected loudly, on both endpoints.
+	assertErrEnvelope(t, h, "/api/v1/stats/daily?timezone=Not/AZone", http.StatusBadRequest)
+	assertErrEnvelope(t, h, "/api/v1/totals?timezone=Mars/Phobos", http.StatusBadRequest)
+}
+
 func TestAPIStatsDailyBy(t *testing.T) {
 	h := seedHub(t)
 	for _, by := range []string{"harness", "provider", "model", "project"} {
