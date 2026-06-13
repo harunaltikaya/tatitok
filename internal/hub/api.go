@@ -155,14 +155,21 @@ func inRange(day, from, to string) bool {
 
 // parseTimezone reads the optional timezone= parameter (IANA name),
 // defaulting to UTC — the API's day-bucketing zone, declared in every
-// payload alongside `source` (M6 Task 2). An unresolvable name is a loud
-// bad_param, like any other invalid value. Resolution uses the binary's
-// embedded tzdata (cmd/tatitok imports time/tzdata) — never
-// /etc/timezone, the standing trap.
+// payload alongside `source` (M6 Task 2). It must be an IANA zone name
+// resolvable against the binary's embedded tzdata (cmd/tatitok imports
+// time/tzdata), so the same DB renders identically on any host.
+//
+// "Local" is rejected (M6 Codex F4): it resolves to the HOST's zone —
+// host-dependent, the /etc/timezone trap — which is meaningless in a
+// declared, shareable payload. An unresolvable name is a loud bad_param,
+// like any other invalid value.
 func parseTimezone(r *http.Request) (*time.Location, error) {
 	name := r.URL.Query().Get("timezone")
 	if name == "" {
 		return time.UTC, nil
+	}
+	if name == "Local" {
+		return nil, fmt.Errorf("timezone: %q is host-dependent — name an IANA zone (e.g. UTC, Europe/Istanbul)", name)
 	}
 	loc, err := time.LoadLocation(name)
 	if err != nil {
