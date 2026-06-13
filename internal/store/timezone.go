@@ -104,28 +104,33 @@ func (s *Store) hourlyServable(ctx context.Context, tz *time.Location) (bool, er
 }
 
 // wholeHourZone reports whether every local-calendar-day boundary in
-// [lo, hi] lands on a whole UTC hour in tz — i.e. tz's UTC offset is a
-// whole number of hours at each local midnight the span touches. Only a
-// local midnight can split a UTC-hour bucket across two local days
-// (local midnight falls strictly inside a UTC hour exactly when the
-// offset has a sub-hour part), so this is precisely the hourly-serving
-// condition (M6 Task 2). DST is handled naturally: an offset that
-// switches between whole-hour values (-05:00/-04:00, +01:00/+02:00)
-// stays servable; a fractional offset anywhere in the span (+05:30,
-// +05:45, or a half-hour DST such as Lord Howe's +10:30) disqualifies
-// the whole range. The walk steps one local day at a time from lo's
-// local-day midnight through the midnight after hi's local day — the two
-// midnights that bound the span's first and last days.
+// [lo, hi] lands on a whole UTC hour in tz. Only a local-day boundary can
+// split a UTC-hour bucket across two local days, so this is precisely the
+// hourly-serving condition (M6 Task 2). It tests the resolved boundary
+// INSTANT's UTC placement — minutes and seconds zero — NOT merely the
+// offset (M6 Codex F3): at a shifted or skipped midnight (e.g.
+// Pacific/Apia, Asia/Colombo transitions) time.Date(…00:00…) normalizes
+// to an instant that may carry a whole-hour OFFSET while sitting
+// mid-hour; the offset test would wrongly approve the hourly path there.
+//
+// DST is handled naturally: a boundary that stays on a whole UTC hour
+// across an offset switch (-05:00/-04:00, +01:00/+02:00) remains
+// servable; a fractional offset (+05:30, +05:45, half-hour DST) or a
+// mid-hour boundary disqualifies the whole range. The walk steps one
+// local day at a time on a NOON anchor (noon is never skipped by DST, so
+// stepping never drifts), reconstructing each day's 00:00 boundary fresh.
 func wholeHourZone(tz *time.Location, lo, hi time.Time) bool {
-	y, m, d := lo.In(tz).Date()
-	cur := time.Date(y, m, d, 0, 0, 0, 0, tz)
-	hy, hm, hd := hi.In(tz).Date()
-	end := time.Date(hy, hm, hd, 0, 0, 0, 0, tz).AddDate(0, 0, 1)
-	for !cur.After(end) {
-		if _, off := cur.Zone(); off%3600 != 0 {
+	loLocal, hiLocal := lo.In(tz), hi.In(tz)
+	noon := time.Date(loLocal.Year(), loLocal.Month(), loLocal.Day(), 12, 0, 0, 0, tz)
+	// One day past hi's local day, so hi's day's closing boundary is checked.
+	end := time.Date(hiLocal.Year(), hiLocal.Month(), hiLocal.Day(), 12, 0, 0, 0, tz).AddDate(0, 0, 1)
+	for !noon.After(end) {
+		y, m, d := noon.Date()
+		u := time.Date(y, m, d, 0, 0, 0, 0, tz).UTC()
+		if u.Minute() != 0 || u.Second() != 0 || u.Nanosecond() != 0 {
 			return false
 		}
-		cur = cur.AddDate(0, 0, 1)
+		noon = noon.AddDate(0, 0, 1)
 	}
 	return true
 }

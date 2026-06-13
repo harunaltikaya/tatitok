@@ -67,18 +67,41 @@ func TestWholeHourZone(t *testing.T) {
 		want bool
 	}{
 		{"UTC", true},
-		{"Asia/Tokyo", true},        // +09:00, no DST
-		{"Europe/Istanbul", true},   // +03:00, no DST since 2016
-		{"America/New_York", true},  // -05:00 / -04:00, whole-hour DST
-		{"Europe/Berlin", true},     // +01:00 / +02:00, whole-hour DST
-		{"Asia/Kolkata", false},     // +05:30, fractional
-		{"Asia/Kathmandu", false},   // +05:45, fractional
-		{"Australia/Lord_Howe", false}, // +10:30 / +11:00, half-hour DST
+		{"Asia/Tokyo", true},            // +09:00, no DST
+		{"Europe/Istanbul", true},       // +03:00, no DST since 2016
+		{"America/New_York", true},      // -05:00 / -04:00, whole-hour DST
+		{"Europe/Berlin", true},         // +01:00 / +02:00, whole-hour DST
+		{"Pacific/Apia", true},          // +13:00 date-line, whole-hour
+		{"Asia/Kolkata", false},         // +05:30, fractional
+		{"Asia/Kathmandu", false},       // +05:45, fractional
+		{"Australia/Lord_Howe", false},  // +10:30 / +11:00, half-hour DST
 	}
 	for _, c := range cases {
 		if got := wholeHourZone(mustLoad(t, c.zone), lo, hi); got != c.want {
 			t.Errorf("wholeHourZone(%s) = %v, want %v", c.zone, got, c.want)
 		}
+	}
+}
+
+// F3: servability is decided by where the local-day BOUNDARY lands in
+// UTC, not by the offset at a (possibly normalized) midnight. A
+// whole-hour DST zone stays servable across both transition directions
+// (the boundary remains on a UTC hour); a fractional zone is unservable
+// even over a single day.
+func TestWholeHourZoneBoundaryPlacement(t *testing.T) {
+	ny := mustLoad(t, "America/New_York")
+	spring := []struct{ lo, hi string }{
+		{"2026-03-07T00:00:00Z", "2026-03-09T23:59:59Z"}, // around spring-forward 03-08
+		{"2026-10-31T00:00:00Z", "2026-11-02T23:59:59Z"}, // around fall-back 11-01
+	}
+	for _, s := range spring {
+		if !wholeHourZone(ny, mustTime(t, s.lo), mustTime(t, s.hi)) {
+			t.Errorf("America/New_York DST span %s..%s should stay servable (boundary on a UTC hour)", s.lo, s.hi)
+		}
+	}
+	// A fractional zone: even one day is unservable (boundary at :30).
+	if wholeHourZone(mustLoad(t, "Asia/Kolkata"), mustTime(t, "2026-06-12T00:00:00Z"), mustTime(t, "2026-06-12T23:59:59Z")) {
+		t.Error("Asia/Kolkata single day should be unservable (boundary at :30 past a UTC hour)")
 	}
 }
 
