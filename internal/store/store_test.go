@@ -88,6 +88,38 @@ func TestInsertBatchIdempotent(t *testing.T) {
 	}
 }
 
+// F1 (M6 Codex): a replacement that moves an event across a UTC day
+// boundary must report BOTH the old and new day in TouchedDays — the
+// rollup triggers subtract from the old day's bucket and add to the new,
+// so the live refresh must be able to invalidate either visible day.
+func TestReplacementCrossingDayReportsBothDays(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	d10 := time.Date(2026, 6, 10, 23, 30, 0, 0, time.UTC)
+	first := event("m1", "r1", "model-a", "s1", d10, TokenSums{Input: 10, Output: 1})
+	if st, err := s.InsertBatch(ctx, []core.Event{first}, testSource(1)); err != nil {
+		t.Fatal(err)
+	} else if len(st.TouchedDays) != 1 || st.TouchedDays[0] != "2026-06-10" {
+		t.Fatalf("first ingest touched %v, want [2026-06-10]", st.TouchedDays)
+	}
+	// Same id (msg/req unchanged), ts moved to the next UTC day → replace.
+	moved := event("m1", "r1", "model-a", "s1", d10.Add(time.Hour), TokenSums{Input: 10, Output: 1})
+	st, err := s.InsertBatch(ctx, []core.Event{moved}, testSource(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Replaced != 1 {
+		t.Fatalf("want 1 replaced, got %+v", st)
+	}
+	got := map[string]bool{}
+	for _, d := range st.TouchedDays {
+		got[d] = true
+	}
+	if !got["2026-06-10"] || !got["2026-06-11"] {
+		t.Fatalf("cross-boundary replacement touched %v, want both 2026-06-10 and 2026-06-11", st.TouchedDays)
+	}
+}
+
 // Mutable-store semantics: re-ingesting an event whose deterministic ID
 // already exists but whose payload changed (OpenCode finalizing an
 // in-flight message row) replaces the stored row to mirror the source;

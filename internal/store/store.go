@@ -858,6 +858,20 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Pro
 			f.touched[e.TS.UTC().Format("2006-01-02")] = struct{}{}
 			continue
 		}
+		// Conflict: the row already exists. Capture its stored UTC day
+		// BEFORE the update so a replacement that moves the event across a
+		// day boundary invalidates BOTH days — the rollup triggers
+		// subtract from the old day's bucket and add to the new, and the
+		// live refresh must refetch either visible day (M6 Codex F1). A PK
+		// point lookup, only on a conflict; the touched set dedups when the
+		// day is unchanged (the common same-ts streaming re-emit).
+		var oldDay, oldTS string
+		if err := f.tx.QueryRowContext(ctx,
+			`SELECT ts FROM usage_events WHERE id = ?`, e.ID).Scan(&oldTS); err == nil {
+			if t, perr := time.Parse(time.RFC3339Nano, oldTS); perr == nil {
+				oldDay = t.UTC().Format("2006-01-02")
+			}
+		}
 		res, err = f.upd.ExecContext(ctx, args...)
 		if err != nil {
 			return fmt.Errorf("replace %s: %w", e.ID, err)
@@ -868,6 +882,9 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Pro
 		if n == 1 {
 			f.stats.Replaced++
 			f.touched[e.TS.UTC().Format("2006-01-02")] = struct{}{}
+			if oldDay != "" {
+				f.touched[oldDay] = struct{}{} // no-op when old == new day
+			}
 			if !f.quiet {
 				slog.Info("replaced stored event: source row changed since last ingest",
 					"id", e.ID, "harness", e.Harness, "ts", e.TS.UTC())
