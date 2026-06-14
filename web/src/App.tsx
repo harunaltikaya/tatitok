@@ -54,7 +54,7 @@ import { useStream } from "./useStream";
 import { THEMES, loadTheme, saveTheme, applyTheme } from "./theme";
 import Chart from "./components/Chart";
 import Breakdown from "./components/Breakdown";
-import { sumByKey, rollupRows, sortTotals, brandColorFor, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
+import { sumByKey, rollupRows, mergeFamilies, sortTotals, brandColorFor, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
 import PlanCard from "./components/Plans";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
@@ -381,23 +381,37 @@ export default function App() {
   // (M6 Task 3); the actual-cost chart gets the day total only (post-plans
   // it is near-empty, so a model breakdown of ~$0 adds nothing). byModel
   // is the same filtered/timezoned set the bars use.
-  // These three are the detail charts — always by provider, so they take the
-  // brand-aware providerColor resolver (M8 1F: Anthropic clay, others hashed).
+  // These three are the detail charts — always by provider. The vllm family is
+  // collapsed into one "vllm" series (M8 1H: mergeFamilies sums the members,
+  // conserved) so the stacked charts lose the vllm-* wall; the by-provider
+  // table below keeps every vllm-* row as the full drill-down. NO top-N here —
+  // every provider family stays. The series take the brand-aware providerColor
+  // resolver (M8 1F: Anthropic clay, others hashed). The by-model tooltip stays
+  // on the raw byModel rows (models carry no family).
+  const providerSeries = useMemo(() => mergeFamilies(byProvider), [byProvider]);
   const equivChart = useMemo(
-    () => dailyStackedChart(byProvider, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`,
+    () => dailyStackedChart(providerSeries, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`,
       { rows: byModel, value: (r) => r.costAPIEquivMicro / 1e6 }, providerColor),
-    [byProvider, byModel],
+    [providerSeries, byModel],
   );
   const actualChart = useMemo(
-    () => dailyStackedChart(byProvider, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`, undefined, providerColor),
-    [byProvider],
+    () => dailyStackedChart(providerSeries, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`, undefined, providerColor),
+    [providerSeries],
   );
   const tokenChart = useMemo(
-    () => dailyStackedChart(byProvider, totalTokens, compactTokens,
+    () => dailyStackedChart(providerSeries, totalTokens, compactTokens,
       { rows: byModel, value: totalTokens }, providerColor),
-    [byProvider, byModel],
+    [providerSeries, byModel],
   );
-  const onProviderSeries = (seriesName: string) => toggle("provider", rawValue(seriesName));
+  // Click-to-filter on a chart series → filter that provider, but skip the
+  // collapsed "vllm" series: it's a family aggregate, not one provider value
+  // (filtering provider="vllm" would match nothing). Real providers still
+  // filter; the full table is the way to filter an individual vllm-* member.
+  const onProviderSeries = (seriesName: string) => {
+    const raw = rawValue(seriesName);
+    if (!(facets.provider ?? []).some((fv) => fv.value === raw)) return;
+    toggle("provider", raw);
+  };
 
   const modelBases = useMemo(() => {
     const m = new Map<string, string[]>();

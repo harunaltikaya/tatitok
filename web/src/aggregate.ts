@@ -79,6 +79,36 @@ export function collapseFamilies(rows: DailyByRow[]): DailyByRow[] {
   });
 }
 
+// mergeFamilies collapses families AND sums the rows that then share
+// (date, key), so each family is ONE row per day (its members summed). Unlike
+// rollupRows it does NOT truncate to top-N — every family stays — and unlike
+// bare collapseFamilies it merges the duplicate (date, key) rows the relabel
+// creates, so a chart that keys cells by (date, key) shows the family SUM
+// rather than one arbitrary member. The detail by-provider charts feed this
+// (M8 1H): the vllm-* wall folds into one "vllm" series = Σ its members
+// (conserved), every other family intact. Pure — the input rows (the full
+// table's data) are never mutated.
+export function mergeFamilies(rows: DailyByRow[]): DailyByRow[] {
+  const merged = new Map<string, DailyByRow>(); // `${date}|${family}` → summed row
+  for (const r of collapseFamilies(rows)) {
+    const id = `${r.date}|${r.key}`;
+    const cur = merged.get(id);
+    if (!cur) {
+      merged.set(id, { ...r });
+      continue;
+    }
+    cur.inputTokens += r.inputTokens;
+    cur.outputTokens += r.outputTokens;
+    cur.cacheCreationTokens += r.cacheCreationTokens;
+    cur.cacheReadTokens += r.cacheReadTokens;
+    cur.reasoningTokens += r.reasoningTokens;
+    cur.costUSDMicro += r.costUSDMicro;
+    cur.costAPIEquivMicro += r.costAPIEquivMicro;
+    cur.unpricedEvents += r.unpricedEvents;
+  }
+  return [...merged.values()];
+}
+
 // rollupRows collapses families, then keeps the top-N keys by API-equivalent
 // value (the home's primary metric; tokens then key name as tiebreaks, for a
 // stable pick) and folds the rest into OTHERS_KEY. A pure relabel, so
