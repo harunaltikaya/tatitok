@@ -645,7 +645,16 @@ export default function App() {
               </div>
 
               <Card title={`by ${groupBy}`}>
-                <Breakdown totals={homeTable} sort={sort} onSort={onSort} onSelect={onGroupSelect} active={filters[groupBy]} />
+                {/* bases only when grouping by model → ClassDots on model rows
+                    (M8 1E); provider/harness rows aren't single models. */}
+                <Breakdown
+                  totals={homeTable}
+                  sort={sort}
+                  onSort={onSort}
+                  onSelect={onGroupSelect}
+                  active={filters[groupBy]}
+                  bases={groupBy === "model" ? modelBases : undefined}
+                />
               </Card>
             </div>
           ) : (

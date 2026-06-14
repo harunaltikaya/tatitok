@@ -141,3 +141,48 @@ export function sortTotals(totals: KeyTotals[], sort: Sort): KeyTotals[] {
     return sign * (metric(a) - metric(b)) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
   });
 }
+
+// --- M8 1E: economic class from the served basis -----------------------------
+// Frontend-only: the class is DERIVED from the per-model cost basis already
+// served at /api/v1/meta/models (ModelInfo.costBasis — the served form of
+// core/event.go's api_price | plan_included | local | free | unknown). No new
+// served field, no inference; "none" is shown as a neutral dot, never faked
+// into a class colour.
+
+export type EconClass = "subscription" | "metered" | "local" | "free" | "none";
+
+export function basisToClass(basis: string): EconClass {
+  switch (basis) {
+    case "api_price":
+      return "metered";
+    case "plan_included":
+      return "subscription";
+    case "local":
+      return "local";
+    case "free":
+      return "free";
+    default: // "unknown", "", or anything this build doesn't recognise
+      return "none";
+  }
+}
+
+// dotClassesFor returns the distinct economic classes to mark a row with: a
+// model row carries its served basis (usually one, occasionally several across
+// providers) mapped to class; an aggregate row ("others", or any key with no
+// served basis) carries NONE — a mixed bucket has no single class. bases is the
+// model→basis map App derives from the served inventory; absent → no dots, so
+// only model-keyed tables (which pass it) ever show ClassDots.
+export function dotClassesFor(key: string, bases?: Map<string, string[]>): EconClass[] {
+  const list = bases?.get(key);
+  if (!list || list.length === 0) return [];
+  const seen = new Set<EconClass>();
+  const out: EconClass[] = [];
+  for (const basis of list) {
+    const c = basisToClass(basis);
+    if (!seen.has(c)) {
+      seen.add(c);
+      out.push(c);
+    }
+  }
+  return out;
+}

@@ -5,9 +5,20 @@
 // unpriced events gets the CLI's asterisk with a tooltip.
 
 import { compactTokens, usd } from "../api";
-import type { KeyTotals } from "../aggregate";
+import { dotClassesFor, type KeyTotals, type EconClass } from "../aggregate";
 import type { Sort, SortKey } from "../filters";
-import Badge from "../ui/Badge";
+import ClassDot, { type DotTone } from "../ui/ClassDot";
+
+// CLASS_DOT maps the derived economic class to the DS dot tone + an accessible
+// label (M8 1E). "none" (unknown basis) is a neutral dot, never a class colour,
+// so the table never fakes a class it doesn't have.
+const CLASS_DOT: Record<EconClass, { tone: DotTone; label: string }> = {
+  subscription: { tone: "subscription", label: "Subscription" },
+  metered: { tone: "metered", label: "Metered" },
+  local: { tone: "local", label: "Local" },
+  free: { tone: "free", label: "Free" },
+  none: { tone: "neutral", label: "Unknown" },
+};
 
 // KeyTotals + sumByKey moved to ../aggregate (M8 1B) so the pure aggregation
 // is unit-testable without pulling this JSX component into Node's test runner.
@@ -57,7 +68,9 @@ export default function Breakdown({
   active,
 }: {
   totals: KeyTotals[];
-  bases?: Map<string, string[]>; // model → distinct pricing bases (legend data)
+  // bases (model → served cost bases): present only on model-keyed tables; it
+  // drives the per-row ClassDots (M8 1E). Absent → no dots (non-model rows).
+  bases?: Map<string, string[]>;
   // sort / onSort (M8 1D): the shared table sort state and the click handler;
   // the caller has already ordered `totals` via sortTotals, so this only draws
   // the header arrows and reports clicks.
@@ -105,10 +118,11 @@ export default function Breakdown({
           >
             <td className="max-w-48 truncate py-1.5 pr-2 text-primary" title={t.key}>
               {t.key}
-              {bases?.get(t.key)?.map((b) => (
-                <Badge key={b} tone="tag" className="ml-1.5">
-                  {b}
-                </Badge>
+              {/* ClassDots (M8 1E): economic class derived from the served
+                  basis, only on model rows (bases passed) — never on aggregate
+                  rows ("others"), which have no single class. */}
+              {dotClassesFor(t.raw, bases).map((c) => (
+                <ClassDot key={c} tone={CLASS_DOT[c].tone} size={7} title={CLASS_DOT[c].label} className="ml-1.5 align-middle" />
               ))}
             </td>
             <td className="py-1.5 text-right tabular-nums text-secondary">{compactTokens(t.tokens)}</td>
