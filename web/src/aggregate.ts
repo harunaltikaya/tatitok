@@ -109,6 +109,22 @@ export function mergeFamilies(rows: DailyByRow[]): DailyByRow[] {
   return [...merged.values()];
 }
 
+// chartCells builds the stacked daily chart's (date, key) → value map. It SUMS
+// rows that share a (date, key) cell: a collapsed family ("vllm") or a folded
+// "others" arrives as SEVERAL rows on the same day after rollupRows/
+// mergeFamilies relabel their keys, so the bar must show the SUM of its
+// members — not whichever row was written last (the chart≠donut bug). Pure, so
+// the chart builder and a per-cell test share it; the donut already summed per
+// key (valueDonut), this brings the daily bars in line.
+export function chartCells(rows: DailyByRow[], value: (r: DailyByRow) => number): Map<string, number> {
+  const byCell = new Map<string, number>();
+  for (const r of rows) {
+    const k = `${r.date}|${r.key}`;
+    byCell.set(k, (byCell.get(k) ?? 0) + value(r));
+  }
+  return byCell;
+}
+
 // rollupRows collapses families, then keeps the top-N keys by API-equivalent
 // value (the home's primary metric; tokens then key name as tiebreaks, for a
 // stable pick) and folds the rest into OTHERS_KEY. A pure relabel, so

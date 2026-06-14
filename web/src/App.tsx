@@ -54,7 +54,7 @@ import { useStream } from "./useStream";
 import { THEMES, loadTheme, saveTheme, applyTheme } from "./theme";
 import Chart from "./components/Chart";
 import Breakdown from "./components/Breakdown";
-import { sumByKey, rollupRows, mergeFamilies, sortTotals, brandColorFor, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
+import { sumByKey, rollupRows, mergeFamilies, chartCells, sortTotals, brandColorFor, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
 import PlanCard from "./components/Plans";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
@@ -124,8 +124,10 @@ function dailyStackedChart(
 ): EChartsOption {
   const days = [...new Set(rows.map((r) => r.date))].sort();
   const providers = [...new Set(rows.map((r) => r.key))].sort();
-  const byCell = new Map<string, number>();
-  for (const r of rows) byCell.set(`${r.date}|${r.key}`, value(r));
+  // Cells SUM rows sharing a (date, key): collapsed families / folded "others"
+  // arrive as several same-day rows (home), so the bar shows their sum, not the
+  // last one (chart≠donut fix — see chartCells).
+  const byCell = chartCells(rows, value);
   return {
     backgroundColor: "transparent",
     animation: false,
