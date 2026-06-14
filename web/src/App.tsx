@@ -15,6 +15,7 @@ import {
   availableTZs,
   todayInTZ,
   daysAgoInTZ,
+  tzOffsetLabel,
   type DailyByRow,
   type DailyRow,
   type FacetValue,
@@ -236,6 +237,8 @@ export default function App() {
   const initialTZ = initial.tz ?? browserTZ();
   const [tz, setTz] = useState(initialTZ);
   const tzOptions = useMemo(() => availableTZs(), []);
+  // tz-offset clarity label next to the selector (M8 1I) — display only.
+  const tzOffset = useMemo(() => tzOffsetLabel(tz), [tz]);
   const [filters, setFilters] = useState<FilterState>(initial.filters);
   const [from, setFrom] = useState(initial.from ?? daysAgoInTZ(initialTZ, 29));
   const [to, setTo] = useState(initial.to ?? todayInTZ(initialTZ));
@@ -560,6 +563,7 @@ export default function App() {
               options={tzOptions}
               style={{ maxWidth: "12rem" }}
             />
+            {tzOffset && <span className="tabular-nums text-faint">{tzOffset}</span>}
           </label>
           <label className="flex items-center gap-1.5 text-xs text-tertiary">
             <span>theme</span>

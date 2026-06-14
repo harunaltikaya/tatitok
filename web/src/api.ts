@@ -230,3 +230,22 @@ export function daysAgoInTZ(tz: string, n: number): string {
   d.setUTCDate(d.getUTCDate() - n);
   return dayInTZ(d, tz);
 }
+
+// tzOffsetLabel renders a zone's UTC offset for the selector annotation (M8 1I)
+// — e.g. "UTC+3", "UTC+0", "UTC-4", "UTC+5:30". A CLARITY label only: the server
+// does the authoritative day-bucketing tz math, this never enters any
+// computation. DST is not modelled — one representative offset (at `at`,
+// default now) is shown. Intl's shortOffset yields "GMT±H[:MM]"; normalize to
+// "UTC±H[:MM]" (drop a leading zero and a ":00"); "" on an engine that can't.
+export function tzOffsetLabel(tz: string, at: Date = new Date()): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" }).formatToParts(at);
+    const name = parts.find((p) => p.type === "timeZoneName")?.value ?? "";
+    const m = name.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+    if (!m) return name === "GMT" ? "UTC+0" : "";
+    const mins = m[3] && m[3] !== "00" ? `:${m[3]}` : "";
+    return `UTC${m[1]}${Number(m[2])}${mins}`;
+  } catch {
+    return "";
+  }
+}
