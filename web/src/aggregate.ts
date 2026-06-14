@@ -102,17 +102,6 @@ export function rollupRows(rows: DailyByRow[], topN: number): DailyByRow[] {
   return collapsed.map((r) => (top.has(r.key) ? r : { ...r, key: OTHERS_KEY }));
 }
 
-// topFacets is the left-pane analog (M8 1C): a dimension's values by event
-// count desc, top n kept, the remainder summarized as a single non-interactive
-// "others" tally (how many values folded + their total events). shown events +
-// othersEvents = the dimension's total events (conserved).
-export function topFacets(values: FacetValue[], n: number): { shown: FacetValue[]; othersValues: number; othersEvents: number } {
-  const sorted = [...values].sort((a, b) => b.events - a.events || (a.value < b.value ? -1 : 1));
-  const shown = sorted.slice(0, n);
-  const rest = sorted.slice(n);
-  return { shown, othersValues: rest.length, othersEvents: rest.reduce((s, v) => s + v.events, 0) };
-}
-
 // railItems is the facet rail's display structure (M8 1G): the SAME family
 // collapse the main view uses (familyOf) folds vllm-* into one "vllm" group,
 // then — for long dims — the tail past top-N folds into an "others" group. Both

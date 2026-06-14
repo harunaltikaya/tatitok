@@ -1,15 +1,14 @@
 // Rollup conservation tests (M8 chunk 1C), Node's built-in runner. The live
-// home rollup (chart/donut/table/filter-pane) is exercised in the chunk-C
-// drive; this pins the pure machinery in aggregate.ts: family collapse folds
-// vllm-* into one bucket equal to the sum of its members; top-N + "others"
-// conserves the grand total for every dimension; the filter-pane top-N + others
-// conserves the event count. Rollup is display-only — it relabels keys, never
-// re-counts.
+// home rollup (chart/donut/table) is exercised in the chunk-C drive; this pins
+// the pure machinery in aggregate.ts: family collapse folds vllm-* into one
+// bucket equal to the sum of its members, and top-N + "others" conserves the
+// grand total for every dimension. Rollup is display-only — it relabels keys,
+// never re-counts.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sumByKey, collapseFamilies, familyOf, rollupRows, topFacets, OTHERS_KEY } from "./aggregate.ts";
-import type { DailyByRow, FacetValue } from "./api.ts";
+import { sumByKey, collapseFamilies, familyOf, rollupRows, OTHERS_KEY } from "./aggregate.ts";
+import type { DailyByRow } from "./api.ts";
 
 // row builds a DailyByRow with a key and a couple of measures; unused token
 // components stay 0 so the totals are easy to reason about.
@@ -74,15 +73,4 @@ test("rollup: family collapse + top-N/others conserve, for every dimension", () 
     const rows = atoms.map((a) => row(a.date, a[dim], a.equiv, a.tokens));
     assert.deepEqual(grand(rollupRows(rows, 2)), grand(rows));
   }
-
-  // Filter-pane top-N + others conserves the event count.
-  const facets: FacetValue[] = [
-    { value: "a", events: 50 }, { value: "b", events: 40 }, { value: "c", events: 30 },
-    { value: "d", events: 20 }, { value: "e", events: 10 }, { value: "f", events: 5 },
-  ];
-  const tf = topFacets(facets, 3);
-  assert.equal(tf.shown.length, 3);
-  assert.equal(tf.othersValues, 3);
-  const totalEvents = facets.reduce((n, v) => n + v.events, 0);
-  assert.equal(tf.shown.reduce((n, v) => n + v.events, 0) + tf.othersEvents, totalEvents);
 });
