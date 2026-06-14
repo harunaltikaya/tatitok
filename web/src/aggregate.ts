@@ -186,3 +186,22 @@ export function dotClassesFor(key: string, bases?: Map<string, string[]>): EconC
   }
   return out;
 }
+
+// --- M8 1F: provider brand colour --------------------------------------------
+// The contained exception to "colour = class": on the PROVIDER channel a
+// provider may take its brand colour instead of a per-entity hashed hue. Values
+// are concrete hexes (ECharts itemStyle can't read CSS vars) mirroring the DS
+// --brand-* tokens. Anthropic's CLAY end (#cc785c) was chosen to clear both
+// metered-amber (#f5b547) and danger coral-red (#f0726f) — a brighter orange
+// would collide with amber. Extensible: OpenAI green etc. land later, each
+// tuned against the class palette then.
+const BRAND_COLORS: Record<string, string> = {
+  anthropic: "#cc785c",
+};
+
+// brandColorFor returns a provider's brand hex, or null to fall back to the
+// per-entity colour. The CALLER applies this only on the provider dimension, so
+// the brand never leaks into the model or harness groupings.
+export function brandColorFor(provider: string): string | null {
+  return BRAND_COLORS[provider] ?? null;
+}

@@ -62,6 +62,7 @@ function SortHeader({ label, col, sort, onSort, title }: {
 export default function Breakdown({
   totals,
   bases,
+  rowColor,
   sort,
   onSort,
   onSelect,
@@ -71,6 +72,10 @@ export default function Breakdown({
   // bases (model → served cost bases): present only on model-keyed tables; it
   // drives the per-row ClassDots (M8 1E). Absent → no dots (non-model rows).
   bases?: Map<string, string[]>;
+  // rowColor (M8 1F): present only on the provider-channel table — a leading
+  // colour swatch matching the chart/donut (Anthropic's brand, others hashed),
+  // so the three by-provider surfaces read consistently. Absent → no swatch.
+  rowColor?: (raw: string) => string;
   // sort / onSort (M8 1D): the shared table sort state and the click handler;
   // the caller has already ordered `totals` via sortTotals, so this only draws
   // the header arrows and reports clicks.
@@ -117,6 +122,16 @@ export default function Breakdown({
             title={onSelect ? "click to filter" : undefined}
           >
             <td className="max-w-48 truncate py-1.5 pr-2 text-primary" title={t.key}>
+              {/* Provider-channel swatch (M8 1F): a leading colour chip tying
+                  the row to its chart/donut colour (Anthropic brand, others
+                  hashed). Decorative — the provider NAME carries the meaning. */}
+              {rowColor && (
+                <span
+                  aria-hidden="true"
+                  className="mr-1.5 inline-block align-middle"
+                  style={{ width: 8, height: 8, borderRadius: "999px", background: rowColor(t.raw) }}
+                />
+              )}
               {t.key}
               {/* ClassDots (M8 1E): economic class derived from the served
                   basis, only on model rows (bases passed) — never on aggregate

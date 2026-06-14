@@ -54,7 +54,7 @@ import { useStream } from "./useStream";
 import { THEMES, loadTheme, saveTheme, applyTheme } from "./theme";
 import Chart from "./components/Chart";
 import Breakdown from "./components/Breakdown";
-import { sumByKey, rollupRows, sortTotals, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
+import { sumByKey, rollupRows, sortTotals, brandColorFor, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
 import PlanCard from "./components/Plans";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
@@ -96,6 +96,16 @@ function seriesColor(key: string): string {
   return SERIES_PALETTE[h % SERIES_PALETTE.length];
 }
 
+// providerColor (M8 1F) is the PROVIDER-channel resolver: Anthropic's brand
+// clay takes precedence, every other provider falls back to its per-entity hue.
+// Applied only where the dimension IS provider (the by-provider charts, and the
+// home chart/donut/table when group-by=provider), so the brand colour never
+// leaks into the model or harness groupings. Option B: class colours and other
+// entities are untouched — only the provider channel gains the brand.
+function providerColor(key: string): string {
+  return brandColorFor(key) ?? seriesColor(key);
+}
+
 // dailyStackedChart is the stacked daily bar chart, stacked by whatever
 // dimension keys the rows — provider on the detail charts; the group-by
 // dimension on the home overview (M8 1B). Its tooltip (M6 Task 3) shows a
@@ -108,6 +118,9 @@ function dailyStackedChart(
   value: (r: DailyByRow) => number,
   fmt: (v: number) => string,
   modelBreakdown?: { rows: DailyByRow[]; value: (r: DailyByRow) => number },
+  // colorFor resolves a series' colour by key (M8 1F): the by-provider charts
+  // pass providerColor (brand-aware), everyone else gets per-entity seriesColor.
+  colorFor: (key: string) => string = seriesColor,
 ): EChartsOption {
   const days = [...new Set(rows.map((r) => r.date))].sort();
   const providers = [...new Set(rows.map((r) => r.key))].sort();
@@ -155,7 +168,7 @@ function dailyStackedChart(
       name: displayValue(p),
       type: "bar",
       stack: "total",
-      itemStyle: { color: seriesColor(p) },
+      itemStyle: { color: colorFor(p) },
       emphasis: { focus: "series" },
       data: days.map((d) => byCell.get(`${d}|${p}`) ?? 0),
     })),
@@ -170,13 +183,13 @@ function dailyStackedChart(
 // hexes because ECharts' SVG itemStyle does not resolve CSS vars (the reason
 // dailyStackedChart hard-codes its palette); the HTML tooltip does resolve
 // them, so it keeps the design-system vars.
-function valueDonut(rows: DailyByRow[]): EChartsOption {
+function valueDonut(rows: DailyByRow[], colorFor: (key: string) => string = seriesColor): EChartsOption {
   const byKey = new Map<string, number>();
   for (const r of rows) byKey.set(r.key, (byKey.get(r.key) ?? 0) + r.costAPIEquivMicro / 1e6);
   const data = [...byKey.entries()]
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => ({ name: displayValue(k), value: v, itemStyle: { color: seriesColor(k) } }));
+    .map(([k, v]) => ({ name: displayValue(k), value: v, itemStyle: { color: colorFor(k) } }));
   return {
     backgroundColor: "transparent",
     animation: false,
@@ -368,18 +381,20 @@ export default function App() {
   // (M6 Task 3); the actual-cost chart gets the day total only (post-plans
   // it is near-empty, so a model breakdown of ~$0 adds nothing). byModel
   // is the same filtered/timezoned set the bars use.
+  // These three are the detail charts — always by provider, so they take the
+  // brand-aware providerColor resolver (M8 1F: Anthropic clay, others hashed).
   const equivChart = useMemo(
     () => dailyStackedChart(byProvider, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`,
-      { rows: byModel, value: (r) => r.costAPIEquivMicro / 1e6 }),
+      { rows: byModel, value: (r) => r.costAPIEquivMicro / 1e6 }, providerColor),
     [byProvider, byModel],
   );
   const actualChart = useMemo(
-    () => dailyStackedChart(byProvider, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`),
+    () => dailyStackedChart(byProvider, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`, undefined, providerColor),
     [byProvider],
   );
   const tokenChart = useMemo(
     () => dailyStackedChart(byProvider, totalTokens, compactTokens,
-      { rows: byModel, value: totalTokens }),
+      { rows: byModel, value: totalTokens }, providerColor),
     [byProvider, byModel],
   );
   const onProviderSeries = (seriesName: string) => toggle("provider", rawValue(seriesName));
@@ -416,11 +431,15 @@ export default function App() {
   // Feeding the rolled rows to the same chart/donut/sumByKey yields a calm
   // top-N overview; the detail page keeps the full per-entity breakdown.
   const homeRollup = useMemo(() => rollupRows(groupRows, HOME_TOP_N), [groupRows]);
+  // homeColor (M8 1F): the brand-aware resolver only when the home channel IS
+  // provider; for model/harness it stays plain per-entity, so the brand colour
+  // never reaches a non-provider grouping.
+  const homeColor = groupBy === "provider" ? providerColor : seriesColor;
   const homeChart = useMemo(
-    () => dailyStackedChart(homeRollup, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`),
-    [homeRollup],
+    () => dailyStackedChart(homeRollup, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`, undefined, homeColor),
+    [homeRollup, homeColor],
   );
-  const homeDonut = useMemo(() => valueDonut(homeRollup), [homeRollup]);
+  const homeDonut = useMemo(() => valueDonut(homeRollup, homeColor), [homeRollup, homeColor]);
   // The home table shares the global Sort (M8 1D); sortTotals ranks by the
   // chosen metric and pins aggregates ("others"/family) to the bottom.
   const homeTable = useMemo(() => sortTotals(sumByKey(homeRollup), sort), [homeRollup, sort]);
@@ -451,7 +470,7 @@ export default function App() {
       <Breakdown totals={sortTotals(sumByKey(byHarness), sort)} sort={sort} onSort={onSort} onSelect={(raw) => toggle("harness", raw)} active={filters.harness} />
     ),
     "break-provider": (
-      <Breakdown totals={sortTotals(sumByKey(byProvider), sort)} sort={sort} onSort={onSort} onSelect={(raw) => toggle("provider", raw)} active={filters.provider} />
+      <Breakdown totals={sortTotals(sumByKey(byProvider), sort)} sort={sort} onSort={onSort} rowColor={providerColor} onSelect={(raw) => toggle("provider", raw)} active={filters.provider} />
     ),
     "break-model": (
       <Breakdown totals={sortTotals(sumByKey(byModel), sort)} sort={sort} onSort={onSort} bases={modelBases} onSelect={(raw) => toggle("model", raw)} active={filters.model} />
@@ -645,8 +664,9 @@ export default function App() {
               </div>
 
               <Card title={`by ${groupBy}`}>
-                {/* bases only when grouping by model → ClassDots on model rows
-                    (M8 1E); provider/harness rows aren't single models. */}
+                {/* bases → ClassDots on model rows (M8 1E); rowColor → the
+                    provider-channel swatch with Anthropic's brand (M8 1F). Each
+                    is scoped to its dimension, so harness rows get neither. */}
                 <Breakdown
                   totals={homeTable}
                   sort={sort}
@@ -654,6 +674,7 @@ export default function App() {
                   onSelect={onGroupSelect}
                   active={filters[groupBy]}
                   bases={groupBy === "model" ? modelBases : undefined}
+                  rowColor={groupBy === "provider" ? providerColor : undefined}
                 />
               </Card>
             </div>

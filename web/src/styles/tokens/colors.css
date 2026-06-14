@@ -36,6 +36,11 @@
   /* ---- brand --------------------------------------------- */
   --brand-green:      #1c9d74;  /* the logo viewfinder dot, sampled */
   --brand-green-lift: #34d399;  /* lifted for legible text on dark */
+  /* Provider-channel brand colour (M8 1F): Anthropic's clay/terracotta end,
+     chosen to clear metered-amber (#f5b547) and danger coral-red (#f0726f).
+     Used only on the by-provider surfaces; mirrored as a concrete hex in JS
+     (brandColorFor) because ECharts itemStyle can't read CSS vars. */
+  --brand-anthropic:  #cc785c;
 
   /* ---- economic-class hues (categorical — the ONLY ones) -- */
   --class-subscription: #a78bfa;  /* violet    — plan-included */
