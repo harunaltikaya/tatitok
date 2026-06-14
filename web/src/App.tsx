@@ -732,9 +732,10 @@ export default function App() {
                 </Card>
               </div>
 
-              {/* Activity heatmap (M8 1L): weekday × hour "when you're active",
-                  over the same filtered/timezoned range. */}
-              <Card title="when you're active">
+              {/* Activity heatmap (M8 1L; mockup-matched 1M): weekday × hour
+                  "when you're active", over the same filtered/timezoned range.
+                  The right-aligned label names the metric (tokens). */}
+              <Card title="when you're active" actions={<span className="text-xs text-faint">tokens · hour × weekday</span>}>
                 <Heatmap buckets={activity} />
               </Card>
 
