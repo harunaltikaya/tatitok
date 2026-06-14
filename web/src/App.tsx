@@ -36,6 +36,7 @@ import {
   toggleValue,
   type FacetDim,
   type FilterState,
+  type View,
 } from "./filters";
 import { dayTotal, topModelsAtDay } from "./tooltip";
 import { touchedInRange } from "./invalidate";
@@ -153,6 +154,52 @@ function dailyProviderChart(
   };
 }
 
+// providerDonut (M8 1A): the by-provider value donut on the home overview.
+// Same per-entity hue as the bars (seriesColor) over the SAME served
+// by-provider rows — display-only re-presentation, no counting change.
+// Value is API-equivalent (the primary value metric). itemStyle colors are
+// concrete hexes because ECharts' SVG itemStyle does not resolve CSS vars
+// (the reason dailyProviderChart hard-codes its palette); the HTML tooltip
+// does resolve them, so it keeps the design-system vars.
+function providerDonut(rows: DailyByRow[]): EChartsOption {
+  const byKey = new Map<string, number>();
+  for (const r of rows) byKey.set(r.key, (byKey.get(r.key) ?? 0) + r.costAPIEquivMicro / 1e6);
+  const data = [...byKey.entries()]
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => ({ name: displayValue(k), value: v, itemStyle: { color: seriesColor(k) } }));
+  return {
+    backgroundColor: "transparent",
+    animation: false,
+    tooltip: {
+      trigger: "item",
+      backgroundColor: "var(--surface-raised)",
+      borderColor: "var(--border-hairline)",
+      borderWidth: 0.5,
+      textStyle: { color: "var(--text-secondary)", fontSize: 12, fontFamily: "Jost, sans-serif" },
+      extraCssText: "box-shadow: var(--shadow-overlay); border-radius: 10px; font-variant-numeric: tabular-nums;",
+      formatter: (p: unknown) => {
+        const it = p as { name?: string; value?: number; marker?: string; percent?: number };
+        return `${it.marker ?? ""}${it.name ?? ""} <b>$${Number(it.value ?? 0).toFixed(2)}</b> · ${it.percent ?? 0}%`;
+      },
+    },
+    series: [
+      {
+        type: "pie",
+        radius: ["62%", "86%"],
+        center: ["50%", "50%"],
+        avoidLabelOverlap: false,
+        padAngle: 2,
+        itemStyle: { borderRadius: 4, borderColor: "#161618", borderWidth: 2 },
+        label: { show: false },
+        labelLine: { show: false },
+        emphasis: { scale: true, scaleSize: 4 },
+        data,
+      },
+    ],
+  };
+}
+
 export default function App() {
   // Filter state and the day range live in the URL — shareable,
   // bookmarkable, survives refresh; no persistence beyond that (M5
@@ -168,6 +215,9 @@ export default function App() {
   const [filters, setFilters] = useState<FilterState>(initial.filters);
   const [from, setFrom] = useState(initial.from ?? daysAgoInTZ(initialTZ, 29));
   const [to, setTo] = useState(initial.to ?? todayInTZ(initialTZ));
+  // Page (M8 1A): home | detail. Shareable view state → URL (owner ruling),
+  // restored by popstate/refresh like filters/range/tz. Default home.
+  const [view, setView] = useState<View>(initial.view);
   const [daily, setDaily] = useState<DailyRow[]>([]);
   const [byProvider, setByProvider] = useState<DailyByRow[]>([]);
   const [byHarness, setByHarness] = useState<DailyByRow[]>([]);
@@ -200,11 +250,11 @@ export default function App() {
   // URL sync (replaceState — every click is not a history entry) and
   // back/forward restore. tz round-trips alongside filters and range.
   useEffect(() => {
-    const url = filtersToURL(filters, from, to, tz);
+    const url = filtersToURL(filters, from, to, tz, view);
     if (window.location.search !== url) {
       window.history.replaceState(null, "", url);
     }
-  }, [filters, from, to, tz]);
+  }, [filters, from, to, tz, view]);
   useEffect(() => {
     const onPop = () => {
       const s = filtersFromURL(window.location.search);
@@ -212,6 +262,7 @@ export default function App() {
       if (s.from) setFrom(s.from);
       if (s.to) setTo(s.to);
       if (s.tz) setTz(s.tz);
+      setView(s.view);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -330,6 +381,13 @@ export default function App() {
     () => daily.reduce((n, r) => n + r.unpricedEvents, 0),
     [daily],
   );
+  // Shared range aggregates (display-only sums over the served daily rows) —
+  // used by both the home hero/donut-center and the detail range-totals card,
+  // so the two pages state the same number by construction.
+  const rangeEquiv = useMemo(() => daily.reduce((n, r) => n + r.costAPIEquivMicro, 0), [daily]);
+  const rangeActual = useMemo(() => daily.reduce((n, r) => n + r.costUSDMicro, 0), [daily]);
+  const rangeTokens = useMemo(() => daily.reduce((n, r) => n + totalTokens(r), 0), [daily]);
+  const providerDonutOpt = useMemo(() => providerDonut(byProvider), [byProvider]);
 
   const chips = facetDims.flatMap((dim) => filters[dim].map((v) => ({ dim, value: v })));
 
@@ -360,6 +418,16 @@ export default function App() {
           <span className="text-[21px] font-medium tracking-[-0.01em]">tatitok</span>
           <span className="text-sm text-faint">local AI usage</span>
         </div>
+        {/* Page nav (M8 1A): home overview vs full detail. Shareable → URL;
+            the active page is the one global view state both pages share. */}
+        <nav className="flex items-center gap-1" aria-label="page">
+          <Button size="sm" variant="subtle" active={view === "home"} aria-current={view === "home" ? "page" : undefined} onClick={() => setView("home")}>
+            home
+          </Button>
+          <Button size="sm" variant="subtle" active={view === "detail"} aria-current={view === "detail" ? "page" : undefined} onClick={() => setView("detail")}>
+            detail
+          </Button>
+        </nav>
         <div className="ml-auto flex flex-wrap items-center gap-2 text-sm">
           {presets.map((p) => (
             <Button
@@ -471,87 +539,133 @@ export default function App() {
         <FacetRail facets={facets} filters={filters} onToggle={toggle} />
 
         <main className="min-w-0 flex-1">
-          <section className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <Card
-              title={
-                <span className="inline-flex items-center gap-2">
-                  today
-                  <ClassDot
-                    tone={stream.connected ? "live" : "neutral"}
-                    pulse={stream.connected}
-                    title={stream.connected ? "live — SSE connected" : "stream disconnected (EventSource will retry; data refetches on reconnect)"}
-                  />
-                  {countActive(filters) > 0 && (
-                    <span className="text-[11px]" style={{ color: "var(--accent)" }}>filtered</span>
-                  )}
-                </span>
-              }
-            >
-              <Stat
-                size="lg"
-                value={today ? usd(today.costUSDMicro) : "—"}
-                unpriced={!!today && today.unpricedEvents > 0}
-                unpricedTitle={today ? `${today.unpricedEvents} events today carry no resolvable price — cost is a floor.` : undefined}
-                sub={today ? `${compactTokens(totalTokens(today))} tokens` : "no data yet"}
-              />
-              {today && today.costAPIEquivMicro > 0 && (
-                <div className="mt-1 text-xs text-tertiary tabular-nums">≈ {usd(today.costAPIEquivMicro)} API-equiv</div>
-              )}
-              {stream.lastPass && (
+          {view === "home" ? (
+            // Home (M8 1A): the calm overview — value-extracted hero, the
+            // primary daily API-equivalent chart, a by-provider value donut,
+            // and one ranked by-provider table. Every figure is the SAME
+            // served, filtered, timezoned data the detail page uses; this is
+            // re-presentation only, no counting change.
+            <div className="space-y-4">
+              <Card title="value extracted">
+                <Stat
+                  size="hero"
+                  positive
+                  value={usd(rangeEquiv)}
+                  sub={`API-equivalent value of your usage · ${from} → ${to}`}
+                />
                 <div className="mt-2 text-xs text-faint tabular-nums">
-                  last pass #{stream.lastPass.pass}:{" "}
-                  {stream.lastPass.harnesses
-                    .map((h) => `${h.harness} +${h.new}${h.replaced ? ` ~${h.replaced}` : ""}`)
-                    .join(", ")}
+                  vs {usd(rangeActual)} actual out-of-pocket
+                  {rangeActual > 0 && rangeEquiv > 0 && ` · ${(rangeEquiv / rangeActual).toFixed(1)}× extracted`}
                 </div>
-              )}
-            </Card>
-            {plans.map((p) => (
-              <PlanCard key={p.name} plan={p} />
-            ))}
-            <Card className="md:col-span-2" title="range totals">
-              <div className="flex flex-wrap gap-x-10 gap-y-4">
-                <Stat
-                  value={usd(daily.reduce((n, r) => n + r.costAPIEquivMicro, 0))}
-                  sub={`API-equivalent (${from} → ${to})`}
-                />
-                <Stat
-                  value={usd(daily.reduce((n, r) => n + r.costUSDMicro, 0))}
-                  unpriced={rangeUnpriced > 0}
-                  unpricedTitle={`${rangeUnpriced} events in range carry no resolvable price — cost is a floor (the CLI's asterisk).`}
-                  sub="actual cost"
-                />
-                <Stat value={compactTokens(daily.reduce((n, r) => n + totalTokens(r), 0))} sub="tokens" />
-                <Stat value={String(daily.length)} sub="active days" />
-              </div>
-            </Card>
-          </section>
+              </Card>
 
-          {/* Panel grid (M6 Task 4): charts and breakdowns become
-              reorderable, resizable, fullscreen-able panels. Layout is
-              browser-local (never the URL); a reset restores defaults.
-              Filter interactions inside the panels survive every layout
-              state — the same elements are reframed, never remounted. */}
-          <div className="mb-2 flex items-center gap-2 text-xs text-tertiary">
-            <span>panels</span>
-            <span className="hidden text-faint sm:inline">drag header to reorder · −/+ to resize · ⤢ fullscreen (Esc)</span>
-            <Button
-              className="ml-auto"
-              variant="subtle"
-              size="sm"
-              onClick={() => setLayout(defaultLayout())}
-              title="restore the default panel order and sizes"
-            >
-              reset layout
-            </Button>
-          </div>
-          <PanelGrid
-            layout={layout}
-            content={panelContent}
-            fullscreen={fullscreen}
-            onLayout={setLayout}
-            onFullscreen={setFullscreen}
-          />
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
+                <Card title="daily API-equivalent (by provider)">
+                  <Chart option={equivChart} height={264} onSeriesClick={onProviderSeries} />
+                </Card>
+                <Card title="value by provider">
+                  <div className="relative">
+                    <Chart option={providerDonutOpt} height={200} onSeriesClick={onProviderSeries} />
+                    <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                      <div className="text-2xl tabular-nums text-primary" style={{ letterSpacing: "-0.02em" }}>
+                        {usd(rangeEquiv)}
+                      </div>
+                      <div className="text-[11px] text-tertiary">total value</div>
+                    </div>
+                  </div>
+                </Card>
+              </div>
+
+              <Card title="by provider">
+                <Breakdown totals={sumByKey(byProvider)} onSelect={(raw) => toggle("provider", raw)} active={filters.provider} />
+              </Card>
+            </div>
+          ) : (
+            // Detail (M8 1A): the full breakdown App has always rendered —
+            // today + plan meters + range totals, then the reorderable panel
+            // grid. Unchanged from M7 beyond being rehomed under the view
+            // switch (range totals now read the shared range memos).
+            <>
+              <section className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
+                <Card
+                  title={
+                    <span className="inline-flex items-center gap-2">
+                      today
+                      <ClassDot
+                        tone={stream.connected ? "live" : "neutral"}
+                        pulse={stream.connected}
+                        title={stream.connected ? "live — SSE connected" : "stream disconnected (EventSource will retry; data refetches on reconnect)"}
+                      />
+                      {countActive(filters) > 0 && (
+                        <span className="text-[11px]" style={{ color: "var(--accent)" }}>filtered</span>
+                      )}
+                    </span>
+                  }
+                >
+                  <Stat
+                    size="lg"
+                    value={today ? usd(today.costUSDMicro) : "—"}
+                    unpriced={!!today && today.unpricedEvents > 0}
+                    unpricedTitle={today ? `${today.unpricedEvents} events today carry no resolvable price — cost is a floor.` : undefined}
+                    sub={today ? `${compactTokens(totalTokens(today))} tokens` : "no data yet"}
+                  />
+                  {today && today.costAPIEquivMicro > 0 && (
+                    <div className="mt-1 text-xs text-tertiary tabular-nums">≈ {usd(today.costAPIEquivMicro)} API-equiv</div>
+                  )}
+                  {stream.lastPass && (
+                    <div className="mt-2 text-xs text-faint tabular-nums">
+                      last pass #{stream.lastPass.pass}:{" "}
+                      {stream.lastPass.harnesses
+                        .map((h) => `${h.harness} +${h.new}${h.replaced ? ` ~${h.replaced}` : ""}`)
+                        .join(", ")}
+                    </div>
+                  )}
+                </Card>
+                {plans.map((p) => (
+                  <PlanCard key={p.name} plan={p} />
+                ))}
+                <Card className="md:col-span-2" title="range totals">
+                  <div className="flex flex-wrap gap-x-10 gap-y-4">
+                    <Stat value={usd(rangeEquiv)} sub={`API-equivalent (${from} → ${to})`} />
+                    <Stat
+                      value={usd(rangeActual)}
+                      unpriced={rangeUnpriced > 0}
+                      unpricedTitle={`${rangeUnpriced} events in range carry no resolvable price — cost is a floor (the CLI's asterisk).`}
+                      sub="actual cost"
+                    />
+                    <Stat value={compactTokens(rangeTokens)} sub="tokens" />
+                    <Stat value={String(daily.length)} sub="active days" />
+                  </div>
+                </Card>
+              </section>
+
+              {/* Panel grid (M6 Task 4): charts and breakdowns become
+                  reorderable, resizable, fullscreen-able panels. Layout is
+                  browser-local (never the URL); a reset restores defaults.
+                  Filter interactions inside the panels survive every layout
+                  state — the same elements are reframed, never remounted. */}
+              <div className="mb-2 flex items-center gap-2 text-xs text-tertiary">
+                <span>panels</span>
+                <span className="hidden text-faint sm:inline">drag header to reorder · −/+ to resize · ⤢ fullscreen (Esc)</span>
+                <Button
+                  className="ml-auto"
+                  variant="subtle"
+                  size="sm"
+                  onClick={() => setLayout(defaultLayout())}
+                  title="restore the default panel order and sizes"
+                >
+                  reset layout
+                </Button>
+              </div>
+              <PanelGrid
+                layout={layout}
+                content={panelContent}
+                fullscreen={fullscreen}
+                onLayout={setLayout}
+                onFullscreen={setFullscreen}
+              />
+            </>
+          )}
 
           <footer className="mt-6 text-xs text-faint tabular-nums">
             {health

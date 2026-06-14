@@ -46,7 +46,12 @@ export default function Chart({
         chart.current = echarts.init(node, null, { renderer: "svg" });
         chart.current.setOption(latest.current, { notMerge: true });
         chart.current.on("click", (params) => {
-          const name = (params as { seriesName?: string }).seriesName;
+          // A stacked bar/line reports the clicked entity as the SERIES name
+          // (one series per entity); a pie/donut reports it as the slice
+          // `name` (one series, many slices). Either way the entity name goes
+          // to the same facet-filter handler — bar behavior is unchanged.
+          const p = params as { seriesName?: string; name?: string; seriesType?: string };
+          const name = p.seriesType === "pie" ? p.name : p.seriesName;
           if (name) clickRef.current?.(name);
         });
         chart.current.on("legendselectchanged", (params) => {

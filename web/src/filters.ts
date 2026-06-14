@@ -10,6 +10,16 @@ export type FacetDim = "harness" | "provider" | "model" | "project" | "basis";
 
 export const facetDims: FacetDim[] = ["harness", "provider", "model", "project", "basis"];
 
+// View is the page dimension (M8 chunk 1A): the minimal "home" overview vs
+// the full "detail" breakdown. It is SHAREABLE view state — which page you
+// are looking at — so it rides the URL beside filters/range/tz (M8 owner
+// ruling), not localStorage. Default home.
+export type View = "home" | "detail";
+
+export function parseView(v: string | null): View {
+  return v === "detail" ? "detail" : "home";
+}
+
 export type FilterState = Record<FacetDim, string[]>;
 
 export function emptyFilters(): FilterState {
@@ -57,23 +67,25 @@ export function filterQuery(f: FilterState): string {
   return s === "" ? "" : `&${s}`;
 }
 
-// URL round-trip: filters, the day range AND the timezone are the URL's
-// query string; popstate/refresh restore them exactly (M6 Task 2 adds
-// tz — the viewer's chosen zone is shareable like every other filter).
-// Layout is deliberately NOT here (Task 4): URLs share what you are
-// looking at, not how your panels are arranged.
-export function filtersFromURL(search: string): { filters: FilterState; from: string | null; to: string | null; tz: string | null } {
+// URL round-trip: the page (view), filters, the day range AND the timezone
+// are the URL's query string; popstate/refresh restore them exactly (M6
+// Task 2 adds tz; M8 1A adds view — both shareable, like every other
+// filter). Layout is deliberately NOT here (M6 Task 4): URLs share what you
+// are looking at, not how your panels are arranged.
+export function filtersFromURL(search: string): { filters: FilterState; from: string | null; to: string | null; tz: string | null; view: View } {
   const p = new URLSearchParams(search);
   const filters = emptyFilters();
   for (const dim of facetDims) filters[dim] = p.getAll(dim);
-  return { filters, from: p.get("from"), to: p.get("to"), tz: p.get("tz") };
+  return { filters, from: p.get("from"), to: p.get("to"), tz: p.get("tz"), view: parseView(p.get("view")) };
 }
 
-export function filtersToURL(f: FilterState, from: string, to: string, tz: string): string {
+export function filtersToURL(f: FilterState, from: string, to: string, tz: string, view: View): string {
   const p = new URLSearchParams();
   p.set("from", from);
   p.set("to", to);
   p.set("tz", tz);
+  // Default home stays out of the URL, so existing home links are unchanged.
+  if (view === "detail") p.set("view", "detail");
   for (const dim of facetDims) {
     for (const v of f[dim]) p.append(dim, v);
   }
