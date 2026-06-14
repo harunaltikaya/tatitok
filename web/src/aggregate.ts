@@ -113,6 +113,56 @@ export function topFacets(values: FacetValue[], n: number): { shown: FacetValue[
   return { shown, othersValues: rest.length, othersEvents: rest.reduce((s, v) => s + v.events, 0) };
 }
 
+// railItems is the facet rail's display structure (M8 1G): the SAME family
+// collapse the main view uses (familyOf) folds vllm-* into one "vllm" group,
+// then — for long dims — the tail past top-N folds into an "others" group. Both
+// are expandable GROUPS (the rail renders the members when open). A pure
+// regroup/relabel of the served facet counts: a family group's count is the sum
+// of its members, and top-N + others = the dimension total (conserved — the
+// rail shows no number the inventory didn't). Group headers are expand toggles
+// only; the leaves (top-N entries, family members, others-tail) each filter by
+// their exact value.
+export type RailItem =
+  | { kind: "leaf"; value: string; events: number }
+  | { kind: "family" | "others"; key: string; label: string; events: number; members: { value: string; events: number }[] };
+
+export function railItems(values: FacetValue[], rolled: boolean, topN: number): RailItem[] {
+  // 1. Group by family (vllm-* → "vllm"), preserving first-seen order.
+  const byFam = new Map<string, FacetValue[]>();
+  const order: string[] = [];
+  for (const v of values) {
+    const fam = familyOf(v.value);
+    const g = byFam.get(fam);
+    if (g) g.push(v);
+    else {
+      byFam.set(fam, [v]);
+      order.push(fam);
+    }
+  }
+  // 2. A family with >1 member (or a lone member relabelled to the family) is a
+  //    collapsible group; everything else is a plain leaf (no-op collapse).
+  let items: RailItem[] = order.map((fam) => {
+    const members = byFam.get(fam)!;
+    const events = members.reduce((s, m) => s + m.events, 0);
+    const collapsible = members.length > 1 || members[0].value !== fam;
+    return collapsible
+      ? { kind: "family", key: fam, label: fam, events, members: members.map((m) => ({ value: m.value, events: m.events })) }
+      : { kind: "leaf", value: members[0].value, events };
+  });
+  // 3. Biggest first (stable tiebreak on the display key).
+  const keyOf = (i: RailItem) => (i.kind === "leaf" ? i.value : i.key);
+  items.sort((a, b) => b.events - a.events || (keyOf(a) < keyOf(b) ? -1 : keyOf(a) > keyOf(b) ? 1 : 0));
+  // 4. Long dims fold the tail past top-N into one "others" group; its members
+  //    are the tail flattened to leaves (each still filters by its exact value).
+  if (rolled && items.length > topN) {
+    const tail = items.slice(topN);
+    const members = tail.flatMap((i) => (i.kind === "leaf" ? [{ value: i.value, events: i.events }] : i.members));
+    const events = tail.reduce((s, i) => s + i.events, 0);
+    items = [...items.slice(0, topN), { kind: "others", key: "__others__", label: "others", events, members }];
+  }
+  return items;
+}
+
 // --- M8 1D: table sort -------------------------------------------------------
 
 // bucketRank tiers rows for the table sort: real entities (0) rank by the

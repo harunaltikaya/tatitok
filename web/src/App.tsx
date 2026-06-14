@@ -603,7 +603,7 @@ export default function App() {
       )}
 
       <div className="flex gap-4">
-        <FacetRail facets={facets} filters={filters} onToggle={toggle} rollup={view === "home"} />
+        <FacetRail facets={facets} filters={filters} onToggle={toggle} />
 
         <main className="min-w-0 flex-1">
           {view === "home" ? (

@@ -1,86 +1,143 @@
+import { useEffect, useState } from "react";
 import type { FacetValue } from "../api";
 import { compactTokens } from "../api";
 import { displayValue, facetDims, hasValue, type FacetDim, type FilterState } from "../filters";
-import { topFacets, FILTER_TOP_N } from "../aggregate";
+import { railItems, FILTER_TOP_N } from "../aggregate";
 import Card from "../ui/Card";
 
-// Dims whose value lists get the top-N + "others" rollup on home (M8 1C): the
-// long ones. The short dims (harness/provider/basis) always show in full.
+// The left facet rail (M5 Task 4, the owner's Qlik-style direction): every
+// filterable dimension with its stored values and event counts (from
+// /api/v1/meta/facets — all-time counts, the value inventory). Clicking a value
+// toggles it in the SAME global filter state every chart, table and total
+// obeys. Project values render locally only — the hub serves localhost, and
+// nothing here is ever exported.
+//
+// M8 1G — density on BOTH rails (home + detail): family collapse (vllm-* → one
+// "vllm" group) + top-N "+others" on the long dims, rendered as EXPANDABLE
+// groups. Display-only (railItems is a pure regroup of the served counts);
+// group headers are expand toggles, the leaves filter by exact value.
+
+// Long dims get the top-N + "others" tail; short dims (harness/provider/basis)
+// show every (family-collapsed) value.
 const ROLLED_DIMS: FacetDim[] = ["model", "project"];
 
-// The left facet rail (M5 Task 4, the owner's Qlik-style direction):
-// every filterable dimension with its stored values and event counts
-// (from /api/v1/meta/facets — all-time counts, the value inventory).
-// Clicking a value toggles it in the SAME global filter state every
-// chart, table and total obeys. Project values render locally only —
-// the hub serves localhost, and nothing here is ever exported.
+// Expansion (which family/others groups are open) is presentation DENSITY — it
+// persists to localStorage like theme/layout, never the URL (state-location
+// ruling). Default: all collapsed.
+const RAIL_KEY = "tatitok.rail.v1";
+
+function loadExpanded(): Set<string> {
+  if (typeof localStorage === "undefined") return new Set();
+  try {
+    const arr = JSON.parse(localStorage.getItem(RAIL_KEY) ?? "[]");
+    return Array.isArray(arr) ? new Set(arr.filter((x: unknown): x is string => typeof x === "string")) : new Set();
+  } catch {
+    return new Set();
+  }
+}
 
 export default function FacetRail({
   facets,
   filters,
   onToggle,
-  rollup = false,
 }: {
   facets: Record<string, FacetValue[]>;
   filters: FilterState;
   onToggle: (dim: FacetDim, value: string) => void;
-  // rollup (M8 1C): on home, fold the long value lists to top-N + "others";
-  // detail passes false to keep the full per-entity list.
-  rollup?: boolean;
 }) {
+  const [expanded, setExpanded] = useState<Set<string>>(loadExpanded);
+  useEffect(() => {
+    try {
+      localStorage.setItem(RAIL_KEY, JSON.stringify([...expanded]));
+    } catch {
+      /* storage disabled — expansion just won't persist */
+    }
+  }, [expanded]);
+  const toggleExpand = (id: string) =>
+    setExpanded((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+
+  // A leaf row: clicking toggles its EXACT value in the global filter state.
+  // indent marks a value revealed inside an expanded group.
+  const leaf = (dim: FacetDim, value: string, events: number, indent = false) => {
+    const selected = hasValue(filters, dim, value);
+    return (
+      <button
+        className={`flex w-full items-center justify-between rounded-[6px] py-1 text-left ${indent ? "pl-5 pr-1.5" : "px-1.5"}`}
+        style={
+          selected
+            ? { background: "var(--accent-soft)", color: "var(--accent)" }
+            : { background: "transparent", color: "var(--text-secondary)" }
+        }
+        onMouseEnter={(e) => {
+          if (!selected) e.currentTarget.style.background = "var(--surface-hover)";
+        }}
+        onMouseLeave={(e) => {
+          if (!selected) e.currentTarget.style.background = "transparent";
+        }}
+        onClick={() => onToggle(dim, value)}
+        title={`${displayValue(value)} — ${events} events (click to ${selected ? "unfilter" : "filter"})`}
+      >
+        <span className="truncate">{displayValue(value)}</span>
+        <span className="ml-2 shrink-0 text-xs tabular-nums" style={{ color: "var(--text-faint)" }}>
+          {compactTokens(events)}
+        </span>
+      </button>
+    );
+  };
+
   return (
     <aside className="w-56 shrink-0 space-y-3">
       {facetDims.map((dim) => {
         const all = facets[dim] ?? [];
         if (all.length === 0) return null;
-        // Home rolls the long lists (model, project) to top-N + "others"
-        // (M8 1C); detail and the short dims show every value.
-        const rolled = rollup && ROLLED_DIMS.includes(dim)
-          ? topFacets(all, FILTER_TOP_N)
-          : { shown: all, othersValues: 0, othersEvents: 0 };
+        const items = railItems(all, ROLLED_DIMS.includes(dim), FILTER_TOP_N);
         return (
           <Card key={dim} padding={12} title={dim}>
             <ul className="space-y-px text-sm">
-              {rolled.shown.map((v) => {
-                const selected = hasValue(filters, dim, v.value);
+              {items.map((item) => {
+                if (item.kind === "leaf") {
+                  return <li key={item.value}>{leaf(dim, item.value, item.events)}</li>;
+                }
+                // family / others GROUP: the header is an expand toggle ONLY
+                // (no filter semantics); its members are leaves, revealed when
+                // open and each filtering by its exact value.
+                const id = `${dim}:${item.key}`;
+                const open = expanded.has(id);
+                const header = item.kind === "others" ? `+${item.members.length} others` : item.label;
                 return (
-                  <li key={v.value}>
+                  <li key={id}>
                     <button
                       className="flex w-full items-center justify-between rounded-[6px] px-1.5 py-1 text-left"
-                      style={
-                        selected
-                          ? { background: "var(--accent-soft)", color: "var(--accent)" }
-                          : { background: "transparent", color: "var(--text-secondary)" }
-                      }
-                      onMouseEnter={(e) => {
-                        if (!selected) e.currentTarget.style.background = "var(--surface-hover)";
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!selected) e.currentTarget.style.background = "transparent";
-                      }}
-                      onClick={() => onToggle(dim, v.value)}
-                      title={`${displayValue(v.value)} — ${v.events} events (click to ${selected ? "unfilter" : "filter"})`}
+                      style={{ background: "transparent", color: "var(--text-tertiary)" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface-hover)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      onClick={() => toggleExpand(id)}
+                      aria-expanded={open}
+                      title={`${open ? "collapse" : "expand"} ${item.members.length} ${dim} value${item.members.length === 1 ? "" : "s"}`}
                     >
-                      <span className="truncate">{displayValue(v.value)}</span>
+                      <span className="truncate">
+                        <span aria-hidden="true" className="mr-1 inline-block w-2 text-faint">{open ? "▾" : "▸"}</span>
+                        {header}
+                      </span>
                       <span className="ml-2 shrink-0 text-xs tabular-nums" style={{ color: "var(--text-faint)" }}>
-                        {compactTokens(v.events)}
+                        {compactTokens(item.events)}
                       </span>
                     </button>
+                    {open && (
+                      <ul className="space-y-px">
+                        {item.members.map((m) => (
+                          <li key={m.value}>{leaf(dim, m.value, m.events, true)}</li>
+                        ))}
+                      </ul>
+                    )}
                   </li>
                 );
               })}
-              {rolled.othersValues > 0 && (
-                <li>
-                  <div
-                    className="flex w-full items-center justify-between rounded-[6px] px-1.5 py-1"
-                    style={{ color: "var(--text-faint)" }}
-                    title={`${rolled.othersValues} more ${dim} values not shown — open the detail page for the full list`}
-                  >
-                    <span className="truncate">+{rolled.othersValues} others</span>
-                    <span className="ml-2 shrink-0 text-xs tabular-nums">{compactTokens(rolled.othersEvents)}</span>
-                  </div>
-                </li>
-              )}
             </ul>
           </Card>
         );
