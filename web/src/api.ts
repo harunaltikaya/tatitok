@@ -25,6 +25,16 @@ export interface DailyByRow extends TokenSums, CostSums {
   key: string;
 }
 
+// One (weekday, hour) cell of the activity heatmap (M8 1L). weekday is Go's
+// time.Weekday (0=Sunday..6=Saturday); hour is 0..23 (local hour in the query
+// tz). events = count, tokens = total volume — the frontend picks the metric.
+export interface ActivityBucket {
+  weekday: number;
+  hour: number;
+  events: number;
+  tokens: number;
+}
+
 export interface ModelInfo {
   provider: string;
   model: string;
@@ -139,6 +149,12 @@ export function fetchDailyBy(
 
 export function fetchTotals(window: string, fq = "", tz = "UTC"): Promise<{ tz: string; days: number; totals: Totals }> {
   return getJSON(`/api/v1/totals?window=${window}&timezone=${encodeURIComponent(tz)}${fq}`);
+}
+
+// fetchActivity (M8 1L): the weekday×hour buckets for the heatmap — the SAME
+// filtered/timezoned range every other fetch obeys (one global state).
+export function fetchActivity(from: string, to: string, fq = "", tz = "UTC"): Promise<{ tz: string; buckets: ActivityBucket[] }> {
+  return getJSON(`/api/v1/stats/activity?from=${from}&to=${to}&timezone=${encodeURIComponent(tz)}${fq}`);
 }
 
 export function fetchModels(): Promise<{ models: ModelInfo[] }> {

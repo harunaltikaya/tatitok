@@ -87,6 +87,7 @@ func (h *Hub) registerAPI(mux *http.ServeMux) {
 	}
 	get("/api/v1/health", h.apiHealth)
 	get("/api/v1/stats/daily", h.apiStatsDaily)
+	get("/api/v1/stats/activity", h.apiActivity)
 	get("/api/v1/totals", h.apiTotals)
 	get("/api/v1/meta/models", h.apiMetaModels)
 	get("/api/v1/meta/facets", h.apiMetaFacets)
@@ -264,6 +265,48 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 	}
 	base["daily"] = filtered
 	writeJSON(w, http.StatusOK, base)
+}
+
+// apiActivity (M8 1L): the activity heatmap's source — events bucketed by
+// (weekday, hour) in tz over the range, under the active filters. An additive,
+// read-only VIEW of the same events the daily path serves (no new stored field,
+// no counting change); ≤168 buckets, empty cells absent. Same param parsing as
+// apiStatsDaily; tz is echoed (the bucketing zone).
+func (h *Hub) apiActivity(w http.ResponseWriter, r *http.Request) {
+	if err := checkParams(r, append([]string{"from", "to", "timezone"}, filterParamNames...)...); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
+	from, to, err := parseDayRange(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
+	tz, err := parseTimezone(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
+	f := parseFilters(r)
+	buckets, err := h.st.Activity(r.Context(), tz, from, to, f)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	if buckets == nil {
+		buckets = []store.ActivityBucket{}
+	}
+	payload := map[string]any{"tz": tz.String(), "buckets": buckets}
+	if from != "" {
+		payload["from"] = from
+	}
+	if to != "" {
+		payload["to"] = to
+	}
+	if !f.IsZero() {
+		payload["filters"] = f
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 var windowRe = regexp.MustCompile(`^([1-9][0-9]{0,2})d$`)

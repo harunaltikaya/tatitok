@@ -8,6 +8,7 @@ import {
   fetchModels,
   fetchPlans,
   fetchTotals,
+  fetchActivity,
   usd,
   compactTokens,
   totalTokens,
@@ -17,6 +18,7 @@ import {
   todayInTZ,
   daysAgoInTZ,
   tzOffsetLabel,
+  type ActivityBucket,
   type DailyByRow,
   type DailyRow,
   type FacetValue,
@@ -58,6 +60,7 @@ import Chart from "./components/Chart";
 import Breakdown from "./components/Breakdown";
 import { sumByKey, rollupRows, mergeFamilies, chartCells, sortTotals, brandColorFor, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
 import PlanCard from "./components/Plans";
+import Heatmap from "./components/Heatmap";
 import MeterBar from "./ui/MeterBar";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
@@ -265,6 +268,7 @@ export default function App() {
   const [byProvider, setByProvider] = useState<DailyByRow[]>([]);
   const [byHarness, setByHarness] = useState<DailyByRow[]>([]);
   const [byModel, setByModel] = useState<DailyByRow[]>([]);
+  const [activity, setActivity] = useState<ActivityBucket[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [facets, setFacets] = useState<Record<string, FacetValue[]>>({});
   const [today, setToday] = useState<Totals | null>(null);
@@ -348,13 +352,15 @@ export default function App() {
       fetchDailyBy("provider", f, t, q, z),
       fetchDailyBy("harness", f, t, q, z),
       fetchDailyBy("model", f, t, q, z),
+      fetchActivity(f, t, q, z),
     ])
-      .then(([d, p, h, m]) => {
+      .then(([d, p, h, m, a]) => {
         if (gen !== rangeGen.current) return; // superseded by a newer request
         setDaily(d.daily ?? []);
         setByProvider(p.daily_by ?? []);
         setByHarness(h.daily_by ?? []);
         setByModel(m.daily_by ?? []);
+        setActivity(a.buckets ?? []);
         setSource(d.source);
         setErr(null);
       })
@@ -725,6 +731,12 @@ export default function App() {
                   </div>
                 </Card>
               </div>
+
+              {/* Activity heatmap (M8 1L): weekday × hour "when you're active",
+                  over the same filtered/timezoned range. */}
+              <Card title="when you're active">
+                <Heatmap buckets={activity} />
+              </Card>
 
               <Card title={`by ${groupBy}`}>
                 {/* bases → ClassDots on model rows (M8 1E); rowColor → the

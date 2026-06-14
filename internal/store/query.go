@@ -41,6 +41,52 @@ func init() {
 			}
 			return t.In(loc).Format("2006-01-02"), nil
 		})
+	// tatitok_weekday(ts, tz) / tatitok_hour(ts, tz) bucket a UTC timestamp by
+	// its LOCAL weekday (0=Sunday..6=Saturday, Go's time.Weekday) and
+	// hour-of-day (0..23) in tz — the activity heatmap's buckets (M8 1L), the
+	// same tz rule tatitok_day uses, run inside SQL. Aggregating from events
+	// (not rollup_hourly) keeps this exact for fractional offsets (+05:30 etc.),
+	// where a UTC hour straddles two local hours.
+	sqlite.MustRegisterDeterministicScalarFunction("tatitok_weekday", 2,
+		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			ts, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("tatitok_weekday: ts is %T, want TEXT", args[0])
+			}
+			tzName, ok := args[1].(string)
+			if !ok {
+				return nil, fmt.Errorf("tatitok_weekday: tz is %T, want TEXT", args[1])
+			}
+			loc, err := lookupLocation(tzName)
+			if err != nil {
+				return nil, err
+			}
+			t, err := time.Parse(time.RFC3339Nano, ts)
+			if err != nil {
+				return nil, fmt.Errorf("tatitok_weekday: %w", err)
+			}
+			return int64(t.In(loc).Weekday()), nil
+		})
+	sqlite.MustRegisterDeterministicScalarFunction("tatitok_hour", 2,
+		func(_ *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) {
+			ts, ok := args[0].(string)
+			if !ok {
+				return nil, fmt.Errorf("tatitok_hour: ts is %T, want TEXT", args[0])
+			}
+			tzName, ok := args[1].(string)
+			if !ok {
+				return nil, fmt.Errorf("tatitok_hour: tz is %T, want TEXT", args[1])
+			}
+			loc, err := lookupLocation(tzName)
+			if err != nil {
+				return nil, err
+			}
+			t, err := time.Parse(time.RFC3339Nano, ts)
+			if err != nil {
+				return nil, fmt.Errorf("tatitok_hour: %w", err)
+			}
+			return int64(t.In(loc).Hour()), nil
+		})
 	// tatitok_source_id(harness, path) exposes core.SourceID to SQL so the
 	// source-lineage migration can backfill the sources table with the
 	// exact same ID the Go ingest path stamps.
@@ -439,6 +485,65 @@ func (s *Store) DailyBy(ctx context.Context, tz *time.Location, dim string, f Fi
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ActivityBucket is one (weekday, hour) cell of the activity heatmap (M8 1L):
+// the event count and token volume that fall in that LOCAL weekday × hour-of-
+// day in the query timezone. Weekday is Go's time.Weekday (0=Sunday..6=
+// Saturday); Hour is 0..23.
+type ActivityBucket struct {
+	Weekday int   `json:"weekday"`
+	Hour    int   `json:"hour"`
+	Events  int64 `json:"events"`
+	Tokens  int64 `json:"tokens"`
+}
+
+// Activity returns the weekday × hour activity buckets over [from, to] in tz,
+// restricted by f — a new VIEW of the same events the daily path serves. It
+// aggregates from usage_events (exact for every zone, fractional offsets
+// included — a UTC hour can't be split into a local hour under +05:30), bucketed
+// by (weekday, hour) in tz via tatitok_weekday/tatitok_hour, ranged with the
+// same tatitok_day the daily path uses, and filtered with the same
+// eventsPredicate. Tokens is the full volume (input+output+cache+reasoning);
+// Events the count. Read-only aggregation: no counting change. Empty buckets
+// are simply absent (≤168 rows).
+func (s *Store) Activity(ctx context.Context, tz *time.Location, from, to string, f Filters) ([]ActivityBucket, error) {
+	tzName := tz.String()
+	args := []any{tzName, tzName} // tatitok_weekday, tatitok_hour
+	where := ""
+	if from != "" {
+		where += " AND tatitok_day(ts, ?) >= ?"
+		args = append(args, tzName, from)
+	}
+	if to != "" {
+		where += " AND tatitok_day(ts, ?) <= ?"
+		args = append(args, tzName, to)
+	}
+	pred, fargs := f.eventsPredicate()
+	where += pred
+	args = append(args, fargs...)
+	rows, err := s.db.QueryContext(ctx, `SELECT
+			tatitok_weekday(ts, ?) AS wd, tatitok_hour(ts, ?) AS hr,
+			COUNT(*) AS events,
+			SUM(tokens_input + tokens_output + tokens_cache_write
+				+ tokens_cache_read + COALESCE(tokens_reasoning, 0)) AS tokens
+		FROM usage_events
+		WHERE 1=1`+where+`
+		GROUP BY wd, hr
+		ORDER BY wd, hr`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ActivityBucket
+	for rows.Next() {
+		var b ActivityBucket
+		if err := rows.Scan(&b.Weekday, &b.Hour, &b.Events, &b.Tokens); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
 	}
 	return out, rows.Err()
 }

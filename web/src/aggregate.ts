@@ -10,7 +10,7 @@
 // loaded directly by Node's test runner (groupby.test.ts), whose ESM resolver
 // needs the extension — unlike the bundle, where Vite resolves extensionless.
 // tsconfig allowImportingTsExtensions makes tsc accept them.
-import type { DailyByRow, FacetValue } from "./api.ts";
+import type { DailyByRow, FacetValue, ActivityBucket } from "./api.ts";
 import { totalTokens } from "./api.ts";
 import { displayValue, type Sort } from "./filters.ts";
 
@@ -289,4 +289,20 @@ const BRAND_COLORS: Record<string, string> = {
 // the brand never leaks into the model or harness groupings.
 export function brandColorFor(provider: string): string | null {
   return BRAND_COLORS[provider] ?? null;
+}
+
+// --- M8 1L: activity heatmap grid -------------------------------------------
+
+// activityGrid densifies the served ≤168 buckets into a 7×24 matrix of the
+// chosen metric: grid[weekday][hour] (weekday Go-style 0=Sunday..6=Saturday;
+// the renderer reorders Monday-first), 0 where a bucket is absent. A pure
+// densify — Σ grid = Σ buckets (conserved), no recount.
+export function activityGrid(buckets: ActivityBucket[], metric: (b: ActivityBucket) => number): number[][] {
+  const grid = Array.from({ length: 7 }, () => new Array<number>(24).fill(0));
+  for (const b of buckets) {
+    if (b.weekday >= 0 && b.weekday < 7 && b.hour >= 0 && b.hour < 24) {
+      grid[b.weekday][b.hour] += metric(b);
+    }
+  }
+  return grid;
 }
