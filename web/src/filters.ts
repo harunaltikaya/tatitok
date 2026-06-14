@@ -23,11 +23,12 @@ export function parseView(v: string | null): View {
 // GroupBy is the home overview's aggregation dimension (M8 chunk 1B): the
 // primary chart, the value donut and the ranked table all re-aggregate by
 // it. Shareable view state → URL beside view/filters/range/tz (owner ruling).
-// Default provider (the 1A home default); null/unknown → provider.
+// Default model (1C's family + top-N rollup tames the by-model long tail);
+// null/unknown → model.
 export type GroupBy = "harness" | "provider" | "model";
 
 export function parseGroupBy(v: string | null): GroupBy {
-  return v === "harness" || v === "model" ? v : "provider";
+  return v === "harness" || v === "provider" ? v : "model";
 }
 
 export type FilterState = Record<FacetDim, string[]>;
@@ -94,10 +95,10 @@ export function filtersToURL(f: FilterState, from: string, to: string, tz: strin
   p.set("from", from);
   p.set("to", to);
   p.set("tz", tz);
-  // Defaults (home, provider) stay out of the URL, so existing links are
-  // unchanged and the common case is the shortest.
+  // Defaults (home, model) stay out of the URL, so the common case is the
+  // shortest link.
   if (view === "detail") p.set("view", "detail");
-  if (groupBy !== "provider") p.set("groupBy", groupBy);
+  if (groupBy !== "model") p.set("groupBy", groupBy);
   for (const dim of facetDims) {
     for (const v of f[dim]) p.append(dim, v);
   }

@@ -1,7 +1,12 @@
 import type { FacetValue } from "../api";
 import { compactTokens } from "../api";
 import { displayValue, facetDims, hasValue, type FacetDim, type FilterState } from "../filters";
+import { topFacets, FILTER_TOP_N } from "../aggregate";
 import Card from "../ui/Card";
+
+// Dims whose value lists get the top-N + "others" rollup on home (M8 1C): the
+// long ones. The short dims (harness/provider/basis) always show in full.
+const ROLLED_DIMS: FacetDim[] = ["model", "project"];
 
 // The left facet rail (M5 Task 4, the owner's Qlik-style direction):
 // every filterable dimension with its stored values and event counts
@@ -14,20 +19,29 @@ export default function FacetRail({
   facets,
   filters,
   onToggle,
+  rollup = false,
 }: {
   facets: Record<string, FacetValue[]>;
   filters: FilterState;
   onToggle: (dim: FacetDim, value: string) => void;
+  // rollup (M8 1C): on home, fold the long value lists to top-N + "others";
+  // detail passes false to keep the full per-entity list.
+  rollup?: boolean;
 }) {
   return (
     <aside className="w-56 shrink-0 space-y-3">
       {facetDims.map((dim) => {
-        const vals = facets[dim] ?? [];
-        if (vals.length === 0) return null;
+        const all = facets[dim] ?? [];
+        if (all.length === 0) return null;
+        // Home rolls the long lists (model, project) to top-N + "others"
+        // (M8 1C); detail and the short dims show every value.
+        const rolled = rollup && ROLLED_DIMS.includes(dim)
+          ? topFacets(all, FILTER_TOP_N)
+          : { shown: all, othersValues: 0, othersEvents: 0 };
         return (
           <Card key={dim} padding={12} title={dim}>
             <ul className="space-y-px text-sm">
-              {vals.map((v) => {
+              {rolled.shown.map((v) => {
                 const selected = hasValue(filters, dim, v.value);
                 return (
                   <li key={v.value}>
@@ -55,6 +69,18 @@ export default function FacetRail({
                   </li>
                 );
               })}
+              {rolled.othersValues > 0 && (
+                <li>
+                  <div
+                    className="flex w-full items-center justify-between rounded-[6px] px-1.5 py-1"
+                    style={{ color: "var(--text-faint)" }}
+                    title={`${rolled.othersValues} more ${dim} values not shown — open the detail page for the full list`}
+                  >
+                    <span className="truncate">+{rolled.othersValues} others</span>
+                    <span className="ml-2 shrink-0 text-xs tabular-nums">{compactTokens(rolled.othersEvents)}</span>
+                  </div>
+                </li>
+              )}
             </ul>
           </Card>
         );

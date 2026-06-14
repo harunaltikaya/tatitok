@@ -10,7 +10,7 @@
 // loaded directly by Node's test runner (groupby.test.ts), whose ESM resolver
 // needs the extension — unlike the bundle, where Vite resolves extensionless.
 // tsconfig allowImportingTsExtensions makes tsc accept them.
-import type { DailyByRow } from "./api.ts";
+import type { DailyByRow, FacetValue } from "./api.ts";
 import { totalTokens } from "./api.ts";
 import { displayValue } from "./filters.ts";
 
@@ -37,4 +37,76 @@ export function sumByKey(rows: DailyByRow[]): KeyTotals[] {
     acc.set(r.key, t);
   }
   return [...acc.values()].sort((a, b) => b.costMicro - a.costMicro || b.tokens - a.tokens);
+}
+
+// --- M8 1C: home-only rollup (family collapse + top-N/others) ----------------
+// These are DISPLAY aggregations layered over the same served daily_by rows —
+// they relabel/fold keys, never re-count, so every total is conserved (proven
+// in rollup.test.ts). The detail page keeps the full per-entity breakdown; only
+// the home overview rolls up.
+
+// HOME_TOP_N drives the home chart/donut/table (top-5 + others); FILTER_TOP_N
+// the left-pane model/project lists (top-10 + others, owner ruling).
+export const HOME_TOP_N = 5;
+export const FILTER_TOP_N = 10;
+
+// OTHERS_KEY is the synthetic bucket the remainder folds into. It is NOT a real
+// facet value — the home click-to-filter guards against it (and collapsed
+// families) so a rolled-up bucket never applies a bogus single-value filter.
+export const OTHERS_KEY = "others";
+
+// FAMILY_PREFIXES collapse related providers to one family bucket on the home
+// overview (vllm-0.6, vllm-0.7 → "vllm"). Conservative: only a declared prefix
+// as a whole token or "<prefix>-…" collapses, so model names like
+// "claude-sonnet-4-6" are never split.
+const FAMILY_PREFIXES = ["vllm"];
+
+export function familyOf(key: string): string {
+  for (const p of FAMILY_PREFIXES) {
+    if (key === p || key.startsWith(p + "-")) return p;
+  }
+  return key;
+}
+
+// collapseFamilies relabels each row to its family (display-only; preserves
+// every number → the family bucket equals the sum of its members).
+export function collapseFamilies(rows: DailyByRow[]): DailyByRow[] {
+  return rows.map((r) => {
+    const fam = familyOf(r.key);
+    return fam === r.key ? r : { ...r, key: fam };
+  });
+}
+
+// rollupRows collapses families, then keeps the top-N keys by API-equivalent
+// value (the home's primary metric; tokens then key name as tiebreaks, for a
+// stable pick) and folds the rest into OTHERS_KEY. A pure relabel, so
+// top-N + others = grand total for every measure. Feed the result to the same
+// dailyStackedChart / valueDonut / sumByKey the detail page uses — the rollup
+// is the only change between the two presentations.
+export function rollupRows(rows: DailyByRow[], topN: number): DailyByRow[] {
+  const collapsed = collapseFamilies(rows);
+  const equiv = new Map<string, number>();
+  const tokens = new Map<string, number>();
+  for (const r of collapsed) {
+    equiv.set(r.key, (equiv.get(r.key) ?? 0) + r.costAPIEquivMicro);
+    tokens.set(r.key, (tokens.get(r.key) ?? 0) + totalTokens(r));
+  }
+  if (equiv.size <= topN) return collapsed; // nothing to fold
+  const ranked = [...equiv.keys()].sort((a, b) =>
+    (equiv.get(b)! - equiv.get(a)!) ||
+    (tokens.get(b)! - tokens.get(a)!) ||
+    (a < b ? -1 : 1));
+  const top = new Set(ranked.slice(0, topN));
+  return collapsed.map((r) => (top.has(r.key) ? r : { ...r, key: OTHERS_KEY }));
+}
+
+// topFacets is the left-pane analog (M8 1C): a dimension's values by event
+// count desc, top n kept, the remainder summarized as a single non-interactive
+// "others" tally (how many values folded + their total events). shown events +
+// othersEvents = the dimension's total events (conserved).
+export function topFacets(values: FacetValue[], n: number): { shown: FacetValue[]; othersValues: number; othersEvents: number } {
+  const sorted = [...values].sort((a, b) => b.events - a.events || (a.value < b.value ? -1 : 1));
+  const shown = sorted.slice(0, n);
+  const rest = sorted.slice(n);
+  return { shown, othersValues: rest.length, othersEvents: rest.reduce((s, v) => s + v.events, 0) };
 }

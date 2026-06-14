@@ -17,23 +17,23 @@ test("groupBy: URL round-trip (default provider omitted) and grand-total conserv
   assert.equal(parseGroupBy("harness"), "harness");
   assert.equal(parseGroupBy("provider"), "provider");
   assert.equal(parseGroupBy("model"), "model");
-  assert.equal(parseGroupBy(null), "provider");
-  assert.equal(parseGroupBy("bogus"), "provider");
+  assert.equal(parseGroupBy(null), "model");
+  assert.equal(parseGroupBy("bogus"), "model");
 
   const f = emptyFilters();
   const from = "2026-06-01";
   const to = "2026-06-14";
   const tz = "UTC";
 
-  // Default provider stays OUT of the URL (like default home), so existing
-  // links are unchanged.
-  const provURL = filtersToURL(f, from, to, tz, "home", "provider");
-  assert.equal(provURL, `?from=${from}&to=${to}&tz=${tz}`);
-  assert.ok(!provURL.includes("groupBy="));
-  assert.equal(filtersFromURL(provURL).groupBy, "provider");
+  // Default model stays OUT of the URL (like default home), so the common
+  // link is the shortest.
+  const modelURL = filtersToURL(f, from, to, tz, "home", "model");
+  assert.equal(modelURL, `?from=${from}&to=${to}&tz=${tz}`);
+  assert.ok(!modelURL.includes("groupBy="));
+  assert.equal(filtersFromURL(modelURL).groupBy, "model");
 
   // The non-default dimensions write the param and survive serialize→parse.
-  for (const g of ["harness", "model"] as const) {
+  for (const g of ["harness", "provider"] as const) {
     const url = filtersToURL(f, from, to, tz, "home", g);
     assert.ok(url.includes(`groupBy=${g}`));
     assert.equal(filtersFromURL(url).groupBy, g);

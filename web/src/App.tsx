@@ -52,7 +52,7 @@ import { useStream } from "./useStream";
 import { THEMES, loadTheme, saveTheme, applyTheme } from "./theme";
 import Chart from "./components/Chart";
 import Breakdown from "./components/Breakdown";
-import { sumByKey } from "./aggregate";
+import { sumByKey, rollupRows, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
 import PlanCard from "./components/Plans";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
@@ -86,6 +86,9 @@ const axisText = { color: "#a1a1aa", fontSize: 11, fontFamily: "Jost, sans-serif
 // color only has to be calm, non-rainbow, and stable per entity.)
 const SERIES_PALETTE = ["#a78bfa", "#38bdf8", "#f5b547", "#4ade80", "#6b7fd7", "#c98bb0"];
 function seriesColor(key: string): string {
+  // The rolled-up "others" bucket (M8 1C) is an aggregate, not an entity — a
+  // muted grey keeps it from reading like a real provider/model/harness.
+  if (key === OTHERS_KEY) return "#52525b";
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
   return SERIES_PALETTE[h % SERIES_PALETTE.length];
@@ -402,12 +405,29 @@ export default function App() {
   // per-dimension panels, so groupBy drives home only. groupRows just selects
   // which already-fetched daily_by set the home chart/donut/table read.
   const groupRows = groupBy === "harness" ? byHarness : groupBy === "model" ? byModel : byProvider;
+  // Rollup (M8 1C): collapse families (vllm-*) and fold all but the top-N into
+  // an "others" bucket — a pure relabel of the same served rows (conserved).
+  // Feeding the rolled rows to the same chart/donut/sumByKey yields a calm
+  // top-N overview; the detail page keeps the full per-entity breakdown.
+  const homeRollup = useMemo(() => rollupRows(groupRows, HOME_TOP_N), [groupRows]);
   const homeChart = useMemo(
-    () => dailyStackedChart(groupRows, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`),
-    [groupRows],
+    () => dailyStackedChart(homeRollup, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`),
+    [homeRollup],
   );
-  const homeDonut = useMemo(() => valueDonut(groupRows), [groupRows]);
-  const onGroupSeries = (name: string) => toggle(groupBy, rawValue(name));
+  const homeDonut = useMemo(() => valueDonut(homeRollup), [homeRollup]);
+  // "others" sinks to the bottom of the table regardless of its magnitude.
+  const homeTable = useMemo(
+    () => sumByKey(homeRollup).sort((a, b) => Number(a.raw === OTHERS_KEY) - Number(b.raw === OTHERS_KEY)),
+    [homeRollup],
+  );
+  // Click-to-filter only on REAL facet values: rolled-up buckets ("others",
+  // collapsed families) are display aggregates, not single filter values, so a
+  // click on one is ignored rather than applying a filter that matches nothing.
+  const onGroupSelect = (raw: string) => {
+    if (!(facets[groupBy] ?? []).some((fv) => fv.value === raw)) return;
+    toggle(groupBy, raw);
+  };
+  const onGroupSeries = (name: string) => onGroupSelect(rawValue(name));
 
   const chips = facetDims.flatMap((dim) => filters[dim].map((v) => ({ dim, value: v })));
 
@@ -556,7 +576,7 @@ export default function App() {
       )}
 
       <div className="flex gap-4">
-        <FacetRail facets={facets} filters={filters} onToggle={toggle} />
+        <FacetRail facets={facets} filters={filters} onToggle={toggle} rollup={view === "home"} />
 
         <main className="min-w-0 flex-1">
           {view === "home" ? (
@@ -617,7 +637,7 @@ export default function App() {
               </div>
 
               <Card title={`by ${groupBy}`}>
-                <Breakdown totals={sumByKey(groupRows)} onSelect={(raw) => toggle(groupBy, raw)} active={filters[groupBy]} />
+                <Breakdown totals={homeTable} onSelect={onGroupSelect} active={filters[groupBy]} />
               </Card>
             </div>
           ) : (
