@@ -183,6 +183,17 @@ export function totalTokens(t: TokenSums): number {
   return t.inputTokens + t.outputTokens + t.cacheCreationTokens + t.cacheReadTokens;
 }
 
+// freshCachedSplit (M8 1K) breaks a token total into "cached" (cache-read —
+// served from the prompt cache) vs "fresh" (everything else: input + output +
+// cache-creation/writes). A pure display split of the already-served counts:
+// fresh + cached = total (conserved); it never changes the total. cachedShare
+// is the cached fraction (0 when there are no tokens, so no divide-by-zero).
+export function freshCachedSplit(t: TokenSums): { fresh: number; cached: number; total: number; cachedShare: number } {
+  const total = totalTokens(t);
+  const cached = t.cacheReadTokens;
+  return { fresh: total - cached, cached, total, cachedShare: total > 0 ? cached / total : 0 };
+}
+
 // Timezone helpers for the range picker (M6 Task 2). The browser only
 // detects the IANA NAME (Intl) and picks default range bounds; the
 // SERVER does the authoritative day bucketing against its embedded

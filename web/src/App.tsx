@@ -11,6 +11,7 @@ import {
   usd,
   compactTokens,
   totalTokens,
+  freshCachedSplit,
   browserTZ,
   availableTZs,
   todayInTZ,
@@ -57,6 +58,7 @@ import Chart from "./components/Chart";
 import Breakdown from "./components/Breakdown";
 import { sumByKey, rollupRows, mergeFamilies, chartCells, sortTotals, brandColorFor, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
 import PlanCard from "./components/Plans";
+import MeterBar from "./ui/MeterBar";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
 import Mark from "./ui/Mark";
@@ -450,7 +452,26 @@ export default function App() {
   // so the two pages state the same number by construction.
   const rangeEquiv = useMemo(() => daily.reduce((n, r) => n + r.costAPIEquivMicro, 0), [daily]);
   const rangeActual = useMemo(() => daily.reduce((n, r) => n + r.costUSDMicro, 0), [daily]);
-  const rangeTokens = useMemo(() => daily.reduce((n, r) => n + totalTokens(r), 0), [daily]);
+  // Token split (M8 1K): the range's tokens broken into cached (cache-read) vs
+  // fresh — display only, fresh + cached = total (the total is unchanged).
+  // rangeTokenSums sums the four served token columns; freshCachedSplit derives
+  // the binary; cacheTitle/cachedPct are the shared readout bits.
+  const rangeTokenSums = useMemo(
+    () =>
+      daily.reduce(
+        (a, r) => ({
+          inputTokens: a.inputTokens + r.inputTokens,
+          outputTokens: a.outputTokens + r.outputTokens,
+          cacheCreationTokens: a.cacheCreationTokens + r.cacheCreationTokens,
+          cacheReadTokens: a.cacheReadTokens + r.cacheReadTokens,
+        }),
+        { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 },
+      ),
+    [daily],
+  );
+  const tokenSplit = freshCachedSplit(rangeTokenSums);
+  const cachedPct = Math.round(tokenSplit.cachedShare * 100);
+  const cacheTitle = `${tokenSplit.cached.toLocaleString()} tokens read from the prompt cache (cached); ${tokenSplit.fresh.toLocaleString()} freshly processed (fresh = input + output + cache writes); ${tokenSplit.total.toLocaleString()} total`;
 
   // Group-by (M8 1B): the home overview re-aggregates by the chosen dimension
   // — same served rows, different key, so the grand total is invariant across
@@ -657,6 +678,15 @@ export default function App() {
                   vs {usd(rangeActual)} actual out-of-pocket
                   {rangeActual > 0 && rangeEquiv > 0 && ` · ${(rangeEquiv / rangeActual).toFixed(1)}× extracted`}
                 </div>
+                {/* Token fresh-vs-cached split (M8 1K): the cache-efficiency
+                    headline — cached (prompt cache) vs fresh, summing to total.
+                    Display only; the total is unchanged. */}
+                <div className="mt-2 text-xs text-faint tabular-nums" title={cacheTitle} style={{ cursor: "help" }}>
+                  {compactTokens(tokenSplit.total)} tokens · {cachedPct}% cached
+                </div>
+                {tokenSplit.total > 0 && (
+                  <MeterBar value={tokenSplit.cached} max={tokenSplit.total} tone="positive" height={4} style={{ marginTop: 6 }} />
+                )}
               </Card>
 
               {/* Group-by (M8 1B): one segmented control drives the chart,
@@ -764,7 +794,10 @@ export default function App() {
                       unpricedTitle={`${rangeUnpriced} events in range carry no resolvable price — cost is a floor (the CLI's asterisk).`}
                       sub="actual cost"
                     />
-                    <Stat value={compactTokens(rangeTokens)} sub="tokens" />
+                    <Stat
+                      value={compactTokens(tokenSplit.total)}
+                      sub={<span title={cacheTitle} style={{ cursor: "help" }}>tokens · {cachedPct}% cached</span>}
+                    />
                     <Stat value={String(daily.length)} sub="active days" />
                   </div>
                 </Card>
