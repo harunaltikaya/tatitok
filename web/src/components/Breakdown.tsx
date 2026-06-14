@@ -4,35 +4,12 @@
 // API-equivalent shows the equivalent as secondary text; any key with
 // unpriced events gets the CLI's asterisk with a tooltip.
 
-import type { DailyByRow } from "../api";
-import { compactTokens, totalTokens, usd } from "../api";
-import { displayValue } from "../filters";
+import { compactTokens, usd } from "../api";
+import type { KeyTotals } from "../aggregate";
 import Badge from "../ui/Badge";
 
-export interface KeyTotals {
-  key: string; // display form ("(none)" for the empty value)
-  raw: string; // the stored value — what a click filters on
-  tokens: number;
-  costMicro: number;
-  equivMicro: number;
-  unpriced: number;
-}
-
-export function sumByKey(rows: DailyByRow[]): KeyTotals[] {
-  const acc = new Map<string, KeyTotals>();
-  for (const r of rows) {
-    const t = acc.get(r.key) ?? {
-      key: displayValue(r.key), raw: r.key,
-      tokens: 0, costMicro: 0, equivMicro: 0, unpriced: 0,
-    };
-    t.tokens += totalTokens(r);
-    t.costMicro += r.costUSDMicro;
-    t.equivMicro += r.costAPIEquivMicro;
-    t.unpriced += r.unpricedEvents;
-    acc.set(r.key, t);
-  }
-  return [...acc.values()].sort((a, b) => b.costMicro - a.costMicro || b.tokens - a.tokens);
-}
+// KeyTotals + sumByKey moved to ../aggregate (M8 1B) so the pure aggregation
+// is unit-testable without pulling this JSX component into Node's test runner.
 
 const unpricedTip = (n: number) =>
   `${n} event${n === 1 ? "" : "s"} in this range carry no resolvable price — the cost shown is a floor, not a total (same convention as the CLI's asterisk).`;

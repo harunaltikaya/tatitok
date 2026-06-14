@@ -21,14 +21,15 @@ test("view URL-state: parseView, home omits view=, detail writes it, survives a 
   const to = "2026-06-14";
   const tz = "UTC";
 
-  // Default home stays OUT of the URL — byte-identical to the pre-1A
-  // serialization (from/to/tz only), so existing home bookmarks are unchanged.
-  const homeURL = filtersToURL(f, from, to, tz, "home");
+  // Default home (+ default-provider group-by) stays OUT of the URL —
+  // byte-identical to the pre-1A serialization (from/to/tz only), so existing
+  // home bookmarks are unchanged.
+  const homeURL = filtersToURL(f, from, to, tz, "home", "provider");
   assert.equal(homeURL, `?from=${from}&to=${to}&tz=${tz}`);
   assert.ok(!homeURL.includes("view="));
 
   // Detail writes the param.
-  const detailURL = filtersToURL(f, from, to, tz, "detail");
+  const detailURL = filtersToURL(f, from, to, tz, "detail", "provider");
   assert.ok(detailURL.includes("view=detail"));
 
   // Both survive serialize → parse (the refresh / popstate path).

@@ -20,6 +20,16 @@ export function parseView(v: string | null): View {
   return v === "detail" ? "detail" : "home";
 }
 
+// GroupBy is the home overview's aggregation dimension (M8 chunk 1B): the
+// primary chart, the value donut and the ranked table all re-aggregate by
+// it. Shareable view state → URL beside view/filters/range/tz (owner ruling).
+// Default provider (the 1A home default); null/unknown → provider.
+export type GroupBy = "harness" | "provider" | "model";
+
+export function parseGroupBy(v: string | null): GroupBy {
+  return v === "harness" || v === "model" ? v : "provider";
+}
+
 export type FilterState = Record<FacetDim, string[]>;
 
 export function emptyFilters(): FilterState {
@@ -67,25 +77,27 @@ export function filterQuery(f: FilterState): string {
   return s === "" ? "" : `&${s}`;
 }
 
-// URL round-trip: the page (view), filters, the day range AND the timezone
-// are the URL's query string; popstate/refresh restore them exactly (M6
-// Task 2 adds tz; M8 1A adds view — both shareable, like every other
-// filter). Layout is deliberately NOT here (M6 Task 4): URLs share what you
-// are looking at, not how your panels are arranged.
-export function filtersFromURL(search: string): { filters: FilterState; from: string | null; to: string | null; tz: string | null; view: View } {
+// URL round-trip: the page (view), group-by, filters, the day range AND the
+// timezone are the URL's query string; popstate/refresh restore them exactly
+// (M6 Task 2 adds tz; M8 1A adds view, 1B adds groupBy — all shareable, like
+// every other filter). Layout is deliberately NOT here (M6 Task 4): URLs
+// share what you are looking at, not how your panels are arranged.
+export function filtersFromURL(search: string): { filters: FilterState; from: string | null; to: string | null; tz: string | null; view: View; groupBy: GroupBy } {
   const p = new URLSearchParams(search);
   const filters = emptyFilters();
   for (const dim of facetDims) filters[dim] = p.getAll(dim);
-  return { filters, from: p.get("from"), to: p.get("to"), tz: p.get("tz"), view: parseView(p.get("view")) };
+  return { filters, from: p.get("from"), to: p.get("to"), tz: p.get("tz"), view: parseView(p.get("view")), groupBy: parseGroupBy(p.get("groupBy")) };
 }
 
-export function filtersToURL(f: FilterState, from: string, to: string, tz: string, view: View): string {
+export function filtersToURL(f: FilterState, from: string, to: string, tz: string, view: View, groupBy: GroupBy): string {
   const p = new URLSearchParams();
   p.set("from", from);
   p.set("to", to);
   p.set("tz", tz);
-  // Default home stays out of the URL, so existing home links are unchanged.
+  // Defaults (home, provider) stay out of the URL, so existing links are
+  // unchanged and the common case is the shortest.
   if (view === "detail") p.set("view", "detail");
+  if (groupBy !== "provider") p.set("groupBy", groupBy);
   for (const dim of facetDims) {
     for (const v of f[dim]) p.append(dim, v);
   }

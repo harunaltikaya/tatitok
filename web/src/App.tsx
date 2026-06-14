@@ -36,6 +36,7 @@ import {
   toggleValue,
   type FacetDim,
   type FilterState,
+  type GroupBy,
   type View,
 } from "./filters";
 import { dayTotal, topModelsAtDay } from "./tooltip";
@@ -50,7 +51,8 @@ import {
 import { useStream } from "./useStream";
 import { THEMES, loadTheme, saveTheme, applyTheme } from "./theme";
 import Chart from "./components/Chart";
-import Breakdown, { sumByKey } from "./components/Breakdown";
+import Breakdown from "./components/Breakdown";
+import { sumByKey } from "./aggregate";
 import PlanCard from "./components/Plans";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
@@ -89,13 +91,14 @@ function seriesColor(key: string): string {
   return SERIES_PALETTE[h % SERIES_PALETTE.length];
 }
 
-// dailyProviderChart is the stacked-by-provider daily bar chart. Its
-// tooltip (M6 Task 3) shows a day-total line above the per-provider
-// breakdown; passing modelBreakdown adds a by-model section (top 5 +
-// "other") for the tokens and API-equivalent charts. Every tooltip
-// number is computed from the SAME filtered, timezoned daily_by rows the
-// bars render, so the tooltip cannot disagree with its chart.
-function dailyProviderChart(
+// dailyStackedChart is the stacked daily bar chart, stacked by whatever
+// dimension keys the rows — provider on the detail charts; the group-by
+// dimension on the home overview (M8 1B). Its tooltip (M6 Task 3) shows a
+// day-total line above the per-series breakdown; passing modelBreakdown adds
+// a by-model section (top 5 + "other"). Every tooltip number is computed from
+// the SAME filtered, timezoned daily_by rows the bars render, so the tooltip
+// cannot disagree with its chart.
+function dailyStackedChart(
   rows: DailyByRow[],
   value: (r: DailyByRow) => number,
   fmt: (v: number) => string,
@@ -154,14 +157,15 @@ function dailyProviderChart(
   };
 }
 
-// providerDonut (M8 1A): the by-provider value donut on the home overview.
-// Same per-entity hue as the bars (seriesColor) over the SAME served
-// by-provider rows — display-only re-presentation, no counting change.
-// Value is API-equivalent (the primary value metric). itemStyle colors are
-// concrete hexes because ECharts' SVG itemStyle does not resolve CSS vars
-// (the reason dailyProviderChart hard-codes its palette); the HTML tooltip
-// does resolve them, so it keeps the design-system vars.
-function providerDonut(rows: DailyByRow[]): EChartsOption {
+// valueDonut (M8 1A): the value donut on the home overview, sliced by
+// whatever dimension keys the rows — provider by default, the group-by
+// dimension at 1B. Same per-entity hue as the bars (seriesColor) over the
+// SAME served rows — display-only re-presentation, no counting change. Value
+// is API-equivalent (the primary value metric). itemStyle colors are concrete
+// hexes because ECharts' SVG itemStyle does not resolve CSS vars (the reason
+// dailyStackedChart hard-codes its palette); the HTML tooltip does resolve
+// them, so it keeps the design-system vars.
+function valueDonut(rows: DailyByRow[]): EChartsOption {
   const byKey = new Map<string, number>();
   for (const r of rows) byKey.set(r.key, (byKey.get(r.key) ?? 0) + r.costAPIEquivMicro / 1e6);
   const data = [...byKey.entries()]
@@ -218,6 +222,9 @@ export default function App() {
   // Page (M8 1A): home | detail. Shareable view state → URL (owner ruling),
   // restored by popstate/refresh like filters/range/tz. Default home.
   const [view, setView] = useState<View>(initial.view);
+  // Group-by (M8 1B): the home overview's aggregation dimension. Shareable →
+  // URL like view; default provider. Drives the home chart/donut/table only.
+  const [groupBy, setGroupBy] = useState<GroupBy>(initial.groupBy);
   const [daily, setDaily] = useState<DailyRow[]>([]);
   const [byProvider, setByProvider] = useState<DailyByRow[]>([]);
   const [byHarness, setByHarness] = useState<DailyByRow[]>([]);
@@ -250,11 +257,11 @@ export default function App() {
   // URL sync (replaceState — every click is not a history entry) and
   // back/forward restore. tz round-trips alongside filters and range.
   useEffect(() => {
-    const url = filtersToURL(filters, from, to, tz, view);
+    const url = filtersToURL(filters, from, to, tz, view, groupBy);
     if (window.location.search !== url) {
       window.history.replaceState(null, "", url);
     }
-  }, [filters, from, to, tz, view]);
+  }, [filters, from, to, tz, view, groupBy]);
   useEffect(() => {
     const onPop = () => {
       const s = filtersFromURL(window.location.search);
@@ -263,6 +270,7 @@ export default function App() {
       if (s.to) setTo(s.to);
       if (s.tz) setTz(s.tz);
       setView(s.view);
+      setGroupBy(s.groupBy);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -352,16 +360,16 @@ export default function App() {
   // it is near-empty, so a model breakdown of ~$0 adds nothing). byModel
   // is the same filtered/timezoned set the bars use.
   const equivChart = useMemo(
-    () => dailyProviderChart(byProvider, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`,
+    () => dailyStackedChart(byProvider, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`,
       { rows: byModel, value: (r) => r.costAPIEquivMicro / 1e6 }),
     [byProvider, byModel],
   );
   const actualChart = useMemo(
-    () => dailyProviderChart(byProvider, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`),
+    () => dailyStackedChart(byProvider, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`),
     [byProvider],
   );
   const tokenChart = useMemo(
-    () => dailyProviderChart(byProvider, totalTokens, compactTokens,
+    () => dailyStackedChart(byProvider, totalTokens, compactTokens,
       { rows: byModel, value: totalTokens }),
     [byProvider, byModel],
   );
@@ -387,7 +395,19 @@ export default function App() {
   const rangeEquiv = useMemo(() => daily.reduce((n, r) => n + r.costAPIEquivMicro, 0), [daily]);
   const rangeActual = useMemo(() => daily.reduce((n, r) => n + r.costUSDMicro, 0), [daily]);
   const rangeTokens = useMemo(() => daily.reduce((n, r) => n + totalTokens(r), 0), [daily]);
-  const providerDonutOpt = useMemo(() => providerDonut(byProvider), [byProvider]);
+
+  // Group-by (M8 1B): the home overview re-aggregates by the chosen dimension
+  // — same served rows, different key, so the grand total is invariant across
+  // dimensions (conservation). The detail page keeps its dedicated
+  // per-dimension panels, so groupBy drives home only. groupRows just selects
+  // which already-fetched daily_by set the home chart/donut/table read.
+  const groupRows = groupBy === "harness" ? byHarness : groupBy === "model" ? byModel : byProvider;
+  const homeChart = useMemo(
+    () => dailyStackedChart(groupRows, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`),
+    [groupRows],
+  );
+  const homeDonut = useMemo(() => valueDonut(groupRows), [groupRows]);
+  const onGroupSeries = (name: string) => toggle(groupBy, rawValue(name));
 
   const chips = facetDims.flatMap((dim) => filters[dim].map((v) => ({ dim, value: v })));
 
@@ -559,13 +579,33 @@ export default function App() {
                 </div>
               </Card>
 
+              {/* Group-by (M8 1B): one segmented control drives the chart,
+                  donut and table below; the choice is shareable → URL. */}
+              <div className="flex items-center gap-2 text-xs text-tertiary">
+                <span>group by</span>
+                <div className="flex items-center gap-1" role="group" aria-label="group the overview by dimension">
+                  {(["harness", "provider", "model"] as GroupBy[]).map((d) => (
+                    <Button
+                      key={d}
+                      size="sm"
+                      variant="subtle"
+                      active={groupBy === d}
+                      aria-pressed={groupBy === d}
+                      onClick={() => setGroupBy(d)}
+                    >
+                      {d}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
-                <Card title="daily API-equivalent (by provider)">
-                  <Chart option={equivChart} height={264} onSeriesClick={onProviderSeries} />
+                <Card title={`daily API-equivalent (by ${groupBy})`}>
+                  <Chart option={homeChart} height={264} onSeriesClick={onGroupSeries} />
                 </Card>
-                <Card title="value by provider">
+                <Card title={`value by ${groupBy}`}>
                   <div className="relative">
-                    <Chart option={providerDonutOpt} height={200} onSeriesClick={onProviderSeries} />
+                    <Chart option={homeDonut} height={200} onSeriesClick={onGroupSeries} />
                     <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
                       <div className="text-2xl tabular-nums text-primary" style={{ letterSpacing: "-0.02em" }}>
                         {usd(rangeEquiv)}
@@ -576,8 +616,8 @@ export default function App() {
                 </Card>
               </div>
 
-              <Card title="by provider">
-                <Breakdown totals={sumByKey(byProvider)} onSelect={(raw) => toggle("provider", raw)} active={filters.provider} />
+              <Card title={`by ${groupBy}`}>
+                <Breakdown totals={sumByKey(groupRows)} onSelect={(raw) => toggle(groupBy, raw)} active={filters[groupBy]} />
               </Card>
             </div>
           ) : (
