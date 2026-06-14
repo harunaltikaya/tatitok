@@ -506,9 +506,12 @@ type ActivityBucket struct {
 // included — a UTC hour can't be split into a local hour under +05:30), bucketed
 // by (weekday, hour) in tz via tatitok_weekday/tatitok_hour, ranged with the
 // same tatitok_day the daily path uses, and filtered with the same
-// eventsPredicate. Tokens is the full volume (input+output+cache+reasoning);
-// Events the count. Read-only aggregation: no counting change. Empty buckets
-// are simply absent (≤168 rows).
+// eventsPredicate. Tokens is the canonical 4-field total the dashboard reports
+// (input+output+cache-write+cache-read) — reasoning is EXCLUDED, matching
+// web/src/api.ts totalTokens (codex's output already includes reasoning, so
+// summing tokens_reasoning again would double-count); Events the count.
+// Read-only aggregation: no counting change. Empty buckets are simply absent
+// (≤168 rows).
 func (s *Store) Activity(ctx context.Context, tz *time.Location, from, to string, f Filters) ([]ActivityBucket, error) {
 	tzName := tz.String()
 	args := []any{tzName, tzName} // tatitok_weekday, tatitok_hour
@@ -528,7 +531,7 @@ func (s *Store) Activity(ctx context.Context, tz *time.Location, from, to string
 			tatitok_weekday(ts, ?) AS wd, tatitok_hour(ts, ?) AS hr,
 			COUNT(*) AS events,
 			SUM(tokens_input + tokens_output + tokens_cache_write
-				+ tokens_cache_read + COALESCE(tokens_reasoning, 0)) AS tokens
+				+ tokens_cache_read) AS tokens
 		FROM usage_events
 		WHERE 1=1`+where+`
 		GROUP BY wd, hr
