@@ -122,6 +122,10 @@ function dailyStackedChart(
   // colorFor resolves a series' colour by key (M8 1F): the by-provider charts
   // pass providerColor (brand-aware), everyone else gets per-entity seriesColor.
   colorFor: (key: string) => string = seriesColor,
+  // openDay (M8 1J): the in-progress day's date (today in the selected tz), or
+  // undefined when today isn't in range. That bar renders provisional — faded,
+  // value UNCHANGED — so a partial day doesn't read as a real dip or spike.
+  openDay?: string,
 ): EChartsOption {
   const days = [...new Set(rows.map((r) => r.date))].sort();
   const providers = [...new Set(rows.map((r) => r.key))].sort();
@@ -148,7 +152,7 @@ function dailyStackedChart(
         if (arr.length === 0) return "";
         const day = String(arr[0]?.axisValue ?? "");
         const parts = [
-          `<div style="font-weight:500">${day}</div>`,
+          `<div style="font-weight:500">${day}${day === openDay ? ' <span style="font-weight:400;color:var(--text-tertiary)">· partial (today so far)</span>' : ""}</div>`,
           `<div>total <b>${fmt(dayTotal(rows, day, value))}</b></div>`,
         ];
         const seriesLines = arr
@@ -173,7 +177,11 @@ function dailyStackedChart(
       stack: "total",
       itemStyle: { color: colorFor(p) },
       emphasis: { focus: "series" },
-      data: days.map((d) => byCell.get(`${d}|${p}`) ?? 0),
+      data: days.map((d) => {
+        const v = byCell.get(`${d}|${p}`) ?? 0;
+        // In-progress day → faded (provisional); value unchanged (M8 1J).
+        return d === openDay ? { value: v, itemStyle: { color: colorFor(p), opacity: 0.5 } } : v;
+      }),
     })),
   };
 }
@@ -393,20 +401,25 @@ export default function App() {
   // every provider family stays. The series take the brand-aware providerColor
   // resolver (M8 1F: Anthropic clay, others hashed). The by-model tooltip stays
   // on the raw byModel rows (models carry no family).
+  // The in-progress day to flag as provisional across every daily chart (M8
+  // 1J): today's date in the selected tz. When today isn't in the visible
+  // range no bar matches and nothing is flagged. Display marker only — the
+  // partial day's value stays exactly as served.
+  const openDay = todayInTZ(tz);
   const providerSeries = useMemo(() => mergeFamilies(byProvider), [byProvider]);
   const equivChart = useMemo(
     () => dailyStackedChart(providerSeries, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`,
-      { rows: byModel, value: (r) => r.costAPIEquivMicro / 1e6 }, providerColor),
-    [providerSeries, byModel],
+      { rows: byModel, value: (r) => r.costAPIEquivMicro / 1e6 }, providerColor, openDay),
+    [providerSeries, byModel, openDay],
   );
   const actualChart = useMemo(
-    () => dailyStackedChart(providerSeries, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`, undefined, providerColor),
-    [providerSeries],
+    () => dailyStackedChart(providerSeries, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`, undefined, providerColor, openDay),
+    [providerSeries, openDay],
   );
   const tokenChart = useMemo(
     () => dailyStackedChart(providerSeries, totalTokens, compactTokens,
-      { rows: byModel, value: totalTokens }, providerColor),
-    [providerSeries, byModel],
+      { rows: byModel, value: totalTokens }, providerColor, openDay),
+    [providerSeries, byModel, openDay],
   );
   // Click-to-filter on a chart series → filter that provider, but skip the
   // collapsed "vllm" series: it's a family aggregate, not one provider value
@@ -455,8 +468,8 @@ export default function App() {
   // never reaches a non-provider grouping.
   const homeColor = groupBy === "provider" ? providerColor : seriesColor;
   const homeChart = useMemo(
-    () => dailyStackedChart(homeRollup, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`, undefined, homeColor),
-    [homeRollup, homeColor],
+    () => dailyStackedChart(homeRollup, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`, undefined, homeColor, openDay),
+    [homeRollup, homeColor, openDay],
   );
   const homeDonut = useMemo(() => valueDonut(homeRollup, homeColor), [homeRollup, homeColor]);
   // The home table shares the global Sort (M8 1D); sortTotals ranks by the
