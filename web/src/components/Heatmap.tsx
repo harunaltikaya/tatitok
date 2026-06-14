@@ -15,10 +15,13 @@ const WD_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 // Go's time.Weekday is Sunday=0; display Monday-first for readability.
 const WD_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const HOUR_LABELS = new Set([0, 6, 12, 18, 23]);
-// ramp(pct): a green lightness mix over the base surface; empty (0) = surface.
-const ramp = (pct: number) =>
-  pct <= 0 ? "var(--surface-inset)" : `color-mix(in oklab, var(--color-positive) ${pct}%, var(--surface-inset))`;
-const LEGEND_STEPS = [20, 40, 60, 80, 100];
+// ramp(pct): a green lightness mix over a PALE OFF-WHITE base — empty (0%) is a
+// solid pale white (no green), climbing pale-white → light green → full
+// value-green (#34d399) as consumption grows. zinc-100 is opaque, so a
+// zero-consumption cell reads as a visible pale slot, not the dark panel.
+const ramp = (pct: number) => `color-mix(in oklab, var(--color-positive) ${pct}%, var(--zinc-100))`;
+// less (pale white, empty) → more (green) — mirrors the cell ramp.
+const LEGEND_STEPS = [0, 25, 50, 75, 100];
 
 export default function Heatmap({ buckets }: { buckets: ActivityBucket[] }) {
   const grid = activityGrid(buckets, (b) => b.tokens);
