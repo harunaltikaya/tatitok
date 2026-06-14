@@ -12,7 +12,7 @@
 // tsconfig allowImportingTsExtensions makes tsc accept them.
 import type { DailyByRow, FacetValue } from "./api.ts";
 import { totalTokens } from "./api.ts";
-import { displayValue } from "./filters.ts";
+import { displayValue, type Sort } from "./filters.ts";
 
 export interface KeyTotals {
   key: string; // display form ("(none)" for the empty value)
@@ -36,7 +36,9 @@ export function sumByKey(rows: DailyByRow[]): KeyTotals[] {
     t.unpriced += r.unpricedEvents;
     acc.set(r.key, t);
   }
-  return [...acc.values()].sort((a, b) => b.costMicro - a.costMicro || b.tokens - a.tokens);
+  // A deterministic, value-based default order (API-equiv desc) — display
+  // ranking is sortTotals' job (M8 1D); this is never actual-cost ordering.
+  return [...acc.values()].sort((a, b) => b.equivMicro - a.equivMicro || b.tokens - a.tokens);
 }
 
 // --- M8 1C: home-only rollup (family collapse + top-N/others) ----------------
@@ -109,4 +111,33 @@ export function topFacets(values: FacetValue[], n: number): { shown: FacetValue[
   const shown = sorted.slice(0, n);
   const rest = sorted.slice(n);
   return { shown, othersValues: rest.length, othersEvents: rest.reduce((s, v) => s + v.events, 0) };
+}
+
+// --- M8 1D: table sort -------------------------------------------------------
+
+// bucketRank tiers rows for the table sort: real entities (0) rank by the
+// metric; collapsed family buckets (1) sit below them; "others" (2) is always
+// dead last. So an aggregate never out-ranks a real entity, and the remainder
+// stays at the bottom regardless of sort direction.
+function bucketRank(key: string): number {
+  if (key === OTHERS_KEY) return 2;
+  if (FAMILY_PREFIXES.includes(key)) return 1;
+  return 0;
+}
+
+// sortTotals ranks the breakdown rows for display (M8 1D): by the chosen metric
+// (API-equiv or tokens) and direction, with aggregates pinned to the bottom
+// (bucketRank), key name as a stable tiebreak. A pure reorder — no number
+// changes, conservation untouched. The home and detail tables share one Sort
+// (URL state); the default is equiv-desc, never actual cost (which is $0 for
+// plan/local/free, so ranking by it is meaningless).
+export function sortTotals(totals: KeyTotals[], sort: Sort): KeyTotals[] {
+  const metric = sort.key === "tokens" ? (t: KeyTotals) => t.tokens : (t: KeyTotals) => t.equivMicro;
+  const sign = sort.dir === "asc" ? 1 : -1;
+  return [...totals].sort((a, b) => {
+    const ra = bucketRank(a.raw);
+    const rb = bucketRank(b.raw);
+    if (ra !== rb) return ra - rb;
+    return sign * (metric(a) - metric(b)) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+  });
 }

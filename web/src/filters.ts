@@ -31,6 +31,26 @@ export function parseGroupBy(v: string | null): GroupBy {
   return v === "harness" || v === "provider" ? v : "model";
 }
 
+// Sort is the table ranking (M8 chunk 1D): a metric key + direction, shared by
+// the home summary table and the detail breakdown tables. The default ranks by
+// API-equivalent value DESCENDING — never actual cost, which is $0 for
+// everything plan_included/local/free, so ranking by it is meaningless.
+// Shareable view state → URL like view/groupBy. null/unknown → the default.
+export type SortKey = "equiv" | "tokens";
+export type SortDir = "desc" | "asc";
+export interface Sort {
+  key: SortKey;
+  dir: SortDir;
+}
+export const DEFAULT_SORT: Sort = { key: "equiv", dir: "desc" };
+
+export function parseSort(key: string | null, dir: string | null): Sort {
+  return {
+    key: key === "tokens" ? "tokens" : "equiv",
+    dir: dir === "asc" ? "asc" : "desc",
+  };
+}
+
 export type FilterState = Record<FacetDim, string[]>;
 
 export function emptyFilters(): FilterState {
@@ -78,27 +98,30 @@ export function filterQuery(f: FilterState): string {
   return s === "" ? "" : `&${s}`;
 }
 
-// URL round-trip: the page (view), group-by, filters, the day range AND the
-// timezone are the URL's query string; popstate/refresh restore them exactly
-// (M6 Task 2 adds tz; M8 1A adds view, 1B adds groupBy — all shareable, like
-// every other filter). Layout is deliberately NOT here (M6 Task 4): URLs
-// share what you are looking at, not how your panels are arranged.
-export function filtersFromURL(search: string): { filters: FilterState; from: string | null; to: string | null; tz: string | null; view: View; groupBy: GroupBy } {
+// URL round-trip: the page (view), group-by, sort, filters, the day range AND
+// the timezone are the URL's query string; popstate/refresh restore them
+// exactly (M6 Task 2 adds tz; M8 1A adds view, 1B adds groupBy, 1D adds sort —
+// all shareable, like every other filter). Layout is deliberately NOT here
+// (M6 Task 4): URLs share what you are looking at, not how your panels are
+// arranged.
+export function filtersFromURL(search: string): { filters: FilterState; from: string | null; to: string | null; tz: string | null; view: View; groupBy: GroupBy; sort: Sort } {
   const p = new URLSearchParams(search);
   const filters = emptyFilters();
   for (const dim of facetDims) filters[dim] = p.getAll(dim);
-  return { filters, from: p.get("from"), to: p.get("to"), tz: p.get("tz"), view: parseView(p.get("view")), groupBy: parseGroupBy(p.get("groupBy")) };
+  return { filters, from: p.get("from"), to: p.get("to"), tz: p.get("tz"), view: parseView(p.get("view")), groupBy: parseGroupBy(p.get("groupBy")), sort: parseSort(p.get("sort"), p.get("dir")) };
 }
 
-export function filtersToURL(f: FilterState, from: string, to: string, tz: string, view: View, groupBy: GroupBy): string {
+export function filtersToURL(f: FilterState, from: string, to: string, tz: string, view: View, groupBy: GroupBy, sort: Sort): string {
   const p = new URLSearchParams();
   p.set("from", from);
   p.set("to", to);
   p.set("tz", tz);
-  // Defaults (home, model) stay out of the URL, so the common case is the
-  // shortest link.
+  // Defaults (home, model, equiv-desc) stay out of the URL, so the common case
+  // is the shortest link.
   if (view === "detail") p.set("view", "detail");
   if (groupBy !== "model") p.set("groupBy", groupBy);
+  if (sort.key !== "equiv") p.set("sort", sort.key);
+  if (sort.dir !== "desc") p.set("dir", sort.dir);
   for (const dim of facetDims) {
     for (const v of f[dim]) p.append(dim, v);
   }

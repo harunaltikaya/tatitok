@@ -6,13 +6,43 @@
 
 import { compactTokens, usd } from "../api";
 import type { KeyTotals } from "../aggregate";
+import type { Sort, SortKey } from "../filters";
 import Badge from "../ui/Badge";
 
 // KeyTotals + sumByKey moved to ../aggregate (M8 1B) so the pure aggregation
 // is unit-testable without pulling this JSX component into Node's test runner.
+// The actual row ordering is sortTotals (../aggregate) applied by the caller;
+// this component only RENDERS the order and surfaces the sort affordance.
 
 const unpricedTip = (n: number) =>
   `${n} event${n === 1 ? "" : "s"} in this range carry no resolvable price — the cost shown is a floor, not a total (same convention as the CLI's asterisk).`;
+
+// SortHeader is a clickable numeric column header (M8 1D): clicking sorts by
+// its metric and toggles direction; the arrow marks the active column. The
+// "cost" column sorts by API-EQUIVALENT value — actual cost is $0 for
+// plan/local/free, so it is never a useful ranking.
+function SortHeader({ label, col, sort, onSort, title }: {
+  label: string;
+  col: SortKey;
+  sort: Sort;
+  onSort: (key: SortKey) => void;
+  title: string;
+}) {
+  const active = sort.key === col;
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(col)}
+      title={title}
+      className="font-normal tabular-nums hover:text-secondary"
+      style={{ color: active ? "var(--text-secondary)" : "inherit", cursor: "pointer" }}
+      aria-sort={active ? (sort.dir === "desc" ? "descending" : "ascending") : "none"}
+    >
+      {label}
+      {active && <span aria-hidden="true">{sort.dir === "desc" ? " ▼" : " ▲"}</span>}
+    </button>
+  );
+}
 
 // Breakdown renders the table only — the surrounding panel chrome
 // (border, title, layout controls) is the Panel's job (M6 Task 4), so
@@ -21,11 +51,18 @@ const unpricedTip = (n: number) =>
 export default function Breakdown({
   totals,
   bases,
+  sort,
+  onSort,
   onSelect,
   active,
 }: {
   totals: KeyTotals[];
   bases?: Map<string, string[]>; // model → distinct pricing bases (legend data)
+  // sort / onSort (M8 1D): the shared table sort state and the click handler;
+  // the caller has already ordered `totals` via sortTotals, so this only draws
+  // the header arrows and reports clicks.
+  sort: Sort;
+  onSort: (key: SortKey) => void;
   // onSelect: table rows are facet filters (M5 Task 4) — a click
   // toggles the row's RAW value in the global filter state.
   onSelect?: (raw: string) => void;
@@ -36,8 +73,18 @@ export default function Breakdown({
       <thead>
         <tr className="text-left text-xs text-tertiary">
           <th className="pb-2 font-normal">key</th>
-          <th className="pb-2 text-right font-normal">tokens</th>
-          <th className="pb-2 text-right font-normal">cost</th>
+          <th className="pb-2 text-right font-normal">
+            <SortHeader label="tokens" col="tokens" sort={sort} onSort={onSort} title="sort by tokens" />
+          </th>
+          <th className="pb-2 text-right font-normal">
+            <SortHeader
+              label="cost"
+              col="equiv"
+              sort={sort}
+              onSort={onSort}
+              title="sort by API-equivalent value (actual cost is $0 for plan/local/free, so it is never the ranking)"
+            />
+          </th>
         </tr>
       </thead>
       <tbody>

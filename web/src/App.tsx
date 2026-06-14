@@ -37,6 +37,8 @@ import {
   type FacetDim,
   type FilterState,
   type GroupBy,
+  type Sort,
+  type SortKey,
   type View,
 } from "./filters";
 import { dayTotal, topModelsAtDay } from "./tooltip";
@@ -52,7 +54,7 @@ import { useStream } from "./useStream";
 import { THEMES, loadTheme, saveTheme, applyTheme } from "./theme";
 import Chart from "./components/Chart";
 import Breakdown from "./components/Breakdown";
-import { sumByKey, rollupRows, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
+import { sumByKey, rollupRows, sortTotals, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
 import PlanCard from "./components/Plans";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
@@ -228,6 +230,9 @@ export default function App() {
   // Group-by (M8 1B): the home overview's aggregation dimension. Shareable →
   // URL like view; default provider. Drives the home chart/donut/table only.
   const [groupBy, setGroupBy] = useState<GroupBy>(initial.groupBy);
+  // Table sort (M8 1D): shared by the home + detail breakdown tables.
+  // Shareable → URL; default equiv-desc (never actual cost).
+  const [sort, setSort] = useState<Sort>(initial.sort);
   const [daily, setDaily] = useState<DailyRow[]>([]);
   const [byProvider, setByProvider] = useState<DailyByRow[]>([]);
   const [byHarness, setByHarness] = useState<DailyByRow[]>([]);
@@ -260,11 +265,11 @@ export default function App() {
   // URL sync (replaceState — every click is not a history entry) and
   // back/forward restore. tz round-trips alongside filters and range.
   useEffect(() => {
-    const url = filtersToURL(filters, from, to, tz, view, groupBy);
+    const url = filtersToURL(filters, from, to, tz, view, groupBy, sort);
     if (window.location.search !== url) {
       window.history.replaceState(null, "", url);
     }
-  }, [filters, from, to, tz, view, groupBy]);
+  }, [filters, from, to, tz, view, groupBy, sort]);
   useEffect(() => {
     const onPop = () => {
       const s = filtersFromURL(window.location.search);
@@ -274,6 +279,7 @@ export default function App() {
       if (s.tz) setTz(s.tz);
       setView(s.view);
       setGroupBy(s.groupBy);
+      setSort(s.sort);
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -415,11 +421,9 @@ export default function App() {
     [homeRollup],
   );
   const homeDonut = useMemo(() => valueDonut(homeRollup), [homeRollup]);
-  // "others" sinks to the bottom of the table regardless of its magnitude.
-  const homeTable = useMemo(
-    () => sumByKey(homeRollup).sort((a, b) => Number(a.raw === OTHERS_KEY) - Number(b.raw === OTHERS_KEY)),
-    [homeRollup],
-  );
+  // The home table shares the global Sort (M8 1D); sortTotals ranks by the
+  // chosen metric and pins aggregates ("others"/family) to the bottom.
+  const homeTable = useMemo(() => sortTotals(sumByKey(homeRollup), sort), [homeRollup, sort]);
   // Click-to-filter only on REAL facet values: rolled-up buckets ("others",
   // collapsed families) are display aggregates, not single filter values, so a
   // click on one is ignored rather than applying a filter that matches nothing.
@@ -428,6 +432,10 @@ export default function App() {
     toggle(groupBy, raw);
   };
   const onGroupSeries = (name: string) => onGroupSelect(rawValue(name));
+  // Sort toggle (M8 1D): clicking the active column flips direction; a new
+  // column starts descending. Shared by every breakdown table; persists to URL.
+  const onSort = (key: SortKey) =>
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "desc" ? "asc" : "desc" } : { key, dir: "desc" }));
 
   const chips = facetDims.flatMap((dim) => filters[dim].map((v) => ({ dim, value: v })));
 
@@ -440,13 +448,13 @@ export default function App() {
     "chart-actual": <Chart option={actualChart} onSeriesClick={onProviderSeries} />,
     "chart-tokens": <Chart option={tokenChart} onSeriesClick={onProviderSeries} />,
     "break-harness": (
-      <Breakdown totals={sumByKey(byHarness)} onSelect={(raw) => toggle("harness", raw)} active={filters.harness} />
+      <Breakdown totals={sortTotals(sumByKey(byHarness), sort)} sort={sort} onSort={onSort} onSelect={(raw) => toggle("harness", raw)} active={filters.harness} />
     ),
     "break-provider": (
-      <Breakdown totals={sumByKey(byProvider)} onSelect={(raw) => toggle("provider", raw)} active={filters.provider} />
+      <Breakdown totals={sortTotals(sumByKey(byProvider), sort)} sort={sort} onSort={onSort} onSelect={(raw) => toggle("provider", raw)} active={filters.provider} />
     ),
     "break-model": (
-      <Breakdown totals={sumByKey(byModel)} bases={modelBases} onSelect={(raw) => toggle("model", raw)} active={filters.model} />
+      <Breakdown totals={sortTotals(sumByKey(byModel), sort)} sort={sort} onSort={onSort} bases={modelBases} onSelect={(raw) => toggle("model", raw)} active={filters.model} />
     ),
   };
 
@@ -637,7 +645,7 @@ export default function App() {
               </div>
 
               <Card title={`by ${groupBy}`}>
-                <Breakdown totals={homeTable} onSelect={onGroupSelect} active={filters[groupBy]} />
+                <Breakdown totals={homeTable} sort={sort} onSort={onSort} onSelect={onGroupSelect} active={filters[groupBy]} />
               </Card>
             </div>
           ) : (

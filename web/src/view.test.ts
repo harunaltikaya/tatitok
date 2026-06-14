@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseView, filtersToURL, filtersFromURL, emptyFilters } from "./filters.ts";
+import { parseView, filtersToURL, filtersFromURL, emptyFilters, DEFAULT_SORT } from "./filters.ts";
 
 test("view URL-state: parseView, home omits view=, detail writes it, survives a round-trip", () => {
   // parseView accepts the two known pages and defaults everything else home.
@@ -24,12 +24,12 @@ test("view URL-state: parseView, home omits view=, detail writes it, survives a 
   // Default home (+ default-model group-by) stays OUT of the URL —
   // byte-identical to the pre-1A serialization (from/to/tz only), so existing
   // home bookmarks are unchanged.
-  const homeURL = filtersToURL(f, from, to, tz, "home", "model");
+  const homeURL = filtersToURL(f, from, to, tz, "home", "model", DEFAULT_SORT);
   assert.equal(homeURL, `?from=${from}&to=${to}&tz=${tz}`);
   assert.ok(!homeURL.includes("view="));
 
   // Detail writes the param.
-  const detailURL = filtersToURL(f, from, to, tz, "detail", "model");
+  const detailURL = filtersToURL(f, from, to, tz, "detail", "model", DEFAULT_SORT);
   assert.ok(detailURL.includes("view=detail"));
 
   // Both survive serialize → parse (the refresh / popstate path).

@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseGroupBy, filtersToURL, filtersFromURL, emptyFilters } from "./filters.ts";
+import { parseGroupBy, filtersToURL, filtersFromURL, emptyFilters, DEFAULT_SORT } from "./filters.ts";
 import { sumByKey } from "./aggregate.ts";
 import type { DailyByRow } from "./api.ts";
 
@@ -27,14 +27,14 @@ test("groupBy: URL round-trip (default provider omitted) and grand-total conserv
 
   // Default model stays OUT of the URL (like default home), so the common
   // link is the shortest.
-  const modelURL = filtersToURL(f, from, to, tz, "home", "model");
+  const modelURL = filtersToURL(f, from, to, tz, "home", "model", DEFAULT_SORT);
   assert.equal(modelURL, `?from=${from}&to=${to}&tz=${tz}`);
   assert.ok(!modelURL.includes("groupBy="));
   assert.equal(filtersFromURL(modelURL).groupBy, "model");
 
   // The non-default dimensions write the param and survive serialize→parse.
   for (const g of ["harness", "provider"] as const) {
-    const url = filtersToURL(f, from, to, tz, "home", g);
+    const url = filtersToURL(f, from, to, tz, "home", g, DEFAULT_SORT);
     assert.ok(url.includes(`groupBy=${g}`));
     assert.equal(filtersFromURL(url).groupBy, g);
   }
