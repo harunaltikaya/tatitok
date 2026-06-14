@@ -477,7 +477,10 @@ export default function App() {
   );
   const tokenSplit = freshCachedSplit(rangeTokenSums);
   const cachedPct = Math.round(tokenSplit.cachedShare * 100);
-  const cacheTitle = `${tokenSplit.cached.toLocaleString()} tokens read from the prompt cache (cached); ${tokenSplit.fresh.toLocaleString()} freshly processed (fresh = input + output + cache writes); ${tokenSplit.total.toLocaleString()} total`;
+  // The caveat (M8 1N) is honesty copy only — the number is exactly what 1K's
+  // freshCachedSplit computes from served cache-read tokens; local engine-side
+  // prefix-cache reuse simply isn't in those logs, so we say so rather than infer it.
+  const cacheTitle = `${tokenSplit.cached.toLocaleString()} tokens read from the prompt cache (cached); ${tokenSplit.fresh.toLocaleString()} freshly processed (fresh = input + output + cache writes); ${tokenSplit.total.toLocaleString()} total. Cached counts cache-read tokens reported in the logs; local engine-side prefix-cache reuse (e.g. vLLM) isn't reported there, so local models may read lower than their actual reuse.`;
 
   // Group-by (M8 1B): the home overview re-aggregates by the chosen dimension
   // — same served rows, different key, so the grand total is invariant across
