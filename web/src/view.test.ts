@@ -36,3 +36,36 @@ test("view URL-state: parseView, home omits view=, detail writes it, survives a 
   assert.equal(filtersFromURL(homeURL).view, "home");
   assert.equal(filtersFromURL(detailURL).view, "detail");
 });
+
+test("view toggle preserves active filters in the URL", () => {
+  // Permanent regression guard: the home/detail switch flips ONLY `view` and
+  // keeps EVERY active facet filter. The nav drives this via setView →
+  // filtersToURL(filters, …), so a future change to the nav or filtersToURL
+  // that dropped a facet param on the switch would fail here. Asserted on the
+  // pure round-trip both the URL effect and popstate use.
+  const f = {
+    ...emptyFilters(),
+    harness: ["claude-code"],
+    provider: ["anthropic"],
+    model: ["claude-sonnet-4-6", "claude-opus-4-8"], // multi-value within a dim
+    project: ["tatitok"],
+    basis: ["plan_included"],
+  };
+  const from = "2026-06-01";
+  const to = "2026-06-14";
+  const tz = "UTC";
+
+  const homeURL = filtersToURL(f, from, to, tz, "home", "model", DEFAULT_SORT);
+  const detailURL = filtersToURL(f, from, to, tz, "detail", "model", DEFAULT_SORT);
+
+  // Only `view` differs across the toggle.
+  assert.ok(!homeURL.includes("view="));
+  assert.ok(detailURL.includes("view=detail"));
+
+  // Every facet param survives the round-trip on BOTH pages — including detail,
+  // where the reported bug had them dropped.
+  assert.deepEqual(filtersFromURL(homeURL).filters, f);
+  assert.deepEqual(filtersFromURL(detailURL).filters, f);
+  // …and the switch keeps the SAME filter set (nothing dropped home→detail).
+  assert.deepEqual(filtersFromURL(detailURL).filters, filtersFromURL(homeURL).filters);
+});
