@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tatitok-limits options</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font: 14px/1.5 system-ui, sans-serif;
+        margin: 0;
+        padding: 20px;
+        max-width: 30rem;
+      }
+      h1 { font-size: 16px; margin: 0 0 4px; }
+      .sub { color: #6b7280; margin: 0 0 16px; }
+      label { display: block; font-weight: 600; margin-bottom: 4px; }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px 8px;
+        font: inherit;
+        font-variant-numeric: tabular-nums;
+      }
+      .help { color: #6b7280; font-size: 12px; margin: 6px 0 14px; }
+      button { font: inherit; padding: 6px 14px; cursor: pointer; }
+      #status { margin-left: 10px; color: #16a34a; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>tatitok-limits</h1>
+    <p class="sub">Companion extension — reported provider usage limits.</p>
+
+    <label for="claudeOrgId">Claude organization ID (optional)</label>
+    <input id="claudeOrgId" type="text" autocomplete="off" spellcheck="false"
+           placeholder="auto-discovered from your claude.ai session if blank" />
+    <p class="help">
+      Leave blank to auto-discover from your logged-in claude.ai session. Set this
+      only if discovery picks the wrong organization (multiple orgs) or can't reach
+      the org list. It is stored locally in this browser and never leaves your machine
+      except in the per-user request to claude.ai.
+    </p>
+
+    <button id="save" type="button">Save</button>
+    <span id="status" role="status" aria-live="polite"></span>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

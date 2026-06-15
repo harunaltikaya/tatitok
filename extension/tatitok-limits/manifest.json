@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "tatitok-limits",
+  "version": "0.5.0",
+  "description": "tatitok M9 companion: surfaces external provider usage limits (Claude, Codex) the verified token core can't produce. This build: reported-limit pollers + hub ingest POST (the dashboard renders the limits natively); the Claude org id is discovered per-user, with an optional override in options.",
+  "host_permissions": [
+    "https://claude.ai/*",
+    "https://chatgpt.com/*",
+    "http://127.0.0.1:8284/*"
+  ],
+  "permissions": [
+    "storage",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "sw.js",
+    "type": "module"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "action": {
+    "default_title": "tatitok-limits — poll now (see service worker console)"
+  }
+}
