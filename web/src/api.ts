@@ -178,6 +178,26 @@ export function fetchPlans(): Promise<PlansPayload> {
   return getJSON(`/api/v1/plans`);
 }
 
+// Reported usage limits (M9): the display-only, FENCED data the companion
+// browser extension POSTs to the hub, served back at GET /api/v1/limits. It is
+// NEVER mixed with tatitok's verified token/cost numbers — it has its own fetch
+// path, its own error handling, and renders raw (none of the usd/token
+// formatters above touch it). A provider key is absent until first polled.
+export interface LimitWindow {
+  label: string;
+  usedPercent: number; // 0..100, but a provider may report over-cap (>100); the bar clamps
+  resetAt: number; // epoch ms the window resets (0 = unknown)
+}
+export interface ProviderLimits {
+  fetchedAt: number; // epoch ms the extension last polled this provider
+  windows: LimitWindow[];
+}
+export type LimitsSnapshot = Record<string, ProviderLimits>; // keyed "claude" | "codex" | …
+
+export function fetchLimits(): Promise<{ providers: LimitsSnapshot }> {
+  return getJSON(`/api/v1/limits`);
+}
+
 // usd renders integer micro-USD; sub-cent totals keep enough digits to
 // stay honest instead of rounding to $0.00.
 export function usd(micro: number): string {

@@ -7,7 +7,7 @@ import {
   fetchHealth,
   fetchModels,
   fetchPlans,
-  fetchTotals,
+  fetchLimits,
   fetchActivity,
   usd,
   compactTokens,
@@ -24,11 +24,10 @@ import {
   type FacetValue,
   type Health,
   type ModelInfo,
+  type LimitsSnapshot,
   type PlanStatus,
-  type Totals,
 } from "./api";
 import {
-  countActive,
   displayValue,
   emptyFilters,
   facetDims,
@@ -259,7 +258,7 @@ export default function App() {
   // restored by popstate/refresh like filters/range/tz. Default home.
   const [view, setView] = useState<View>(initial.view);
   // Group-by (M8 1B): the home overview's aggregation dimension. Shareable →
-  // URL like view; default provider. Drives the home chart/donut/table only.
+  // URL like view; default model. Drives the home chart/donut/table only.
   const [groupBy, setGroupBy] = useState<GroupBy>(initial.groupBy);
   // Table sort (M8 1D): shared by the home + detail breakdown tables.
   // Shareable → URL; default equiv-desc (never actual cost).
@@ -271,8 +270,11 @@ export default function App() {
   const [activity, setActivity] = useState<ActivityBucket[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [facets, setFacets] = useState<Record<string, FacetValue[]>>({});
-  const [today, setToday] = useState<Totals | null>(null);
   const [plans, setPlans] = useState<PlanStatus[]>([]);
+  // Reported usage limits (M9): display-only, fenced. Fetched on its OWN path
+  // (below), never in loadRange's Promise.all — a failed/empty /api/v1/limits
+  // yields the card empty-state, never a broken dashboard.
+  const [limits, setLimits] = useState<LimitsSnapshot>({});
   const [health, setHealth] = useState<Health | null>(null);
   const [source, setSource] = useState(""); // serving path of the day query ("rollup"|"events")
   const [err, setErr] = useState<string | null>(null);
@@ -371,18 +373,15 @@ export default function App() {
 
   useEffect(() => {
     loadRange(from, to, fq, tz);
-    fetchTotals("today", fq, tz).then((t) => setToday(t.totals)).catch(() => {});
     fetchModels().then((m) => setModels(m.models ?? [])).catch(() => {});
     fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
     fetchHealth().then(setHealth).catch(() => {});
   }, [from, to, fq, tz]);
 
-  // Live updates: every pass refreshes the today panel, the plan window
-  // meters and the facet counts; the range refetches only when a
-  // touched day falls inside it (or when the stream says we lost
-  // events / reconnected: touchedDays empty).
+  // Live updates: every pass refreshes the plan window meters and the facet
+  // counts; the range refetches only when a touched day falls inside it (or
+  // when the stream says we lost events / reconnected: touchedDays empty).
   useEffect(() => {
-    fetchTotals("today", fq, tz).then((t) => setToday(t.totals)).catch(() => {});
     fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
     if (stream.bump === 0 || stream.bump === lastRangeFetch.current) return;
     fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
@@ -393,6 +392,29 @@ export default function App() {
       loadRange(from, to, fq, tz);
     }
   }, [stream.bump]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reported usage limits (M9): display-only and INDEPENDENT — its own fetch
+  // with its own error handling, deliberately NOT joined into loadRange's
+  // Promise.all (a failed secondary fetch must never error the whole dashboard).
+  // Refreshes on a ~60s interval to track the companion extension's polls; a
+  // failure or empty result just leaves the cards in their waiting state.
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetchLimits()
+        .then((r) => {
+          if (alive) setLimits(r.providers ?? {});
+        })
+        .catch(() => {
+          /* hub limits unavailable — cards render the empty-state, page is fine */
+        });
+    load();
+    const id = setInterval(load, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
 
   // The owner's stop-1 chart direction: API-EQUIVALENT cost is the
   // primary daily chart; actual out-of-pocket cost gets its own chart —
@@ -546,6 +568,13 @@ export default function App() {
           <span className="text-primary"><Mark size={26} /></span>
           <span className="text-[21px] font-medium tracking-[-0.01em]">tatitok</span>
           <span className="text-sm text-faint">local AI usage</span>
+          {/* Live SSE signal (M9 chunk 3): relocated here from the removed detail
+              "today" card so the live / disconnected indicator survives. */}
+          <ClassDot
+            tone={stream.connected ? "live" : "neutral"}
+            pulse={stream.connected}
+            title={stream.connected ? "live — SSE connected" : "stream disconnected (EventSource will retry; data refetches on reconnect)"}
+          />
         </div>
         {/* Page nav (M8 1A): home overview vs full detail. Shareable → URL;
             the active page is the one global view state both pages share. */}
@@ -676,6 +705,17 @@ export default function App() {
             // served, filtered, timezoned data the detail page uses; this is
             // re-presentation only, no counting change.
             <div className="space-y-4">
+              {/* Reported-limit cards (M9 chunk 3): the claude-max / chatgpt-plus
+                  PlanCards, same as detail, ABOVE the value-extracted hero. The
+                  hero stays — it carries the cached% + aggregate × that live
+                  nowhere else. plans is already fetched on home (no new wiring). */}
+              {plans.length > 0 && (
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  {plans.map((p) => (
+                    <PlanCard key={p.name} plan={p} limits={limits} />
+                  ))}
+                </div>
+              )}
               <Card title="value extracted">
                 <Stat
                   size="hero"
@@ -758,48 +798,14 @@ export default function App() {
               </Card>
             </div>
           ) : (
-            // Detail (M8 1A): the full breakdown App has always rendered —
-            // today + plan meters + range totals, then the reorderable panel
-            // grid. Unchanged from M7 beyond being rehomed under the view
-            // switch (range totals now read the shared range memos).
+            // Detail (M8 1A; M9 chunk 3): the full breakdown — the reported-limit
+            // PlanCards + range totals, then the reorderable panel grid. The
+            // "today" card was removed (M9); its live SSE dot moved to the header,
+            // and range totals read the shared range memos.
             <>
-              <section className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-3">
-                <Card
-                  title={
-                    <span className="inline-flex items-center gap-2">
-                      today
-                      <ClassDot
-                        tone={stream.connected ? "live" : "neutral"}
-                        pulse={stream.connected}
-                        title={stream.connected ? "live — SSE connected" : "stream disconnected (EventSource will retry; data refetches on reconnect)"}
-                      />
-                      {countActive(filters) > 0 && (
-                        <span className="text-[11px]" style={{ color: "var(--accent)" }}>filtered</span>
-                      )}
-                    </span>
-                  }
-                >
-                  <Stat
-                    size="lg"
-                    value={today ? usd(today.costUSDMicro) : "—"}
-                    unpriced={!!today && today.unpricedEvents > 0}
-                    unpricedTitle={today ? `${today.unpricedEvents} events today carry no resolvable price — cost is a floor.` : undefined}
-                    sub={today ? `${compactTokens(totalTokens(today))} tokens` : "no data yet"}
-                  />
-                  {today && today.costAPIEquivMicro > 0 && (
-                    <div className="mt-1 text-xs text-tertiary tabular-nums">≈ {usd(today.costAPIEquivMicro)} API-equiv</div>
-                  )}
-                  {stream.lastPass && (
-                    <div className="mt-2 text-xs text-faint tabular-nums">
-                      last pass #{stream.lastPass.pass}:{" "}
-                      {stream.lastPass.harnesses
-                        .map((h) => `${h.harness} +${h.new}${h.replaced ? ` ~${h.replaced}` : ""}`)
-                        .join(", ")}
-                    </div>
-                  )}
-                </Card>
+              <section className="mb-5 grid grid-cols-1 gap-4 md:grid-cols-2">
                 {plans.map((p) => (
-                  <PlanCard key={p.name} plan={p} />
+                  <PlanCard key={p.name} plan={p} limits={limits} />
                 ))}
                 <Card className="md:col-span-2" title="range totals">
                   <div className="flex flex-wrap gap-x-10 gap-y-4">

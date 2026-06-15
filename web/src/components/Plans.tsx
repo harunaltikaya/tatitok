@@ -1,46 +1,55 @@
-import { useEffect, useState } from "react";
-import { usd, compactTokens, type PlanStatus, type PlanWindowUsage } from "../api";
+import { usd, type PlanStatus, type LimitsSnapshot } from "../api";
 import Card from "../ui/Card";
-import Stat from "../ui/Stat";
 import MeterBar from "../ui/MeterBar";
 import Badge from "../ui/Badge";
 
-// Plan cards (M5 Task 2): one card per owner-declared plan — the
-// rolling-window meter (current usage, time to reset, weekly cap when
-// declared) and, when a monthly price is declared, the value panel:
-// API-equivalent extracted vs. subscription outlay. The server computes
-// windows from stamped events; this component only renders and ticks
-// the countdown between SSE-driven refetches.
+// PlanCard (M5 Task 2; M9 chunk 3): one card per owner-declared plan. The card
+// now LEADS with the REPORTED provider usage limits (M9) — the provider's own
+// percentages + reset times, read off their page by the companion browser
+// extension and fed to the hub's display-only /api/v1/limits. Those are
+// display-only and never tatitok's verified numbers, so they are tagged
+// "reported" (a neutral tag — NOT the estimated-accuracy badge; the provider's
+// own figures are authoritative) and kept visually distinct from the
+// value-extraction line below the divider (API-equivalent extracted vs. the
+// declared subscription price — tatitok's own computed value, unchanged).
+//
+// The computed 5h window meter (M5) still exists in the API and store; it is
+// intentionally NOT shown in this card — the reported limits are the better,
+// authoritative signal. The empty state (no limits ingested for this provider
+// yet) keeps the card fully functional: the value-extraction renders exactly as
+// before, with a quiet "waiting for companion extension" placeholder where the
+// meters go.
 
-function windowTokens(w: PlanWindowUsage): number {
-  return w.input + w.output + w.cache_write + w.cache_read;
+// providerForPlan maps an owner-declared plan to the reported-limits provider
+// key the extension uses ("claude" off claude.ai, "codex" off chatgpt.com). The
+// API carries no provider on the plan, so derive it from the declared name
+// (claude-max → claude, chatgpt-plus → codex). No match → the empty-state.
+function providerForPlan(name: string): string | null {
+  const n = name.toLowerCase();
+  if (n.includes("claude") || n.includes("anthropic")) return "claude";
+  if (n.includes("chatgpt") || n.includes("codex") || n.includes("openai") || n.includes("gpt")) return "codex";
+  return null;
 }
 
-function remainingLabel(end: string, nowMs: number): string {
-  const ms = Date.parse(end) - nowMs;
-  if (ms <= 0) return "resetting…";
-  const m = Math.floor(ms / 60_000);
-  const h = Math.floor(m / 60);
-  return h > 0 ? `resets in ${h}h ${m % 60}m` : `resets in ${m}m`;
+// resetLabel / fetchedLabel format the reported epoch-ms timestamps in the
+// viewer's LOCAL time. These are absolute instants reported by the provider —
+// unrelated to tatitok's day-bucketing timezone, so plain local time is right.
+function resetLabel(epochMs: number): string {
+  return new Date(epochMs).toLocaleString([], {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+}
+function fetchedLabel(epochMs: number): string {
+  if (!epochMs) return "unknown";
+  return new Date(epochMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-function durationLabel(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 0 && m > 0) return `${h}h${m}m`;
-  if (h > 0) return `${h}h`;
-  return `${m}m`;
-}
+export default function PlanCard({ plan, limits }: { plan: PlanStatus; limits?: LimitsSnapshot }) {
+  const provider = providerForPlan(plan.name);
+  const bucket = provider && limits ? limits[provider] : undefined;
 
-export default function PlanCard({ plan }: { plan: PlanStatus }) {
-  // Countdown tick between refetches — display only, no data motion.
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
-
-  const w = plan.current_window;
+  // Weekly cap meter, only when the owner declared a cap (M5). Computed, kept as
+  // a separate progress bar; it does not render for plans without a declared cap.
   const weekPct =
     plan.weekly_cap_equiv_micro && plan.weekly_cap_equiv_micro > 0
       ? Math.min(100, (plan.week.cost_api_equiv_micro / plan.weekly_cap_equiv_micro) * 100)
@@ -52,31 +61,37 @@ export default function PlanCard({ plan }: { plan: PlanStatus }) {
         <span>
           {plan.name}
           <span className="ml-2" style={{ color: "var(--text-faint)" }}>
-            · {durationLabel(plan.window_seconds)} windows
+            · usage limits
           </span>
         </span>
       }
     >
-      {w ? (
-        <>
-          <Stat
-            size="lg"
-            value={
-              <>
-                {usd(w.cost_api_equiv_micro)}
-                <span className="ml-1 text-sm text-tertiary">API-equiv</span>
-              </>
-            }
-            unpriced={w.events_unpriced > 0}
-            unpricedTitle={`${w.events_unpriced} events in this window carry no resolvable rates — the equivalent is a floor.`}
-            sub={`${compactTokens(windowTokens(w))} tokens · ${w.events} events`}
-          />
-          <div className="mt-1 text-xs text-faint" title={`window ${w.start} → ${w.end} (UTC)`}>
-            {remainingLabel(w.end, nowMs)}
+      {/* Reported usage limits (M9): the provider's OWN numbers, from the
+          companion extension via the hub's display-only endpoint. Whatever
+          windows the bucket carries are rendered (count not hardcoded — a future
+          ChatGPT message-count meter slots in here). The bar clamps the width and
+          auto-escalates amber ≥90% / red ≥100%; an over-cap value still reads. */}
+      {bucket && bucket.windows.length > 0 ? (
+        <div className="space-y-2.5">
+          <Badge tone="tag">reported</Badge>
+          {bucket.windows.map((win, i) => (
+            <div key={`${win.label}-${i}`}>
+              <div className="mb-1 flex justify-between text-xs text-tertiary tabular-nums">
+                <span>{win.label}</span>
+                <span>{Math.round(win.usedPercent)}% used</span>
+              </div>
+              <MeterBar value={win.usedPercent} max={100} />
+              <div className="mt-1 text-[11px] text-faint tabular-nums">
+                {win.resetAt ? `Resets ${resetLabel(win.resetAt)}` : "reset time unknown"}
+              </div>
+            </div>
+          ))}
+          <div className="pt-0.5 text-[11px] text-faint tabular-nums">
+            as of {fetchedLabel(bucket.fetchedAt)}, local
           </div>
-        </>
+        </div>
       ) : (
-        <div className="text-sm text-tertiary">no active window — the next event opens one</div>
+        <div className="text-sm text-tertiary">usage limits — waiting for companion extension</div>
       )}
 
       {weekPct !== null && (
