@@ -161,7 +161,10 @@ func Start(cfg Config) (*Hub, error) {
 	mux := http.NewServeMux()
 	h.registerDashboard(mux)
 	h.registerAPI(mux)
-	h.registerLimits(mux)
+	// Display-only reported usage limits (M9): the handler lives in package
+	// limits (stdlib-only) and is handed only the *Store — structurally fenced
+	// from the event store / pricing / rollups / parity.
+	limits.RegisterHTTP(mux, h.lim)
 	h.srv = &http.Server{Handler: mux}
 	go func() {
 		err := h.srv.Serve(h.ln)

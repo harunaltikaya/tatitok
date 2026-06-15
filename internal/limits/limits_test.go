@@ -79,6 +79,10 @@ func TestValidate(t *testing.T) {
 		{"provider with no windows", Snapshot{"claude": {FetchedAt: 1}}, true},
 		{"boundary 0 and 100", Snapshot{"x": {FetchedAt: 1, Windows: []Window{{Label: "a", UsedPercent: 0}, {Label: "b", UsedPercent: 100}}}}, true},
 		{"resetAt zero allowed", Snapshot{"x": {FetchedAt: 1, Windows: []Window{{Label: "a", UsedPercent: 1, ResetAt: 0}}}}, true},
+		// Over-cap is accepted and stored verbatim — a provider may report >100;
+		// the stored number stays truthful, the frontend clamps the bar.
+		{"percent just over 100 kept", Snapshot{"x": {FetchedAt: 1, Windows: []Window{{Label: "a", UsedPercent: 100.01}}}}, true},
+		{"percent far over 100 kept", Snapshot{"x": {FetchedAt: 1, Windows: []Window{{Label: "a", UsedPercent: 250}}}}, true},
 
 		{"empty provider key", Snapshot{"": {FetchedAt: 1}}, false},
 		{"negative fetchedAt", Snapshot{"x": {FetchedAt: -1}}, false},
@@ -86,7 +90,6 @@ func TestValidate(t *testing.T) {
 		{"percent NaN", Snapshot{"x": {FetchedAt: 1, Windows: []Window{{Label: "a", UsedPercent: math.NaN()}}}}, false},
 		{"percent +Inf", Snapshot{"x": {FetchedAt: 1, Windows: []Window{{Label: "a", UsedPercent: math.Inf(1)}}}}, false},
 		{"percent negative", Snapshot{"x": {FetchedAt: 1, Windows: []Window{{Label: "a", UsedPercent: -0.01}}}}, false},
-		{"percent over 100", Snapshot{"x": {FetchedAt: 1, Windows: []Window{{Label: "a", UsedPercent: 100.01}}}}, false},
 		{"negative resetAt", Snapshot{"x": {FetchedAt: 1, Windows: []Window{{Label: "a", UsedPercent: 1, ResetAt: -5}}}}, false},
 	}
 	for _, c := range cases {

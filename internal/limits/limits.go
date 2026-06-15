@@ -23,7 +23,7 @@ import (
 // shape mirrors the companion extension's normalized output verbatim.
 type Window struct {
 	Label       string  `json:"label"`
-	UsedPercent float64 `json:"usedPercent"` // 0..100
+	UsedPercent float64 `json:"usedPercent"` // percent; finite and >= 0 (may exceed 100 if the provider reports over-cap)
 	ResetAt     int64   `json:"resetAt"`     // epoch milliseconds (0 = unknown)
 }
 
@@ -39,10 +39,12 @@ type Snapshot map[string]Provider
 
 // Validate rejects a malformed snapshot cleanly (the handler turns a non-nil
 // error into a 400). It guards the display invariants the dashboard relies on:
-// a present provider key, finite in-range percentages, and non-negative epoch
-// timestamps. It deliberately does NOT constrain WHICH providers or window
-// labels may appear — new providers/windows pass through unchanged
-// (forward-compatible with the extension evolving).
+// a present provider key, finite and non-negative percentages, and non-negative
+// epoch timestamps. A usedPercent ABOVE 100 is accepted and stored verbatim — a
+// provider may report over-cap, and the stored number stays truthful (the
+// frontend clamps the rendered bar to 100%). It deliberately does NOT constrain
+// WHICH providers or window labels may appear — new providers/windows pass
+// through unchanged (forward-compatible with the extension evolving).
 func (s Snapshot) Validate() error {
 	for key, p := range s {
 		if key == "" {
@@ -58,8 +60,8 @@ func (s Snapshot) Validate() error {
 			if math.IsNaN(w.UsedPercent) || math.IsInf(w.UsedPercent, 0) {
 				return fmt.Errorf("limits: provider %q window %q usedPercent is not a finite number", key, w.Label)
 			}
-			if w.UsedPercent < 0 || w.UsedPercent > 100 {
-				return fmt.Errorf("limits: provider %q window %q usedPercent %v is out of range [0,100]", key, w.Label, w.UsedPercent)
+			if w.UsedPercent < 0 {
+				return fmt.Errorf("limits: provider %q window %q has negative usedPercent %v", key, w.Label, w.UsedPercent)
 			}
 			if w.ResetAt < 0 {
 				return fmt.Errorf("limits: provider %q window %q has negative resetAt %d", key, w.Label, w.ResetAt)
