@@ -55,3 +55,9 @@ testdata/**/expected/*-full.json
 web/node_modules/
 web/dist/*
 !web/dist/.gitkeep
+
+# --- Codex review scratch ---
+# Codex drops a `.codex` at the repo root during a close-review — a 0-byte
+# marker file in this version, a scratch dir in others. The bare pattern (no
+# trailing slash) ignores both forms so neither shows as untracked.
+.codex
