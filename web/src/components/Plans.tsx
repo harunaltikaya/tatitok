@@ -7,11 +7,12 @@ import Badge from "../ui/Badge";
 // now LEADS with the REPORTED provider usage limits (M9) — the provider's own
 // percentages + reset times, read off their page by the companion browser
 // extension and fed to the hub's display-only /api/v1/limits. Those are
-// display-only and never tatitok's verified numbers, so they are tagged
-// "reported" (a neutral tag — NOT the estimated-accuracy badge; the provider's
-// own figures are authoritative) and kept visually distinct from the
-// value-extraction line below the divider (API-equivalent extracted vs. the
-// declared subscription price — tatitok's own computed value, unchanged).
+// display-only and never tatitok's verified numbers — the "· usage limits"
+// subtitle and the per-card "as of <time>, local" freshness line already
+// convey that these are live external figures, and they are kept visually
+// distinct from the value-extraction line below the divider (API-equivalent
+// extracted vs. the declared subscription price — tatitok's own computed
+// value, unchanged).
 //
 // The computed 5h window meter (M5) still exists in the API and store; it is
 // intentionally NOT shown in this card — the reported limits are the better,
@@ -73,7 +74,6 @@ export default function PlanCard({ plan, limits }: { plan: PlanStatus; limits?: 
           auto-escalates amber ≥90% / red ≥100%; an over-cap value still reads. */}
       {bucket && bucket.windows.length > 0 ? (
         <div className="space-y-2.5">
-          <Badge tone="tag">reported</Badge>
           {bucket.windows.map((win, i) => (
             <div key={`${win.label}-${i}`}>
               <div className="mb-1 flex justify-between text-xs text-tertiary tabular-nums">
