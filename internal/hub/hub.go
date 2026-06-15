@@ -24,6 +24,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/harunaltikaya/tatitok/internal/limits"
 	"github.com/harunaltikaya/tatitok/internal/pricing"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
@@ -64,6 +65,10 @@ type Hub struct {
 	ln  net.Listener
 	srv *http.Server
 	w   *watcher // nil when no watch targets
+
+	// lim is the display-only reported-usage-limits store (M9): fenced from
+	// the event store/pricing/rollups/parity — see internal/limits.
+	lim *limits.Store
 
 	// health facts, fixed at Start (M4 Task 2).
 	version  string
@@ -151,10 +156,12 @@ func Start(cfg Config) (*Hub, error) {
 		bcast:      newBroadcaster(),
 		streamStop: make(chan struct{}),
 		done:       make(chan struct{}),
+		lim:        limits.NewStore(),
 	}
 	mux := http.NewServeMux()
 	h.registerDashboard(mux)
 	h.registerAPI(mux)
+	h.registerLimits(mux)
 	h.srv = &http.Server{Handler: mux}
 	go func() {
 		err := h.srv.Serve(h.ln)
