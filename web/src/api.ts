@@ -190,12 +190,45 @@ export interface LimitWindow {
 }
 export interface ProviderLimits {
   fetchedAt: number; // epoch ms the extension last polled this provider
-  windows: LimitWindow[];
+  // null when the provider reported no windows: the backend validly accepts an
+  // empty windows slice and Go marshals nil as JSON null. Consumers MUST treat
+  // null/missing as "no windows" (use reportedFor) — never call .length on it.
+  windows: LimitWindow[] | null;
 }
 export type LimitsSnapshot = Record<string, ProviderLimits>; // keyed "claude" | "codex" | …
 
 export function fetchLimits(): Promise<{ providers: LimitsSnapshot }> {
   return getJSON(`/api/v1/limits`);
+}
+
+// providerForPlan maps an owner-declared plan to the reported-limits provider
+// key the extension uses ("claude" off claude.ai, "codex" off chatgpt.com).
+// PlanStatus carries no provider, so derive it from the declared name
+// (claude-max → claude, chatgpt-plus → codex). Matching is conservative —
+// "chatgpt"/"openai"/"codex" for codex, "claude"/"anthropic" for claude — so a
+// bare token like "gpt" can't mis-map a future owner-named plan. No match →
+// null → the card's empty-state. (A provider field on PlanStatus is the robust
+// fix, deferred past M9.)
+export function providerForPlan(name: string): string | null {
+  const n = name.toLowerCase();
+  if (n.includes("claude") || n.includes("anthropic")) return "claude";
+  if (n.includes("chatgpt") || n.includes("openai") || n.includes("codex")) return "codex";
+  return null;
+}
+
+// reportedFor resolves the reported windows + freshness to render for a plan. It
+// hardens against the wire reality that a provider with no windows arrives as
+// "windows": null (Go marshals a nil slice as null): a missing bucket OR
+// null/absent windows both yield [] — so the UI never calls .length on a
+// possibly-null value and cleanly falls through to the empty-state. fetchedAt is
+// 0 (→ "unknown") when there is no bucket.
+export function reportedFor(
+  planName: string,
+  limits: LimitsSnapshot | undefined,
+): { windows: LimitWindow[]; fetchedAt: number } {
+  const provider = providerForPlan(planName);
+  const bucket = provider && limits ? limits[provider] : undefined;
+  return { windows: bucket?.windows ?? [], fetchedAt: bucket?.fetchedAt ?? 0 };
 }
 
 // usd renders integer micro-USD; sub-cent totals keep enough digits to

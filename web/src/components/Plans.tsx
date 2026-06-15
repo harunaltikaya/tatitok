@@ -1,4 +1,4 @@
-import { usd, type PlanStatus, type LimitsSnapshot } from "../api";
+import { usd, reportedFor, type PlanStatus, type LimitsSnapshot } from "../api";
 import Card from "../ui/Card";
 import MeterBar from "../ui/MeterBar";
 import Badge from "../ui/Badge";
@@ -16,21 +16,11 @@ import Badge from "../ui/Badge";
 //
 // The computed 5h window meter (M5) still exists in the API and store; it is
 // intentionally NOT shown in this card — the reported limits are the better,
-// authoritative signal. The empty state (no limits ingested for this provider
-// yet) keeps the card fully functional: the value-extraction renders exactly as
+// authoritative signal. The empty state — no limits reported for this provider
+// yet, OR a provider that reports no windows (its windows arrive as null) —
+// keeps the card fully functional: the value-extraction renders exactly as
 // before, with a quiet "waiting for companion extension" placeholder where the
 // meters go.
-
-// providerForPlan maps an owner-declared plan to the reported-limits provider
-// key the extension uses ("claude" off claude.ai, "codex" off chatgpt.com). The
-// API carries no provider on the plan, so derive it from the declared name
-// (claude-max → claude, chatgpt-plus → codex). No match → the empty-state.
-function providerForPlan(name: string): string | null {
-  const n = name.toLowerCase();
-  if (n.includes("claude") || n.includes("anthropic")) return "claude";
-  if (n.includes("chatgpt") || n.includes("codex") || n.includes("openai") || n.includes("gpt")) return "codex";
-  return null;
-}
 
 // resetLabel / fetchedLabel format the reported epoch-ms timestamps in the
 // viewer's LOCAL time. These are absolute instants reported by the provider —
@@ -46,8 +36,10 @@ function fetchedLabel(epochMs: number): string {
 }
 
 export default function PlanCard({ plan, limits }: { plan: PlanStatus; limits?: LimitsSnapshot }) {
-  const provider = providerForPlan(plan.name);
-  const bucket = provider && limits ? limits[provider] : undefined;
+  // reportedFor maps plan → provider bucket and normalizes its windows (null →
+  // [] — see api.ts), so a provider with no windows shows the empty-state rather
+  // than crashing on .length. fetchedAt is 0 (→ "unknown") when there's no bucket.
+  const { windows, fetchedAt } = reportedFor(plan.name, limits);
 
   // Weekly cap meter, only when the owner declared a cap (M5). Computed, kept as
   // a separate progress bar; it does not render for plans without a declared cap.
@@ -69,12 +61,14 @@ export default function PlanCard({ plan, limits }: { plan: PlanStatus; limits?: 
     >
       {/* Reported usage limits (M9): the provider's OWN numbers, from the
           companion extension via the hub's display-only endpoint. Whatever
-          windows the bucket carries are rendered (count not hardcoded — a future
-          ChatGPT message-count meter slots in here). The bar clamps the width and
-          auto-escalates amber ≥90% / red ≥100%; an over-cap value still reads. */}
-      {bucket && bucket.windows.length > 0 ? (
+          windows the provider reports are rendered (count not hardcoded — a
+          future ChatGPT message-count meter slots in here). The bar clamps the
+          width and auto-escalates amber ≥90% / red ≥100%; an over-cap value
+          still reads. A provider with no windows (windows: null on the wire)
+          yields [] from reportedFor and falls through to the empty-state. */}
+      {windows.length > 0 ? (
         <div className="space-y-2.5">
-          {bucket.windows.map((win, i) => (
+          {windows.map((win, i) => (
             <div key={`${win.label}-${i}`}>
               <div className="mb-1 flex justify-between text-xs text-tertiary tabular-nums">
                 <span>{win.label}</span>
@@ -87,7 +81,7 @@ export default function PlanCard({ plan, limits }: { plan: PlanStatus; limits?: 
             </div>
           ))}
           <div className="pt-0.5 text-[11px] text-faint tabular-nums">
-            as of {fetchedLabel(bucket.fetchedAt)}, local
+            as of {fetchedLabel(fetchedAt)}, local
           </div>
         </div>
       ) : (
