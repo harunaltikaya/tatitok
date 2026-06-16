@@ -46,26 +46,6 @@ func TestDefaultAddrIsLoopback(t *testing.T) {
 	}
 }
 
-func TestNonLoopbackWarning(t *testing.T) {
-	cases := []struct {
-		ip   string
-		warn bool
-	}{
-		{"127.0.0.1", false},
-		{"::1", false},
-		{"192.168.1.5", true},
-		{"0.0.0.0", true}, // unspecified = all interfaces
-		{"::", true},
-	}
-	for _, c := range cases {
-		addr := &net.TCPAddr{IP: net.ParseIP(c.ip), Port: 8284}
-		got := nonLoopbackWarning(addr) != ""
-		if got != c.warn {
-			t.Errorf("nonLoopbackWarning(%s) warned=%v, want %v", c.ip, got, c.warn)
-		}
-	}
-}
-
 func startHub(t *testing.T, dbPath string) *Hub {
 	t.Helper()
 	h, err := Start(Config{DBPath: dbPath, Addr: "127.0.0.1:0"})

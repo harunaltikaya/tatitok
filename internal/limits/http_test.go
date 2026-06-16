@@ -66,6 +66,7 @@ func postLoopback(t *testing.T, st *Store, body string) *httptest.ResponseRecord
 	h := &handler{st: st}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/limits", bytes.NewReader([]byte(body)))
 	req.RemoteAddr = "127.0.0.1:5555"
+	req.Header.Set("Content-Type", "application/json") // body-shape tests must clear the 415 gate
 	rec := httptest.NewRecorder()
 	h.post(rec, req)
 	return rec
@@ -147,6 +148,53 @@ func TestLimitsPostRejectsNonLoopback(t *testing.T) {
 	}
 	if st.Get() != nil {
 		t.Error("non-loopback POST mutated the store — it must be rejected before Set")
+	}
+}
+
+// TestLimitsPostRequiresJSONContentType is the CSRF guard. A cross-origin
+// webpage can send only a CORS "simple" content-type (text/plain, the form
+// types) without a preflight; demanding application/json makes those writes a
+// 415 that never mutates the store, and forces the preflight (which the
+// method-less route 405s) for anything else. The loopback gate passes here — a
+// hostile page's request IS a loopback peer — so the content-type is the part
+// that actually blocks it.
+func TestLimitsPostRequiresJSONContentType(t *testing.T) {
+	for _, ct := range []string{"text/plain", "application/x-www-form-urlencoded", "multipart/form-data", ""} {
+		t.Run(ct, func(t *testing.T) {
+			st := NewStore()
+			h := &handler{st: st}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/limits", strings.NewReader(sampleJSON))
+			req.RemoteAddr = "127.0.0.1:5555"
+			if ct != "" {
+				req.Header.Set("Content-Type", ct)
+			}
+			rec := httptest.NewRecorder()
+			h.post(rec, req)
+			if rec.Code != http.StatusUnsupportedMediaType {
+				t.Fatalf("Content-Type %q POST = %d, want 415", ct, rec.Code)
+			}
+			if st.Get() != nil {
+				t.Error("415 POST mutated the store — content-type must be checked before Set")
+			}
+		})
+	}
+}
+
+// TestLimitsPostAcceptsJSONCharset: application/json with a charset parameter is
+// still application/json and must round-trip (the extension / a proxy may add it).
+func TestLimitsPostAcceptsJSONCharset(t *testing.T) {
+	st := NewStore()
+	h := &handler{st: st}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/limits", strings.NewReader(sampleJSON))
+	req.RemoteAddr = "127.0.0.1:5555"
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	rec := httptest.NewRecorder()
+	h.post(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("application/json;charset=utf-8 POST = %d, want 204", rec.Code)
+	}
+	if st.Get() == nil {
+		t.Error("valid JSON POST did not store the snapshot")
 	}
 }
 

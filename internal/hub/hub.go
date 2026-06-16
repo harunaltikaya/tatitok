@@ -7,9 +7,11 @@
 //
 // Network posture: the no-runtime-network rule (CLAUDE.md hard rule 7)
 // governs OUTBOUND fetches; serving INBOUND on loopback does not violate
-// it. The default bind is loopback-only; any other interface requires an
-// explicit --addr and draws a startup warning — there is no auth or TLS
-// in this milestone.
+// it. The bind is loopback-only: a non-loopback address is REFUSED at
+// startup (tatitok ships no auth or TLS) and a loopbackOnly middleware
+// gates every route as defense-in-depth. Remote access is via a tunnel
+// (ssh -L / Tailscale) that terminates locally and arrives as a loopback
+// peer — there is deliberately no "allow insecure bind" flag.
 package hub
 
 import (
@@ -125,8 +127,15 @@ func Start(cfg Config) (*Hub, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bind %s: %w — pass --addr HOST:PORT to choose another address (the hub never falls back to a different port silently)", cfg.Addr, err)
 	}
-	if warn := nonLoopbackWarning(ln.Addr()); warn != "" {
-		slog.Warn(warn, "addr", ln.Addr().String())
+	// Local-only posture: refuse to serve on anything but loopback. tatitok
+	// ships no auth or TLS, so a non-loopback bind would expose the user's
+	// usage data to the network. Remote access is via a tunnel that arrives
+	// as a loopback peer (ssh -L / Tailscale); there is deliberately no
+	// "allow insecure bind" flag (that waits for token auth).
+	if !loopbackBind(ln.Addr()) {
+		bound := ln.Addr().String()
+		_ = ln.Close()
+		return nil, fmt.Errorf("refusing to serve on non-loopback address %s: tatitok is local-only and has no auth or TLS. It binds %s by default; for remote access forward the port over a tunnel that arrives as loopback — SSH (ssh -L 8284:127.0.0.1:8284 USER@HOST) or Tailscale", bound, DefaultAddr)
 	}
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0o755); err != nil {
 		_ = ln.Close()
@@ -165,7 +174,9 @@ func Start(cfg Config) (*Hub, error) {
 	// limits (stdlib-only) and is handed only the *Store — structurally fenced
 	// from the event store / pricing / rollups / parity.
 	limits.RegisterHTTP(mux, h.lim)
-	h.srv = &http.Server{Handler: mux}
+	// loopbackOnly gates the ENTIRE tree (dashboard, every /api route, SSE,
+	// and /api/v1/limits GET+POST) as defense-in-depth above the loopback bind.
+	h.srv = &http.Server{Handler: loopbackOnly(mux)}
 	go func() {
 		err := h.srv.Serve(h.ln)
 		if !errors.Is(err, http.ErrServerClosed) {
@@ -232,14 +243,5 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 // publishPass fans an ingest-pass summary out to SSE clients.
 func (h *Hub) publishPass(p passSummary) { h.bcast.publish("ingest_pass", p) }
 
-// nonLoopbackWarning returns the startup warning for a bind that is
-// reachable beyond this machine, "" for loopback. Binding non-loopback
-// is allowed only because the address was explicitly configured —
-// DefaultAddr is loopback and there is no auth or TLS.
-func nonLoopbackWarning(addr net.Addr) string {
-	tcp, ok := addr.(*net.TCPAddr)
-	if !ok || !tcp.IP.IsLoopback() {
-		return "serving on a non-loopback interface: tatitok has no auth or TLS — anyone who can reach this address can read your usage data"
-	}
-	return ""
-}
+// The loopback bind check (loopbackBind) and the request-peer gate
+// (loopbackOnly / loopbackPeer) live in middleware.go.

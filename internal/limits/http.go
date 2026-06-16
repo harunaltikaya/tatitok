@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 )
@@ -71,6 +72,17 @@ func (h *handler) post(w http.ResponseWriter, r *http.Request) {
 			"POST /api/v1/limits accepts loopback callers only")
 		return
 	}
+	// Require application/json. A cross-origin webpage can only send a CORS
+	// "simple" content-type (text/plain or a form type) WITHOUT a preflight;
+	// demanding application/json forces a preflight that the method-less route
+	// 405s (no CORS headers), so a hostile page can't POST fake limits even
+	// though its loopback peer passes the gate above. The companion extension
+	// already sends application/json (sw.js).
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		writeErr(w, http.StatusUnsupportedMediaType, "unsupported_media_type",
+			"POST /api/v1/limits requires Content-Type: application/json")
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	dec := json.NewDecoder(r.Body)
 	var snap Snapshot
@@ -120,6 +132,7 @@ type apiError struct {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)

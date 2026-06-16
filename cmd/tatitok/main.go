@@ -74,9 +74,10 @@ overrides — the ONLY operation that ever changes a historical cost.
 All are explicit and logged, never a side effect (PRD AS-4); --dry-run
 prints the plan and changes nothing.
 serve runs the hub: an HTTP server on loopback (default ` + hub.DefaultAddr + `;
---addr for another address — non-loopback warns: no auth, no TLS) until
-SIGINT/SIGTERM, shutting down cleanly. Watchers, the JSON API and the
-dashboard join in later M4 tasks. Recompute stays CLI-only and owner-run;
+--addr for another LOOPBACK address — a non-loopback bind is refused, tatitok
+is local-only with no auth or TLS, so use an SSH/Tailscale tunnel for remote
+access) until SIGINT/SIGTERM, shutting down cleanly. Watchers, the JSON API and
+the dashboard join in later M4 tasks. Recompute stays CLI-only and owner-run;
 the hub never rewrites history on its own.`
 
 func main() { os.Exit(run(os.Args[1:])) }

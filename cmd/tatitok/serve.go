@@ -19,13 +19,13 @@ const shutdownGrace = 10 * time.Second
 
 // cmdServe runs the hub until SIGINT/SIGTERM. Config precedence: flag >
 // built-in default. --db defaults from XDG_DATA_HOME exactly like every
-// other command; --addr defaults to hub.DefaultAddr (loopback-only —
-// binding anything else is an explicit choice and draws a warning).
+// other command; --addr defaults to hub.DefaultAddr (loopback-only — a
+// non-loopback bind is refused, tatitok is local-only with no auth/TLS).
 // There are no environment variables or config files for serve in M4.
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dbPath := fs.String("db", defaultDBPath(), "database path")
-	addr := fs.String("addr", hub.DefaultAddr, "listen address (HOST:PORT; default is loopback-only)")
+	addr := fs.String("addr", hub.DefaultAddr, "listen address (HOST:PORT; must be loopback — a non-loopback bind is refused)")
 	debounce := fs.Duration("debounce", hub.DefaultDebounce, "coalesce window: rapid log changes become one ingest pass")
 	pollEvery := fs.Duration("poll-interval", hub.DefaultPollInterval, "polling interval (opencode store; fsnotify fallback)")
 	_ = fs.Parse(args)

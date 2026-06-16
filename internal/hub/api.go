@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -36,6 +37,9 @@ type apiError struct {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// SetEscapeHTML is off (below), so a reflected query value never gets
+	// HTML-escaped — nosniff keeps a browser from ever rendering this as HTML.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
@@ -46,6 +50,15 @@ func writeErr(w http.ResponseWriter, status int, code, msg string) {
 	var e apiError
 	e.Error.Code, e.Error.Message = code, msg
 	writeJSON(w, status, e)
+}
+
+// storeError logs the real store failure server-side and returns a GENERIC 500
+// to the client. A SQLite/driver error can carry SQL text or a filesystem path
+// — the very disclosure dbPathHash avoids on /health — so it must never reach
+// the response body.
+func storeError(w http.ResponseWriter, r *http.Request, err error) {
+	slog.Error("store query failed", "path", r.URL.Path, "err", err)
+	writeErr(w, http.StatusInternalServerError, "store_error", "internal store error")
 }
 
 // checkParams rejects any query parameter outside the allowlist —
@@ -235,7 +248,7 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 					fmt.Sprintf("by: %q (supported: harness, provider, model, project)", by))
 				return
 			}
-			writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
+			storeError(w, r, err)
 			return
 		}
 		filtered := make([]store.DailyByRow, 0, len(rows))
@@ -253,7 +266,7 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 
 	rows, source, err := h.st.DailyServed(ctx, tz, f)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
+		storeError(w, r, err)
 		return
 	}
 	base["source"] = source
@@ -290,7 +303,7 @@ func (h *Hub) apiActivity(w http.ResponseWriter, r *http.Request) {
 	f := parseFilters(r)
 	buckets, err := h.st.Activity(r.Context(), tz, from, to, f)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
+		storeError(w, r, err)
 		return
 	}
 	if buckets == nil {
@@ -356,7 +369,7 @@ func (h *Hub) apiTotals(w http.ResponseWriter, r *http.Request) {
 	f := parseFilters(r)
 	rows, source, err := h.st.DailyServed(r.Context(), tz, f)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
+		storeError(w, r, err)
 		return
 	}
 	var sums struct {
@@ -429,7 +442,7 @@ func (h *Hub) apiPlans(w http.ResponseWriter, r *http.Request) {
 	plans := h.cfg.Overrides.Plans()
 	rows, err := h.st.PlanIncludedEvents(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
+		storeError(w, r, err)
 		return
 	}
 	now := time.Now().UTC()
@@ -507,7 +520,7 @@ func (h *Hub) apiMetaFacets(w http.ResponseWriter, r *http.Request) {
 	}
 	facets, err := h.st.Facets(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
+		storeError(w, r, err)
 		return
 	}
 	for k, v := range facets {
@@ -527,7 +540,7 @@ func (h *Hub) apiMetaModels(w http.ResponseWriter, r *http.Request) {
 	}
 	inv, err := h.st.ModelInventory(r.Context())
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
+		storeError(w, r, err)
 		return
 	}
 	if inv == nil {
