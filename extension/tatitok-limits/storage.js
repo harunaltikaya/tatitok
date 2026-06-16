@@ -38,6 +38,17 @@ export const DEFAULT_RULES = { pollIntervalSeconds: 90, claudeOrgId: "" };
 // Documents the "limits" shape before the first successful poll.
 export const EMPTY_LIMITS = { claude: null, codex: null };
 
+// A Claude organization id is a UUID. The options-page override is validated
+// against this shape BEFORE it is stored AND before it is used in a request URL,
+// so a stray value can never be interpolated into the claude.ai endpoint path
+// (it is also encodeURIComponent'd at interpolation as a second line of defence).
+export const CLAUDE_ORG_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isValidClaudeOrgId(id) {
+  return typeof id === "string" && CLAUDE_ORG_ID_RE.test(id.trim());
+}
+
 // Seed defaults on install WITHOUT clobbering anything already stored.
 export async function seedDefaults() {
   const cur = await chrome.storage.local.get([RULES_KEY, LIMITS_KEY]);

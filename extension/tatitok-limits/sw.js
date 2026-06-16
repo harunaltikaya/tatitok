@@ -19,6 +19,7 @@ import {
   getDiscoveredOrg,
   setDiscoveredOrg,
   clearDiscoveredOrg,
+  isValidClaudeOrgId,
 } from "./storage.js";
 
 // ---- constants --------------------------------------------------------
@@ -169,7 +170,7 @@ const CLAUDE_HEADERS = {
 };
 
 function fetchClaudeUsage(orgId) {
-  return fetch(`https://claude.ai/api/organizations/${orgId}/usage`, {
+  return fetch(`https://claude.ai/api/organizations/${encodeURIComponent(orgId)}/usage`, {
     credentials: "include",
     headers: CLAUDE_HEADERS,
   });
@@ -177,7 +178,12 @@ function fetchClaudeUsage(orgId) {
 
 async function getClaudeOrgId() {
   const { claudeOrgId } = await getRules();
-  if (claudeOrgId) return claudeOrgId.trim(); // owner override wins
+  if (claudeOrgId) {
+    const override = claudeOrgId.trim();
+    if (isValidClaudeOrgId(override)) return override; // owner override wins
+    console.warn("CLAUDE: ignoring options org-ID override — not a valid UUID");
+    // fall through to discovery
+  }
   const cached = await getDiscoveredOrg();
   if (cached) return cached;
   const discovered = await discoverClaudeOrgId();
@@ -235,7 +241,7 @@ async function pollClaude() {
     }
     const data = await res.json();
     const windows = normalizeClaude(data);
-    if (windows.length === 0) console.warn("CLAUDE: no buckets matched; raw:", data);
+    if (windows.length === 0) console.warn("CLAUDE: no buckets matched in usage response; keys:", Object.keys(data ?? {}));
     await setProviderLimit("claude", { fetchedAt: Date.now(), windows });
     console.log("CLAUDE ok:", windows);
   } catch (err) {
@@ -288,7 +294,7 @@ async function pollCodex() {
     if (!res.ok) throw new Error(`usage HTTP ${res.status} ${res.statusText}`);
     const data = await res.json();
     const windows = normalizeCodex(data);
-    if (windows.length === 0) console.warn("CODEX: no windows matched; raw:", data);
+    if (windows.length === 0) console.warn("CODEX: no windows matched in usage response; keys:", Object.keys(data ?? {}));
     await setProviderLimit("codex", { fetchedAt: Date.now(), windows });
     console.log("CODEX ok:", windows);
   } catch (err) {
