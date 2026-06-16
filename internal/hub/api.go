@@ -106,6 +106,15 @@ func (h *Hub) registerAPI(mux *http.ServeMux) {
 	get("/api/v1/meta/facets", h.apiMetaFacets)
 	get("/api/v1/plans", h.apiPlans)
 	get("/api/v1/stream", h.apiStream)
+	// Onboarding (Stage 2): detection is GET, apply is POST (it writes
+	// prices.json + reprices). Loopback-only like the whole hub.
+	get("/api/onboard/detect", h.apiOnboardDetect)
+	mux.HandleFunc("POST /api/onboard/apply", h.apiOnboardApply)
+	mux.HandleFunc("/api/onboard/apply", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", "POST")
+		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed",
+			r.Method+" is not supported on /api/onboard/apply (only POST)")
+	})
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found",
 			"unknown API path "+r.URL.Path+" (this hub serves /api/v1)")
@@ -120,11 +129,12 @@ func (h *Hub) apiHealth(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
 		return
 	}
+	ov := h.overrides()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":          h.version,
 		"price_snapshot":   h.snapshot,
-		"overrides":        h.cfg.Overrides.Len(),
-		"reference_models": h.cfg.Overrides.References(),
+		"overrides":        ov.Len(),
+		"reference_models": ov.References(),
 		"db_hash":          h.dbHash,
 		"started_at":       h.started.UTC().Format(time.RFC3339),
 		"uptime_seconds":   int64(time.Since(h.started).Seconds()),
@@ -439,7 +449,7 @@ func (h *Hub) apiPlans(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
 		return
 	}
-	plans := h.cfg.Overrides.Plans()
+	plans := h.overrides().Plans()
 	rows, err := h.st.PlanIncludedEvents(r.Context())
 	if err != nil {
 		storeError(w, r, err)

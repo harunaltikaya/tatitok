@@ -201,6 +201,79 @@ export function fetchLimits(): Promise<{ providers: LimitsSnapshot }> {
   return getJSON(`/api/v1/limits`);
 }
 
+// Onboarding (Stage 2): thin wrappers over the hub's /api/onboard/* — detection
+// + the apply (write prices.json + reprice). Backend reuses Stage 1's logic.
+export interface OnboardTier {
+  tier: string;
+  price_usd: string; // published list default (decimal USD)
+}
+export interface OnboardCurrent {
+  declared: boolean;
+  monthly_price_micro: number | null;
+  window_seconds: number;
+  window_start: string;
+}
+export interface OnboardCard {
+  provider_arg: string; // "claude" | "codex"
+  plan_name: string; // card label, e.g. "claude-max"
+  provider: string; // "anthropic" | "openai"
+  detected_tier: string; // "" when not detected / ambiguous (Claude always "")
+  detected_raw: string; // raw plan_type as logged ("pro")
+  ambiguous: boolean; // Codex Pro $100/$200 — a choice, never guessed
+  ambiguous_options: string[];
+  detection_source: string;
+  subscription_signal: string;
+  note: string;
+  windows_present: boolean; // live limits signal (sub-vs-metered hint only)
+  metered_available: boolean;
+  tiers: OnboardTier[];
+  current: OnboardCurrent;
+}
+export interface OnboardDetect {
+  snapshot_version: string;
+  has_usage: boolean;
+  has_plans: boolean;
+  cards: OnboardCard[];
+}
+export interface OnboardApplyCard {
+  provider_arg: string;
+  tier: string; // tier name, or "metered"
+  price_usd?: string; // override; omit for the list default
+}
+export interface OnboardApplyResult {
+  ok: boolean;
+  added: string[];
+  replaced: string[];
+  removed: string[];
+  created: boolean;
+  repriced: number;
+  cost_changed: number;
+  by_basis: { value: string; events: number }[];
+}
+
+export function fetchOnboardDetect(): Promise<OnboardDetect> {
+  return getJSON(`/api/onboard/detect`);
+}
+
+export async function applyOnboard(cards: OnboardApplyCard[]): Promise<OnboardApplyResult> {
+  const resp = await fetch(`/api/onboard/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cards }),
+  });
+  if (!resp.ok) {
+    let msg = `${resp.status}`;
+    try {
+      const e = await resp.json();
+      msg = e?.error?.message ?? msg;
+    } catch {
+      /* not the envelope — keep the status */
+    }
+    throw new Error(`apply: ${msg}`);
+  }
+  return resp.json() as Promise<OnboardApplyResult>;
+}
+
 // providerForPlan maps an owner-declared plan to the reported-limits provider
 // key the extension uses ("claude" off claude.ai, "codex" off chatgpt.com).
 // PlanStatus carries no provider, so derive it from the declared name

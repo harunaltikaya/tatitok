@@ -9,6 +9,7 @@ import {
   fetchPlans,
   fetchLimits,
   fetchActivity,
+  fetchOnboardDetect,
   usd,
   compactTokens,
   totalTokens,
@@ -26,6 +27,7 @@ import {
   type ModelInfo,
   type LimitsSnapshot,
   type PlanStatus,
+  type OnboardDetect,
 } from "./api";
 import {
   displayValue,
@@ -71,6 +73,12 @@ import FilterChip from "./ui/FilterChip";
 import Badge from "./ui/Badge";
 import Card from "./ui/Card";
 import Stat from "./ui/Stat";
+import Onboarding from "./components/Onboarding";
+import { shouldOfferOnboarding } from "./onboarding";
+
+// Suppresses the first-run auto-open after the user skips (browser-only, like
+// the layout/theme). The header "plans" button always re-opens regardless.
+const ONBOARD_DISMISS_KEY = "tatitok.onboard.dismissed";
 
 const presets = [
   { label: "7d", days: 7 },
@@ -276,6 +284,9 @@ export default function App() {
   // yields the card empty-state, never a broken dashboard.
   const [limits, setLimits] = useState<LimitsSnapshot>({});
   const [health, setHealth] = useState<Health | null>(null);
+  // Onboarding (Stage 2): the detect payload + whether the confirm panel is open.
+  const [onboardDetect, setOnboardDetect] = useState<OnboardDetect | null>(null);
+  const [showOnboard, setShowOnboard] = useState(false);
   const [source, setSource] = useState(""); // serving path of the day query ("rollup"|"events")
   const [err, setErr] = useState<string | null>(null);
   // Panel layout (M6 Task 4) is LOCAL presentation state: it lives in the
@@ -415,6 +426,47 @@ export default function App() {
       clearInterval(id);
     };
   }, []);
+
+  // Onboarding (Stage 2): detect on mount; auto-offer the panel on FIRST RUN
+  // (usage present, no plans declared) unless the user previously skipped. The
+  // header "plans" button (below) always re-opens it.
+  useEffect(() => {
+    fetchOnboardDetect()
+      .then((d) => {
+        setOnboardDetect(d);
+        const skipped =
+          typeof localStorage !== "undefined" && localStorage.getItem(ONBOARD_DISMISS_KEY) === "1";
+        if (shouldOfferOnboarding(d) && !skipped) setShowOnboard(true);
+      })
+      .catch(() => {
+        /* hub /detect unavailable — no panel; dashboard is unaffected */
+      });
+  }, []);
+
+  // Always re-openable (settings entry): a fresh detect, then open.
+  const openOnboard = () =>
+    fetchOnboardDetect()
+      .then((d) => {
+        setOnboardDetect(d);
+        setShowOnboard(true);
+      })
+      .catch(() => {});
+  const closeOnboard = () => {
+    setShowOnboard(false);
+    try {
+      localStorage.setItem(ONBOARD_DISMISS_KEY, "1");
+    } catch {
+      /* private mode — first-run will just offer again next load */
+    }
+  };
+  // After apply, the server already wrote prices.json + repriced; refetch so the
+  // value populates without a manual reload.
+  const onboardApplied = () => {
+    setShowOnboard(false);
+    fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
+    loadRange(from, to, fq, tz);
+    fetchOnboardDetect().then(setOnboardDetect).catch(() => {});
+  };
 
   // The owner's stop-1 chart direction: API-EQUIVALENT cost is the
   // primary daily chart; actual out-of-pocket cost gets its own chart —
@@ -563,6 +615,9 @@ export default function App() {
 
   return (
     <div className="mx-auto min-h-screen max-w-[var(--content-max)] bg-app px-6 py-5 text-primary">
+      {showOnboard && onboardDetect && (
+        <Onboarding detect={onboardDetect} onApplied={onboardApplied} onClose={closeOnboard} />
+      )}
       <header className="mb-5 flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-3">
           <span className="text-primary"><Mark size={26} /></span>
@@ -584,6 +639,9 @@ export default function App() {
           </Button>
           <Button size="sm" variant="subtle" active={view === "detail"} aria-current={view === "detail" ? "page" : undefined} onClick={() => setView("detail")}>
             detail
+          </Button>
+          <Button size="sm" variant="subtle" onClick={openOnboard} title="declare your subscription plans">
+            plans
           </Button>
         </nav>
         <div className="ml-auto flex flex-wrap items-center gap-2 text-sm">

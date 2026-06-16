@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/harunaltikaya/tatitok/internal/limits"
@@ -67,6 +68,14 @@ type Hub struct {
 	ln  net.Listener
 	srv *http.Server
 	w   *watcher // nil when no watch targets
+
+	// ovMu guards cfg.Overrides, which onboarding (/api/onboard/apply) swaps
+	// at runtime after rewriting prices.json. API readers go through
+	// overrides(); the swap goes through setOverrides(). The watcher keeps
+	// the pointer it was started with (immutable *Overrides), so a swap is
+	// race-free — live ingest picks up new overrides on the next serve.
+	ovMu    sync.RWMutex
+	applyMu sync.Mutex // serializes /api/onboard/apply (write + recompute)
 
 	// lim is the display-only reported-usage-limits store (M9): fenced from
 	// the event store/pricing/rollups/parity — see internal/limits.
@@ -213,6 +222,23 @@ func Start(cfg Config) (*Hub, error) {
 			"debounce", debounce.String(), "poll_interval", poll.String())
 	}
 	return h, nil
+}
+
+// overrides returns the current price overrides (never nil-deref: callers
+// must still nil-check the *Overrides, whose methods are nil-safe anyway).
+func (h *Hub) overrides() *pricing.Overrides {
+	h.ovMu.RLock()
+	defer h.ovMu.RUnlock()
+	return h.cfg.Overrides
+}
+
+// setOverrides swaps in freshly-loaded overrides after onboarding rewrote
+// prices.json. The watcher keeps its own (immutable) pointer; this only
+// updates what the API surface and the next recompute see.
+func (h *Hub) setOverrides(ov *pricing.Overrides) {
+	h.ovMu.Lock()
+	defer h.ovMu.Unlock()
+	h.cfg.Overrides = ov
 }
 
 // Addr is the actually-bound address (resolves ":0" test listeners).
