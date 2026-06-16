@@ -1,0 +1,38 @@
+{
+  "_source": {
+    "_doc": [
+      "Monthly LIST prices (USD) of consumer subscription tiers, per provider.",
+      "These are DEFAULTS for `tatitok onboard`, not assertions: every value is",
+      "shown to the user, overridable at onboard time (--claude-price/--codex-price),",
+      "and editable in prices.json afterward (then `tatitok recompute --pricing`).",
+      "Prices are INPUTS, not code — this file mirrors the litellm price-snapshot",
+      "ceremony (internal/pricing/snapshot_meta.json): refreshing it is a deliberate",
+      "owner step, confirmed against the providers' public pricing pages.",
+      "free = no paid subscription priced at $0/mo (covers usage as plan_included $0);",
+      "for true pay-per-token usage choose 'metered' at onboard time (no plan written)."
+    ],
+    "note": "Published consumer plan list prices as seeded; confirm at the source URLs when refreshing.",
+    "2026-06-17_correction": "OpenAI Pro split into two price points (both reported as plan_type=\"pro\" in Codex logs): Pro $100 and Pro $200 — indistinguishable in the log, so they are a USER CHOICE (pro_100/pro_200), never guessed. Added the $8 Go tier. Anthropic re-verified unchanged.",
+    "source_urls": {
+      "anthropic": "https://www.anthropic.com/pricing",
+      "openai": "https://openai.com/chatgpt/pricing/"
+    },
+    "fetched": "2026-06-17"
+  },
+  "version": "tier-prices-2026-06-17.2",
+  "tiers": {
+    "anthropic": {
+      "free": 0,
+      "pro": 20,
+      "max_5x": 100,
+      "max_20x": 200
+    },
+    "openai": {
+      "free": 0,
+      "go": 8,
+      "plus": 20,
+      "pro_100": 100,
+      "pro_200": 200
+    }
+  }
+}

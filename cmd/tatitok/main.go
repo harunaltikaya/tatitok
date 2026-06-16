@@ -43,6 +43,7 @@ Usage:
   tatitok recompute --provenance [--dry-run] [--db PATH] [--source NAME]
   tatitok recompute --model-map  [--dry-run] [--db PATH]
   tatitok recompute --pricing    [--dry-run] [--db PATH]
+  tatitok onboard [--claude TIER] [--codex TIER] [--claude-price USD] [--codex-price USD] [--dry-run]
   tatitok serve [--db PATH] [--addr HOST:PORT] [--debounce DUR] [--poll-interval DUR]
 
 ingest with no --source runs every detected adapter and reports per
@@ -73,6 +74,12 @@ re-derives every cost column under the current price snapshot +
 overrides — the ONLY operation that ever changes a historical cost.
 All are explicit and logged, never a side effect (PRD AS-4); --dry-run
 prints the plan and changes nothing.
+onboard authors the "plans" section of prices.json from detection + your
+declared tiers: the Codex/ChatGPT tier is auto-detected from the Codex log
+(rate_limits.plan_type); the Claude tier is user-supplied (not detectable).
+Prices default to the published consumer list price (overridable). It merges
+non-destructively (existing overrides preserved, prior file backed up), then
+prints the recompute --pricing step that reprices stored events.
 serve runs the hub: an HTTP server on loopback (default ` + hub.DefaultAddr + `;
 --addr for another LOOPBACK address — a non-loopback bind is refused, tatitok
 is local-only with no auth or TLS, so use an SSH/Tailscale tunnel for remote
@@ -98,6 +105,8 @@ func run(args []string) int {
 		err = cmdDoctor(args[1:])
 	case "recompute":
 		err = cmdRecompute(args[1:])
+	case "onboard":
+		err = cmdOnboard(args[1:])
 	case "serve":
 		err = cmdServe(args[1:])
 	case "help", "-h", "--help":
