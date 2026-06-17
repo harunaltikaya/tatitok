@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -161,6 +162,88 @@ func eventCount(t *testing.T, st *store.Store) int64 {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// basisCount returns how many stored events carry the given pricing basis.
+func basisCount(t *testing.T, st *store.Store, basis string) int64 {
+	t.Helper()
+	facets, err := st.Facets(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fv := range facets["basis"] {
+		if fv.Value == basis {
+			return fv.Events
+		}
+	}
+	return 0
+}
+
+// TestWatchPricesNewEventsUnderAppliedOverrides is the finding #2 reproduction,
+// kept permanently: the live watcher must price events ingested AFTER an
+// onboarding /apply under the NEW overrides — not the *Overrides pointer it was
+// handed at hub start. A claude-code root is watched with no plans declared (so
+// events land api_price); /apply then declares the claude-max plan (whose
+// matcher covers the claude-code harness); a subsequent append is ingested by
+// the watcher and must come out plan_included. With the stale-pointer bug the
+// watcher re-prices everything under the startup (no-plan) overrides, so any
+// api_price event after the apply means the bug is present.
+func TestWatchPricesNewEventsUnderAppliedOverrides(t *testing.T) {
+	// Onboarding's /apply writes prices.json under this config dir.
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	files := fixtureSessionFiles(t)
+	grow := files[len(files)-1] // biggest: the tail half carries real events
+	head, tail := splitLines(t, grow.content)
+
+	root := t.TempDir()
+	dir := filepath.Join(root, grow.project)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, grow.name)
+	if err := os.WriteFile(path, head, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// pollOnlyAdapter makes the append deterministically caught by the poller
+	// (no fsnotify-timing dependence). The source harness stays "claude-code",
+	// so the claude-max plan matcher still matches its events.
+	src := adapters.Source{Harness: "claude-code", Root: root, Machine: "gx10"}
+	h := startWatchHub(t, []WatchTarget{{Adapter: pollOnlyAdapter{}, Source: src}},
+		100*time.Millisecond, 100*time.Millisecond)
+
+	// Catch-up ingest of the head, under NO declared plan → api_price.
+	waitFor(t, "catch-up ingest of the head", func() bool { return eventCount(t, h.st) > 0 })
+	if got := basisCount(t, h.st, "api_price"); got == 0 {
+		t.Fatalf("head events should be api_price before any plan is declared (got 0)")
+	}
+
+	// Declare the claude-max plan via /apply (covers the claude-code harness).
+	if status, b := postJSON(t, h, "/api/onboard/apply",
+		`{"cards":[{"provider_arg":"claude","tier":"max_20x"}]}`); status != http.StatusOK {
+		t.Fatalf("apply status %d: %s", status, b)
+	}
+
+	// Append NEW lines, ingested by the watcher AFTER the apply swapped overrides.
+	before := eventCount(t, h.st)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(tail); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	waitFor(t, "watcher to ingest the post-apply append", func() bool { return eventCount(t, h.st) > before })
+
+	if got := basisCount(t, h.st, "api_price"); got != 0 {
+		t.Fatalf("after /apply the watcher produced %d api_price events — it is pricing under stale overrides (finding #2)", got)
+	}
+	if got := basisCount(t, h.st, "plan_included"); got == 0 {
+		t.Fatal("no plan_included events after apply — the declared plan never took effect")
+	}
 }
 
 // TestWatchNotifyIncremental: the fsnotify path end to end — catch-up

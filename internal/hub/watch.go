@@ -66,8 +66,13 @@ type watchTarget struct {
 }
 
 type watcher struct {
-	st        *store.Store
-	overrides *pricing.Overrides
+	st *store.Store
+	// overrides returns the CURRENT price overrides, read once per ingest pass
+	// (not a pointer captured at startup): onboarding's apply swaps overrides at
+	// runtime, and the swap is RWMutex-guarded in the hub, so a pass that runs
+	// after an apply prices new events under the new plans (finding #2). Never
+	// nil — startWatcher installs a nil-returning default if handed nil.
+	overrides func() *pricing.Overrides
 	debounce  time.Duration
 	pollEvery time.Duration
 	targets   []*watchTarget
@@ -92,7 +97,10 @@ type watcher struct {
 // startWatcher wires the goroutines: one fsnotify loop for all notify
 // targets, one poller for polling targets (which also runs the startup
 // catch-up scan for everyone), one debounce/ingest loop.
-func startWatcher(st *store.Store, ov *pricing.Overrides, targets []WatchTarget, debounce, pollEvery time.Duration, onPass func(passSummary), opts ...func(*watcher)) *watcher {
+func startWatcher(st *store.Store, ov func() *pricing.Overrides, targets []WatchTarget, debounce, pollEvery time.Duration, onPass func(passSummary), opts ...func(*watcher)) *watcher {
+	if ov == nil {
+		ov = func() *pricing.Overrides { return nil }
+	}
 	loopCtx, cancelLoop := context.WithCancel(context.Background())
 	passCtx, cancelPass := context.WithCancel(context.Background())
 	w := &watcher{
@@ -438,7 +446,7 @@ func (w *watcher) runPass(ctx context.Context, batch map[*watchTarget]map[string
 			paths = append(paths, p)
 		}
 		start := time.Now()
-		sum, err := adapters.IngestFiles(ctx, w.st, t.adapter, t.src, paths, w.overrides)
+		sum, err := adapters.IngestFiles(ctx, w.st, t.adapter, t.src, paths, w.overrides())
 		if err != nil {
 			slog.Error("watch ingest pass failed — will retry on next change",
 				"harness", t.src.Harness, "files", len(paths), "error", err)

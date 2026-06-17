@@ -70,10 +70,12 @@ type Hub struct {
 	w   *watcher // nil when no watch targets
 
 	// ovMu guards cfg.Overrides, which onboarding (/api/onboard/apply) swaps
-	// at runtime after rewriting prices.json. API readers go through
-	// overrides(); the swap goes through setOverrides(). The watcher keeps
-	// the pointer it was started with (immutable *Overrides), so a swap is
-	// race-free — live ingest picks up new overrides on the next serve.
+	// at runtime after rewriting prices.json. Everyone reads through the
+	// overrides() getter (RLock); the swap goes through setOverrides() (Lock).
+	// The watcher reads overrides() once per ingest pass too (it was handed the
+	// getter, not a pointer), so events ingested AFTER an apply are priced under
+	// the NEW overrides — no stale snapshot — and the RWMutex makes the
+	// concurrent per-pass read / apply-time swap race-free.
 	ovMu    sync.RWMutex
 	applyMu sync.Mutex // serializes /api/onboard/apply (write + recompute)
 
@@ -217,7 +219,10 @@ func Start(cfg Config) (*Hub, error) {
 		if poll <= 0 {
 			poll = DefaultPollInterval
 		}
-		h.w = startWatcher(st, cfg.Overrides, cfg.WatchTargets, debounce, poll, h.publishPass)
+		// Hand the watcher the RWMutex-guarded getter (not cfg.Overrides): it
+		// re-reads current overrides each pass, so live ingest after an
+		// onboarding apply prices new events under the new plans (finding #2).
+		h.w = startWatcher(st, h.overrides, cfg.WatchTargets, debounce, poll, h.publishPass)
 		slog.Info("watchers started", "targets", len(cfg.WatchTargets),
 			"debounce", debounce.String(), "poll_interval", poll.String())
 	}
@@ -233,8 +238,10 @@ func (h *Hub) overrides() *pricing.Overrides {
 }
 
 // setOverrides swaps in freshly-loaded overrides after onboarding rewrote
-// prices.json. The watcher keeps its own (immutable) pointer; this only
-// updates what the API surface and the next recompute see.
+// prices.json. It updates the single source of truth every reader shares —
+// the API surface, the next recompute, AND the watcher (which reads through
+// overrides() once per pass) — so live ingest immediately prices new events
+// under the new plans.
 func (h *Hub) setOverrides(ov *pricing.Overrides) {
 	h.ovMu.Lock()
 	defer h.ovMu.Unlock()
