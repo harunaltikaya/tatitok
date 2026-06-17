@@ -26,8 +26,6 @@ these to design with higher fidelity:
   - `web/src/App.tsx` — the dashboard shell, range/timezone header, stat cards, panel grid
   - `web/src/components/{Plans,Breakdown,FacetRail,Panel,Chart}.tsx` — the real components
   - `web/src/api.ts` — number formatting (`usd`, `compactTokens`) and the data model
-  - `docs/PRD.md` — the full product definition (vision, planes, accuracy model, pages)
-  - `CLAUDE.md` — standing engineering rules
 - **Brand assets provided:** `tatitok-logo.png` (mark + wordmark), `tatitok-logo-jost.png`
   (the owner's note pinning the wordmark to **Jost**).
 

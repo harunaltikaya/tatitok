@@ -62,11 +62,9 @@ web/dist/*
 # trailing slash) ignores both forms so neither shows as untracked.
 .codex
 
-# --- Internal docs: kept on the owner's disk, not published ---
-# Untracked so they stay local (CLAUDE.md still works as live project
-# instructions) without entering the repo. NOTE: this only affects the current
-# tip — they remain in git HISTORY, so scrub history before the repo goes public.
+# --- Local-only working files (kept on disk, not tracked) ---
 /CLAUDE.md
 /AGENTS.md
 /docs/PRD.md
 /docs/milestone-*.md
+/docs/format-notes.md
