@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none" role="img" aria-label="tatitok">
-  <g stroke="currentColor" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M50 16 H18 V104 H50"></path>
-    <path d="M70 16 H102 V104 H70"></path>
-  </g>
-  <circle cx="60" cy="60" r="14" fill="#1c9d74"></circle>
-</svg>

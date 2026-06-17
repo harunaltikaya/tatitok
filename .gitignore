@@ -68,3 +68,8 @@ web/dist/*
 /docs/PRD.md
 /docs/milestone-*.md
 /docs/format-notes.md
+
+# Design system (component previews, UI kits, brand tokens) — a dev/reference
+# artifact kept local-only, not published. The app does not build or run from
+# it; the dashboard's tokens and font are vendored under web/src/.
+/design-system/
