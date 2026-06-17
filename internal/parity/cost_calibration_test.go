@@ -7,7 +7,7 @@ package parity
 // stay zero-tolerance in their own gate).
 //
 // Measured baselines (snapshot litellm-2026-06-11-3ceb8bff vs ccusage
-// 20.0.9), recorded in the milestone-3 report:
+// 20.0.9):
 //
 //   - codex: exact within per-event rounding — max |Δ| $0.00004/day.
 //   - claude-code: exact within rounding except 2026-06-10, −$0.258734

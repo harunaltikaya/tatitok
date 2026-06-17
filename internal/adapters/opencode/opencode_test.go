@@ -338,8 +338,8 @@ func assertRollupMatchesDaily(t *testing.T, s *store.Store, when string) {
 // superseded when a later ingest reads its finalized form. The
 // "in-flight" variant is derived from one real fixture row by removing
 // data.time.completed and shrinking tokens.output — the documented
-// mid-turn state a live snapshot could capture (docs/format-notes.md
-// "Message rows are mutable"); no log lines are fabricated from scratch.
+// mid-turn state a live snapshot could capture; no log lines are
+// fabricated from scratch.
 func TestMutatedRowSupersededOnReingest(t *testing.T) {
 	ctx := context.Background()
 

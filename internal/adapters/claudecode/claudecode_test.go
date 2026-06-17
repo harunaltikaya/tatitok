@@ -491,7 +491,7 @@ commit the golden diff together with the AdapterVersion bump and note the parity
 
 // Golden test: fixtures in → exact expected normalized events out.
 // expected/events.json was generated from the first verified-parity run
-// (milestone-1 Task 4) and is FROZEN: a missing file fails the test, and
+// and is FROZEN: a missing file fails the test, and
 // regeneration demands an explicit two-flag confirmation of the ceremony
 // above — golden updates are never casual.
 func TestGoldenEvents(t *testing.T) {

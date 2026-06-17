@@ -1,7 +1,7 @@
 package adapters
 
 // RecomputeProvenance implements `tatitok recompute --provenance` (M3
-// Task 0, PRD AS-4): re-read source files through the CURRENT adapters
+// Task 0, AS-4): re-read source files through the CURRENT adapters
 // and fill the NULL provenance columns (adapter_version, source_id) of
 // already-stored events. It is explicit, logged, and never a side
 // effect of ingest. Nothing is ingested and no payload is ever altered:

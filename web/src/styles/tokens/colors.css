@@ -9,9 +9,9 @@
    Everything else is neutral gray for structure and axes.
    The emotional center is the positive "value extracted" green.
 
-   M7 note: this is the design system's tokens/colors.css with the
-   [data-theme="light"] block intentionally OMITTED — milestone 7 ships
-   dark only (the scope fence wins where it and the DS diverge). The dark
+   M7 note: this is the vendored tokens/colors.css with the
+   [data-theme="light"] block intentionally OMITTED — M7 ships
+   dark only (a deliberate scope choice). The dark
    tone variants (warm / cool) are added in tokens/themes.css (Chunk B).
    ============================================================ */
 

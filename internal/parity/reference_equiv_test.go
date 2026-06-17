@@ -1,6 +1,6 @@
 package parity
 
-// Local cloud-equivalent over the real opencode fixture set (PRD FR-9.3,
+// Local cloud-equivalent over the real opencode fixture set (FR-9.3,
 // M3.1 finding 6): with a reference_models mapping configured, every
 // local-basis (vllm*) event carries cost_api_equiv_micro at the
 // reference model's rates; unmapped local models and the unconfigured

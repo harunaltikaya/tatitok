@@ -1,7 +1,7 @@
 package core
 
 // Tiny synthetic inputs are allowed here: these test the pure ID hasher,
-// not adapter parsing (CLAUDE.md hard rule 1).
+// not adapter parsing.
 
 import (
 	"regexp"

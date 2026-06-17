@@ -2,7 +2,7 @@ package store
 
 // Synthetic core.Event values are fine here: this tests the store's SQL
 // behavior (pure infrastructure), not adapter parsing — no log lines are
-// fabricated (CLAUDE.md hard rule 1).
+// fabricated.
 
 import (
 	"context"

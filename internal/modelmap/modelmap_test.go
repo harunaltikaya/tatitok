@@ -2,7 +2,7 @@ package modelmap
 
 import "testing"
 
-// Exit criterion (milestone-3): the seed covers EVERY model string that
+// Exit criterion: the seed covers EVERY model string that
 // appears in the committed fixtures. This list is the DB-visible
 // inventory over all three fixture sets (claude-code, codex, opencode)
 // plus <synthetic>, which the claude-code adapter excludes today but the
@@ -35,7 +35,7 @@ func TestSeedCoversEveryFixtureModel(t *testing.T) {
 
 func TestReviewedFamilies(t *testing.T) {
 	want := map[string]string{
-		"<synthetic>":                  "synthetic",         // milestone-3 Task 1
+		"<synthetic>":                  "synthetic",         // covered defensively
 		"deepseek-v4-flash-free":       "deepseek-v4-flash", // billing tier of the same model
 		"qwen3.6-35b-nvfp4-tecnigmaai": "qwen3.6-35b",       // quant+org recipe stripped
 		"qwen3.6-35b-a3b":              "qwen3.6-35b-a3b",   // distinct architecture, own family
@@ -48,7 +48,7 @@ func TestReviewedFamilies(t *testing.T) {
 	}
 }
 
-// Unknown models pass through verbatim — never guessed (CLAUDE.md).
+// Unknown models pass through verbatim — never guessed.
 // Covers the live-only shapes the owner reported: slash-named models and
 // the empty codex pre-turn_context model.
 func TestUnknownModelsPassThrough(t *testing.T) {

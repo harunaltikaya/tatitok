@@ -3,7 +3,7 @@
 //
 // ccusage is the parity referee for every rule here: which records count,
 // how duplicates collapse, how days bucket. Deviating from ccusage's
-// behavior is a bug by definition (CLAUDE.md hard rule 2).
+// behavior is a bug by definition.
 package claudecode
 
 import (
@@ -170,7 +170,7 @@ func ingestFile(ctx context.Context, src adapters.Source, f string, sink adapter
 // Cross-file dedup order note: Backfill sorts files by earliest
 // timestamp (ccusage's order); incremental ingest is arrival-ordered
 // instead — last occurrence wins either way, and a later full backfill
-// reconciles the exotic cross-file-duplicate case (format-notes).
+// reconciles the exotic cross-file-duplicate case.
 func (Adapter) BackfillFile(ctx context.Context, src adapters.Source, path string, sink adapters.Sink) error {
 	return ingestFile(ctx, src, path, sink)
 }

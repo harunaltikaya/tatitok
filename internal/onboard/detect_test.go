@@ -8,8 +8,8 @@ import (
 )
 
 // TestPlanTypeFromLine exercises the pure rollout-line parser with tiny
-// synthetic JSON (CLAUDE.md allows synthetic inputs for pure-function unit
-// tests). The directory-discovery path is covered against the real fixture
+// synthetic JSON, which is fine for a pure-function unit test. The
+// directory-discovery path is covered against the real fixture
 // in TestDetectCodexTier below.
 func TestPlanTypeFromLine(t *testing.T) {
 	cases := []struct {

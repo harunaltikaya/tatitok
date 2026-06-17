@@ -1,5 +1,5 @@
 // Package adapters defines the contract every harness adapter implements
-// (CLAUDE.md "Adapter contract", redesigned in M2 Task 0). One package per
+// (the Adapter contract, redesigned in M2 Task 0). One package per
 // harness lives below this one.
 //
 // Contract v2 — bounded, error-aware batch emission:
@@ -108,7 +108,7 @@ type WatchSpec struct {
 	// PollOnly marks fsnotify unsuitable for this source. The opencode
 	// store is a live SQLite database written by another process —
 	// polling is the primary mechanism by design (verdict and the WAL
-	// empirical basis recorded in docs/format-notes.md).
+	// empirical basis verified on the live store).
 	PollOnly bool
 	// PollPaths lists the exact files the poller stats for a PollOnly
 	// source, so no tree walk is needed (opencode: the database and its
@@ -144,6 +144,6 @@ type Adapter interface {
 	// changed file: the whole file is re-read — deliberately no offset
 	// tracking, so a pass is idempotent by construction — and re-emitted
 	// rows hit the deterministic-ID replacement path, last occurrence
-	// wins (M4 Task 1; decision recorded in docs/format-notes.md).
+	// wins (M4 Task 1).
 	BackfillFile(ctx context.Context, src Source, path string, sink Sink) error
 }

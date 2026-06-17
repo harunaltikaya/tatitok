@@ -1,5 +1,5 @@
-// Package parity implements the ccusage token-parity conformance gate
-// (PRD AS-6, milestone-1 Task 6). Per-day input/output/cache-write/
+// Package parity implements the ccusage token-parity conformance gate.
+// Per-day input/output/cache-write/
 // cache-read sums must match ccusage exactly — zero tolerance. A mismatch
 // is a parsing/dedup bug to investigate, never something to waive by
 // editing expectations.

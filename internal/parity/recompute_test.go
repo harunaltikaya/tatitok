@@ -2,7 +2,7 @@ package parity
 
 // `recompute --provenance` over the real claude-code fixture set (M3
 // Task 0): a database stripped back to pre-provenance state must come
-// back fully stamped — with the stored numbers untouched (PRD AS-4).
+// back fully stamped — with the stored numbers untouched (AS-4).
 
 import (
 	"context"

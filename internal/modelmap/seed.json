@@ -4,7 +4,7 @@
     "of truth mirrored into the model_map table at store open. Raw model",
     "strings stay immutable forever; only the derived model_family column",
     "uses this map. Unknown models pass through with model_family = model",
-    "(CLAUDE.md: never normalize by guessing) — that covers live-only",
+    "(never normalized by guessing) — that covers live-only",
     "strings like slash-named models (nvidia/...) until they earn entries.",
     "",
     "Editing this file: bump map_version on ANY change to families.",

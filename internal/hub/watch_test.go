@@ -1,7 +1,7 @@
 package hub
 
-// Watcher tests drive real fixture content (never fabricated lines —
-// CLAUDE.md hard rule 1) through temp watch roots: files are copied or
+// Watcher tests drive real fixture content (never fabricated lines)
+// through temp watch roots: files are copied or
 // appended in parts, and the watched store must converge to exactly
 // what a CLI backfill of the same root produces, with rollups byte-equal
 // to direct aggregation throughout.

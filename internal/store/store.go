@@ -147,7 +147,7 @@ var migrations = []string{
 	);`,
 	// Pricing engine (M3 Task 2, migration 7). Four derived cost columns,
 	// integer micro-USD only (no REAL anywhere): cost_usd_micro is NULL
-	// exactly when the event could not be priced; cost_basis per PRD §9.1
+	// exactly when the event could not be priced; cost_basis
 	// (M3 uses 'local' — the energy model is a later milestone);
 	// price_snapshot + price_rates pin what priced each row (FR-9.5), so
 	// a snapshot refresh never changes historical costs silently — that
@@ -475,7 +475,7 @@ var migrationHooks = map[int]func(*sql.Tx) error{
 }
 
 // reportLineageBackfill logs what migration 5 linked and what it left
-// NULL ("otherwise NULL + counted" — milestone-3 Task 0).
+// NULL ("otherwise NULL + counted" — M3 Task 0).
 func reportLineageBackfill(tx *sql.Tx) error {
 	var events, unlinked, srcNoMachine int64
 	if err := tx.QueryRow(`SELECT COUNT(*),

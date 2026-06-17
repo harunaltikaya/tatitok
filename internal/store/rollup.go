@@ -1,6 +1,6 @@
 package store
 
-// Rollup queries and the explicit rebuild (M3 Task 3, PRD §9.2). The
+// Rollup queries and the explicit rebuild (M3 Task 3). The
 // rollup_daily table itself is maintained by the migration-9 triggers
 // inside every write transaction; see store.go.
 

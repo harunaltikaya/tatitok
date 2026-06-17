@@ -3,8 +3,7 @@ package adapters
 // Contract-v2 ingest mechanics: cancellation, per-file rollback, and
 // provenance stamping. Synthetic core.Event values are fine here — this
 // tests the ingest layer's transaction/cancellation behavior (pure
-// infrastructure), not adapter parsing; no log lines are fabricated
-// (CLAUDE.md hard rule 1).
+// infrastructure), not adapter parsing; no log lines are fabricated.
 
 import (
 	"context"

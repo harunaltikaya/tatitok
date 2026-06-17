@@ -13,7 +13,7 @@ const MeteredTier = "metered"
 
 // ProviderTemplate is the FIXED per-provider plan shape onboarding reuses
 // verbatim — the live owner-declared matchers, window and card label
-// (docs/milestone-8.md). Only the TIER (hence the price) varies per user;
+// Only the TIER (hence the price) varies per user;
 // the plan Name stays the card label whatever the tier.
 type ProviderTemplate struct {
 	// Arg is the CLI selector ("claude" / "codex").
@@ -25,7 +25,7 @@ type ProviderTemplate struct {
 	Matcher  PlanMatcherOut
 	Window   string
 	// WindowStart anchors the rolling window (Anthropic floors to the UTC
-	// hour, OpenAI anchors at the exact first request — milestone-8).
+	// hour, OpenAI anchors at the exact first request).
 	WindowStart string
 	// Detectable reports whether the tier can be auto-detected (codex yes,
 	// claude no).

@@ -27,7 +27,7 @@ package pricing
 //
 // Keys match raw model first, then model_family (see Apply/Resolve).
 //
-// "reference_models" is the local cloud-equivalent gate (PRD FR-9.3,
+// "reference_models" is the local cloud-equivalent gate (FR-9.3,
 // default off): it maps a LOCAL model (raw model or family key) to the
 // snapshot model whose prices answer "what would this usage have cost
 // on X". When configured, local-basis events bill 0 as always but carry

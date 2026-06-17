@@ -28,7 +28,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// TestDefaultAddrIsLoopback pins the milestone-4 ground rule: the
+// TestDefaultAddrIsLoopback pins the loopback ground rule: the
 // default bind is 127.0.0.1 and the default port avoids the ports
 // common local-AI tools claim.
 func TestDefaultAddrIsLoopback(t *testing.T) {

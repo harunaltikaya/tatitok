@@ -1,4 +1,4 @@
-// Package pricing is the M3 pricing engine (PRD FR-9.1..9.5): a pinned,
+// Package pricing is the M3 pricing engine (FR-9.1..9.5): a pinned,
 // embedded snapshot of the LiteLLM price DB plus a user override file,
 // resolved per event into integer micro-USD. No floats in storage or
 // arithmetic: snapshot prices (USD per token, decimal) are converted
@@ -26,7 +26,7 @@ var snapshotJSON []byte
 //go:embed snapshot_meta.json
 var snapshotMetaJSON []byte
 
-// Basis is the PRD §9.1 cost_basis enum, M3 form (the energy model is a
+// Basis is the cost_basis enum, M3 form (the energy model is a
 // later milestone, so `local` replaces `local_energy` for now).
 type Basis string
 
@@ -380,7 +380,7 @@ func USDToMicro(text string) (int64, error) {
 //     cache writes priced at the 5m-TTL rate — the 1h-TTL split lives in
 //     meta.cache_creation, a documented M3 approximation).
 //   - codex: input already EXCLUDES cached tokens and output already
-//     INCLUDES reasoning (format-notes); cache_write is always 0.
+//     INCLUDES reasoning; cache_write is always 0.
 //   - opencode: output EXCLUDES reasoning (verified on fixture rows:
 //     total = input+output+reasoning+cache), and reasoning bills as
 //     output tokens — so reasoning joins the output component.

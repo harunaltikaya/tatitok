@@ -2,10 +2,10 @@
 // keeps one row per message in a SQLite database
 // (<data-dir>/opencode/opencode.db, message table: id, session_id,
 // time_created, time_updated, data JSON) — the old per-message JSON file
-// layout is gone (see docs/format-notes.md "OpenCode").
+// layout is gone.
 //
-// ccusage (pinned, `ccusage opencode`) is the parity referee (CLAUDE.md
-// hard rule 2). Counting rules verified empirically against the pinned
+// ccusage (pinned, `ccusage opencode`) is the parity referee. Counting
+// rules verified empirically against the pinned
 // capture over the gx10 fixture set (exact per day, per model list and
 // all four sums):
 //
@@ -18,7 +18,7 @@
 //     cache.write → cache-write, reasoning reported separately;
 //   - provider and model are explicit on every message (providerID /
 //     modelID) and pass through VERBATIM — local vLLM providers appear
-//     and are never normalized (milestone-2 rule);
+//     and are never normalized;
 //   - days bucket by the row's time_created (epoch milliseconds; equal to
 //     data.time.created on every fixture row) in local time.
 //
@@ -31,8 +31,7 @@
 // the row's data blob until the message finishes, marked by
 // data.time.completed appearing (verified empirically on the live store,
 // 2026-06-11: every assistant row without time.completed carries zero
-// tokens, and no row changes after time.completed — see
-// docs/format-notes.md "Message rows are mutable"). A snapshot taken
+// tokens, and no row changes after time.completed). A snapshot taken
 // mid-turn could therefore hand us a partial row; it is still emitted
 // when its tokens are nonzero (ccusage counts it at the same snapshot —
 // parity), and the store's replacement semantics update the stored event
@@ -213,9 +212,9 @@ func (Adapter) BackfillFile(ctx context.Context, src adapters.Source, path strin
 
 // WatchSpec: the source is a live SQLite store written by another
 // process — polling is the primary mechanism (no fsnotify), per the
-// milestone-4 strategy and the empirical verdict in format-notes
-// ("opencode watch strategy"): the live store runs WAL, so the poller
-// stats the -wal alongside the database — in WAL mode the main file's
+// empirically verified watch strategy: the live store runs WAL, so the
+// poller stats the -wal alongside the database — in WAL mode the main
+// file's
 // mtime/size only move at checkpoint, while every write touches the
 // -wal. A change to either re-ingests the store; mode=ro + busy_timeout
 // reads never block the owning process (WAL readers are
@@ -341,7 +340,7 @@ func buildEvent(r *row, src adapters.Source) (core.Event, bool, error) {
 	reasoning := u.Reasoning
 	var meta map[string]any
 	if data.Cost != "" {
-		// Source-reported cost (store-and-compare, milestone-3 Task 2):
+		// Source-reported cost (store-and-compare):
 		// stored verbatim under meta, INCLUDING zero — a zero is OpenCode
 		// saying "free/local", which the reconciliation must see.
 		meta = map[string]any{"source_cost": data.Cost}

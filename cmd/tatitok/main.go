@@ -1,8 +1,9 @@
-// Command tatitok is a local-first AI token usage tracker.
-// Milestone 1: ingest Claude Code logs into SQLite and report daily stats.
+// Command tatitok is a local-first AI token usage tracker. It ingests
+// coding-agent logs (Claude Code, Codex, OpenCode) into SQLite, prices and
+// rolls up the usage, and serves a local dashboard over a loopback HTTP API.
 //
-// Stdlib flag instead of cobra: three subcommands with a handful of flags
-// each don't justify the dependency in M1 (CLAUDE.md leaves the call open).
+// Stdlib flag instead of cobra: a handful of subcommands with a few flags
+// each don't justify the dependency.
 package main
 
 import (
@@ -72,7 +73,7 @@ whose family changed, so derived columns stay mutually consistent
 whatever order the recomputes run in. recompute --pricing
 re-derives every cost column under the current price snapshot +
 overrides — the ONLY operation that ever changes a historical cost.
-All are explicit and logged, never a side effect (PRD AS-4); --dry-run
+All are explicit and logged, never a side effect; --dry-run
 prints the plan and changes nothing.
 onboard authors the "plans" section of prices.json from detection + your
 declared tiers: the Codex/ChatGPT tier is auto-detected from the Codex log
@@ -83,8 +84,9 @@ prints the recompute --pricing step that reprices stored events.
 serve runs the hub: an HTTP server on loopback (default ` + hub.DefaultAddr + `;
 --addr for another LOOPBACK address — a non-loopback bind is refused, tatitok
 is local-only with no auth or TLS, so use an SSH/Tailscale tunnel for remote
-access) until SIGINT/SIGTERM, shutting down cleanly. Watchers, the JSON API and
-the dashboard join in later M4 tasks. Recompute stays CLI-only and owner-run;
+access) until SIGINT/SIGTERM, shutting down cleanly. It watches the detected
+sources for new usage, serves the JSON API and the live SSE stream, and hosts
+the embedded dashboard. Recompute stays CLI-only and owner-run;
 the hub never rewrites history on its own.`
 
 func main() { os.Exit(run(os.Args[1:])) }
@@ -388,10 +390,9 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// cmdRecompute is the explicit recompute entrypoint (PRD AS-4: historical
-// numbers never change as a side effect; recompute is a command, logged).
-// M3 Task 0 ships --provenance; --model-map and --rollups join in later
-// M3 tasks.
+// cmdRecompute is the explicit recompute entrypoint: historical numbers
+// never change as a side effect — recompute is a command, and it is logged.
+// It dispatches the --provenance, --model-map, --rollups, and --pricing lanes.
 func cmdRecompute(args []string) error {
 	fs := flag.NewFlagSet("recompute", flag.ExitOnError)
 	provenance := fs.Bool("provenance", false, "fill NULL adapter_version/source-link columns from the source files")

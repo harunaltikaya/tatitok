@@ -5,7 +5,7 @@
 // ingest against the same database must stay safe (the M3.1 guarantees:
 // _txlock=immediate transactions + busy_timeout).
 //
-// Network posture: the no-runtime-network rule (CLAUDE.md hard rule 7)
+// Network posture: the no-runtime-network rule
 // governs OUTBOUND fetches; serving INBOUND on loopback does not violate
 // it. The bind is loopback-only: a non-loopback address is REFUSED at
 // startup (tatitok ships no auth or TLS) and a loopbackOnly middleware
@@ -37,7 +37,7 @@ import (
 // llama.cpp, 3000 node dev servers, 5173 vite, 11434 ollama, 1234
 // LM Studio, 7860 gradio, 8888 jupyter). A bind failure is fatal with a
 // message naming --addr — the hub never falls back to another port
-// silently (milestone-4 ground rule).
+// silently.
 const DefaultAddr = "127.0.0.1:8284"
 
 // Config is everything the hub needs to start. Precedence is decided by

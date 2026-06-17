@@ -2,7 +2,7 @@ package store
 
 // Source-lineage tests (M3 Task 0, migration 5). Synthetic rows are fine
 // here: this tests the store's SQL behavior (pure infrastructure), not
-// adapter parsing — no log lines are fabricated (CLAUDE.md hard rule 1).
+// adapter parsing — no log lines are fabricated.
 
 import (
 	"context"

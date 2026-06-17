@@ -1,6 +1,6 @@
 // Package core defines the unified usage-event model shared by every
-// adapter and the store: the Event struct (PRD §9.1 subset for M1), the
-// accuracy classes (PRD §9.4), and the deterministic event ID.
+// adapter and the store: the Event struct (the M1 subset), the accuracy
+// classes, and the deterministic event ID.
 package core
 
 import (
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Accuracy classifies how a token figure was obtained (PRD §9.4).
+// Accuracy classifies how a token figure was obtained.
 // It is assigned per event at ingest by the adapter and is immutable (AS-1).
 type Accuracy string
 
@@ -35,13 +35,13 @@ func (a Accuracy) Valid() bool {
 	return false
 }
 
-// SourceKind values (PRD §9.1). M1 only ingests harness logs.
+// SourceKind values. M1 only ingests harness logs.
 const (
 	SourceKindHarnessLog = "harness_log"
 )
 
 // Event is one LLM interaction (message/request), normalized across
-// sources. Subset of PRD §9.1 needed for M1; later milestones add cost,
+// sources. The subset needed for M1; later milestones add cost,
 // confidence and latency fields.
 type Event struct {
 	// ID is the deterministic idempotency key — see EventID / FallbackID.
@@ -70,7 +70,7 @@ type Event struct {
 	// thinking/reasoning tokens separately (Claude Code does not).
 	TokensReasoning *int64 `json:"tokens_reasoning,omitempty"`
 
-	// Cost fields (M3 Task 2, PRD §9.1) — derived at ingest by the pricing
+	// Cost fields (M3 Task 2) — derived at ingest by the pricing
 	// engine, never by adapters (adapter-emitted events leave them empty,
 	// so adapter goldens are cost-free). Integer micro-USD; CostUSDMicro
 	// is nil when the event could not be priced (basis `unknown`).

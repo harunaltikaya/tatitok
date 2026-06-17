@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-// Deterministic event IDs (milestone-1 Task 2; hardened in M1.1).
+// Deterministic event IDs (hardened in M1.1).
 //
 // Primary form: sha256 over the length-prefixed components (harness,
 // native message id, request id), truncated to 16 bytes, lowercase hex

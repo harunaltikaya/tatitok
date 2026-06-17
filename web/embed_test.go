@@ -1,6 +1,6 @@
 package web
 
-// TestDistNoExternalOrigins is the milestone-4 "no external requests"
+// TestDistNoExternalOrigins is the M4 "no external requests"
 // build check: the served bundle must reference no external origins —
 // no CDN scripts, no webfont fetches, no analytics. It runs against the
 // build output, so it skips on a checkout that has not run `make web`

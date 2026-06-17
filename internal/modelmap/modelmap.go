@@ -1,5 +1,5 @@
 // Package modelmap is the versioned model-normalization table (M3 Task
-// 1, PRD §9.1 model_family): raw model string → model_family, embedded
+// 1): raw model string → model_family, embedded
 // as seed.json and mirrored into the store's model_map table. The raw
 // model column is immutable forever; only the derived model_family uses
 // this map. Unknown models pass through verbatim — never guessed.

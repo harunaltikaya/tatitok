@@ -304,7 +304,7 @@ func TestParityFullOpencode(t *testing.T) {
 	if present, files := opencode.HasLegacyStorageTree(srcs[0].Root); present {
 		t.Skipf("legacy OpenCode storage tree present (%d files under %s) — "+
 			"multi-store merge unsupported (no real fixtures; fabrication forbidden); "+
-			"parity vs ccusage would diverge by design. See docs/format-notes.md.",
+			"parity vs ccusage would diverge by design.",
 			files, filepath.Join(srcs[0].Root, "storage"))
 	}
 

@@ -112,7 +112,7 @@ func Apply(e *core.Event, ov *Overrides) error {
 		}
 	}
 
-	// Local cloud-equivalent (PRD FR-9.3, M3.1 finding 6): local usage
+	// Local cloud-equivalent (FR-9.3, M3.1 finding 6): local usage
 	// bills 0 as always, but when the owner configured a reference model
 	// (prices.json reference_models — the config gate, default off) the
 	// event ALWAYS carries what this usage would have cost there,

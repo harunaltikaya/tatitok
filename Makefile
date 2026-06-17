@@ -30,7 +30,7 @@ web:
 build: web
 	go build -o $(DIST)/$(BINARY) ./cmd/$(BINARY)
 
-# Cross-compile all four supported targets (CLAUDE.md stack rules); the
+# Cross-compile all four supported targets; the
 # embedded web bundle is platform-independent, built once.
 build-all: web
 	GOOS=linux   GOARCH=arm64 go build -o $(DIST)/$(BINARY)-linux-arm64       ./cmd/$(BINARY)

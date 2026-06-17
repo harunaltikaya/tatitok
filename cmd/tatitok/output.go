@@ -309,8 +309,8 @@ func formatMicroUSD(micro int64) string {
 	return fmt.Sprintf("%s$%d.%06d", sign, micro/1_000_000, micro%1_000_000)
 }
 
-// doctorPricing is the opencode store-and-compare lane (milestone-3
-// Task 2): OUR computed cost vs the source-reported cost, per
+// doctorPricing is the opencode store-and-compare lane: OUR computed cost
+// vs the source-reported cost, per
 // (provider, model). Deltas are a report, never an auto-correction;
 // out-of-tolerance groups where both sides are priced → exit 1, unless
 // the owner recorded the divergence as explained (M4 Task 5).

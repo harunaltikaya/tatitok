@@ -13,7 +13,7 @@
    or the hairline is dropped, not patched with per-hue overrides.
 
    Finalized at Stop 1: dark-gray is the default, light-gray the alternate.
-   The DS is silent on multi-dark, so this whole file is a documented M7
+   The base tokens are silent on multi-dark, so this whole file is a documented M7
    divergence.
 
    <html data-theme="…"> selects the tone; theme.ts reflects the choice.

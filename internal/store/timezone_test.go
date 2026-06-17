@@ -2,7 +2,7 @@ package store
 
 // Timezone-correct serving tests (M6 Task 2). Synthetic core.Event
 // values are fine — this exercises the store's path selection and SQL
-// bucketing, not adapter parsing (CLAUDE.md hard rule 1). tzdata is
+// bucketing, not adapter parsing. tzdata is
 // registered for the test binary by store_test.go's blank import.
 
 import (

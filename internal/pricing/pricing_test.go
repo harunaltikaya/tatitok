@@ -426,7 +426,7 @@ func TestApplySubMicroSourceCostIsNotFree(t *testing.T) {
 	}
 }
 
-// PRD FR-9.3 / M3.1 finding 6: the config-gated local cloud-equivalent.
+// FR-9.3 / M3.1 finding 6: the config-gated local cloud-equivalent.
 // reference_models maps a local model (or family) to a snapshot model;
 // local-basis events then carry the "would have cost" value with
 // per-event derivation provenance. Default off; an unresolvable

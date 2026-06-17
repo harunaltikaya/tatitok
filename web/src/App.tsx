@@ -206,7 +206,7 @@ function dailyStackedChart(
 // is API-equivalent (the primary value metric). itemStyle colors are concrete
 // hexes because ECharts' SVG itemStyle does not resolve CSS vars (the reason
 // dailyStackedChart hard-codes its palette); the HTML tooltip does resolve
-// them, so it keeps the design-system vars.
+// them, so it keeps the design-token vars.
 function valueDonut(rows: DailyByRow[], colorFor: (key: string) => string = seriesColor): EChartsOption {
   const byKey = new Map<string, number>();
   for (const r of rows) byKey.set(r.key, (byKey.get(r.key) ?? 0) + r.costAPIEquivMicro / 1e6);

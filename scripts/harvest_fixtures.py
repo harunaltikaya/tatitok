@@ -434,7 +434,7 @@ def sanitize_record(obj):
 # stat scanning (for selection), the snapshot/fixture tree layout, and the
 # ccusage agent subcommand + env var used for expectations. The sanitizer
 # itself is shared — codex-specific CONTENT fields live in the rule-spec,
-# never here (milestone-2 Task 3 rule).
+# never here.
 
 class FileStat:
     """Stats for one source log file. snap_rel is the file's path inside

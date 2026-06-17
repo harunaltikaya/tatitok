@@ -70,7 +70,7 @@
 }
 
 /* ============================================================
-   Base reset (design-system base.css, layered so Tailwind utilities still
+   Base reset (layered so Tailwind utilities still
    win). Dark canvas, Jost default, quiet headings, tabular figures on
    numeric contexts, branded scrollbars, reduced-motion honored.
    ============================================================ */

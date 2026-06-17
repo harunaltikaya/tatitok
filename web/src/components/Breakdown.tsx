@@ -1,5 +1,5 @@
 // Breakdown panel: totals per key (harness / provider / model) over the
-// selected range. Cost honesty rules (PRD §9 / M3 rulings, carried to
+// selected range. Cost honesty rules (M3 rulings, carried to
 // pixels): paid cost is prominent; a $0 row with a stored
 // API-equivalent shows the equivalent as secondary text; any key with
 // unpriced events gets the CLI's asterisk with a tooltip.

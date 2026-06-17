@@ -1,10 +1,9 @@
 // Package codex ingests Codex CLI rollout session logs
 // (<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl).
 //
-// ccusage (pinned, `ccusage codex`) is the parity referee (CLAUDE.md hard
-// rule 2). Counting rules verified empirically against the pinned capture
-// over the gx10 fixture set (exact, per day and per model — see
-// docs/format-notes.md "Codex"):
+// ccusage (pinned, `ccusage codex`) is the parity referee. Counting rules
+// verified empirically against the pinned capture over the gx10 fixture set
+// (exact, per day and per model):
 //
 //   - one billable event per event_msg payload of type "token_count"
 //     whose info is non-null, valued from info.last_token_usage (the
