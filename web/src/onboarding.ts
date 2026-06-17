@@ -12,6 +12,11 @@ export interface CardState {
   tier: string; // "" = unchosen
   price: string; // editable USD; "" allowed (free → no price)
   metered: boolean;
+  // edited tracks whether the user actually typed in the price field. An
+  // untouched price is the snapshot list default, so applyPayload OMITS it and
+  // the server records snapshot provenance — never a false "user-edited" label
+  // (honesty, finding #3). Only setPrice flips this true.
+  edited: boolean;
 }
 
 // shouldOfferOnboarding: the first-run trigger — usage exists (logs ingested)
@@ -44,13 +49,14 @@ export function matchTierByPriceMicro(card: OnboardCard, micro: number | null): 
 // else from detection. Claude is NEVER pre-selected (not derivable); Codex
 // pre-fills only an UNAMBIGUOUS detection — an ambiguous Pro stays unchosen.
 export function initialCardState(card: OnboardCard): CardState {
+  // Every pre-fill is a default the user hasn't touched yet → edited=false.
   if (card.current.declared) {
     const tier = matchTierByPriceMicro(card, card.current.monthly_price_micro);
     const price =
       card.current.monthly_price_micro != null
         ? microToUSD(card.current.monthly_price_micro)
         : listPriceFor(card, tier);
-    return { providerArg: card.provider_arg, tier, price, metered: false };
+    return { providerArg: card.provider_arg, tier, price, metered: false, edited: false };
   }
   if (card.detected_tier !== "" && !card.ambiguous) {
     return {
@@ -58,22 +64,25 @@ export function initialCardState(card: OnboardCard): CardState {
       tier: card.detected_tier,
       price: listPriceFor(card, card.detected_tier),
       metered: false,
+      edited: false,
     };
   }
-  return { providerArg: card.provider_arg, tier: "", price: "", metered: false };
+  return { providerArg: card.provider_arg, tier: "", price: "", metered: false, edited: false };
 }
 
-// selectTier chooses a tier and resets the price to that tier's list default.
+// selectTier chooses a tier and resets the price to that tier's list default —
+// a fresh default, so edited goes back to false.
 export function selectTier(card: OnboardCard, s: CardState, tier: string): CardState {
-  return { ...s, tier, price: listPriceFor(card, tier), metered: false };
+  return { ...s, tier, price: listPriceFor(card, tier), metered: false, edited: false };
 }
 
 export function setMetered(s: CardState, metered: boolean): CardState {
   return { ...s, metered };
 }
 
+// setPrice records a user edit: the price is now theirs, not the list default.
 export function setPrice(s: CardState, price: string): CardState {
-  return { ...s, price };
+  return { ...s, price, edited: true };
 }
 
 // cardReady: metered is always ready; otherwise a tier must be chosen.
@@ -85,13 +94,17 @@ export function allReady(states: CardState[]): boolean {
   return states.length > 0 && states.every(cardReady);
 }
 
-// applyPayload builds the POST body from per-card UI state.
+// applyPayload builds the POST body from per-card UI state. An untouched price
+// is OMITTED (price_usd left undefined) so the server resolves the snapshot list
+// default and records it as snapshot-sourced; only a user-edited price is sent,
+// which the server records as "user-edited" (finding #3).
 export function applyPayload(states: CardState[]): OnboardApplyCard[] {
-  return states.map((s) =>
-    s.metered
-      ? { provider_arg: s.providerArg, tier: METERED }
-      : { provider_arg: s.providerArg, tier: s.tier, price_usd: s.price },
-  );
+  return states.map((s) => {
+    if (s.metered) return { provider_arg: s.providerArg, tier: METERED };
+    const card: OnboardApplyCard = { provider_arg: s.providerArg, tier: s.tier };
+    if (s.edited) card.price_usd = s.price;
+    return card;
+  });
 }
 
 // tierLabel renders a tier name for humans (pro_100 → "Pro $100").

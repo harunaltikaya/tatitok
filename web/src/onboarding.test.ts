@@ -5,6 +5,7 @@ import {
   shouldOfferOnboarding,
   initialCardState,
   selectTier,
+  setPrice,
   setMetered,
   cardReady,
   allReady,
@@ -104,25 +105,39 @@ test("selectTier resets price to that tier's list default and clears metered", (
 });
 
 test("readiness: metered always ready; otherwise a tier must be chosen", () => {
-  assert.equal(cardReady({ providerArg: "claude", tier: "", price: "", metered: false }), false);
-  assert.equal(cardReady({ providerArg: "claude", tier: "", price: "", metered: true }), true);
-  assert.equal(cardReady({ providerArg: "claude", tier: "max_20x", price: "200", metered: false }), true);
+  assert.equal(cardReady({ providerArg: "claude", tier: "", price: "", metered: false, edited: false }), false);
+  assert.equal(cardReady({ providerArg: "claude", tier: "", price: "", metered: true, edited: false }), true);
+  assert.equal(cardReady({ providerArg: "claude", tier: "max_20x", price: "200", metered: false, edited: false }), true);
   assert.equal(
     allReady([
-      { providerArg: "claude", tier: "max_20x", price: "200", metered: false },
-      { providerArg: "codex", tier: "", price: "", metered: false },
+      { providerArg: "claude", tier: "max_20x", price: "200", metered: false, edited: false },
+      { providerArg: "codex", tier: "", price: "", metered: false, edited: false },
     ]),
     false,
   );
 });
 
-test("applyPayload: metered omits price; chosen tier carries the price", () => {
+test("applyPayload: metered omits price; an edited price is carried", () => {
   const payload = applyPayload([
-    { providerArg: "claude", tier: "", price: "", metered: true },
-    { providerArg: "codex", tier: "plus", price: "20", metered: false },
+    { providerArg: "claude", tier: "", price: "", metered: true, edited: false },
+    { providerArg: "codex", tier: "plus", price: "20", metered: false, edited: true },
   ]);
   assert.deepEqual(payload[0], { provider_arg: "claude", tier: METERED });
   assert.deepEqual(payload[1], { provider_arg: "codex", tier: "plus", price_usd: "20" });
+});
+
+// Finding #3: an UNTOUCHED list-default price must be omitted so the server
+// records snapshot provenance, not a false "user-edited". Only a real edit sends
+// price_usd.
+test("applyPayload: untouched price is omitted; only an edited price is sent", () => {
+  const c = card({});
+  const picked = selectTier(c, initialCardState(c), "plus"); // chose plus, never typed
+  const edited = setPrice(selectTier(c, initialCardState(c), "plus"), "18"); // typed $18
+
+  const payload = applyPayload([picked, edited]);
+  assert.deepEqual(payload[0], { provider_arg: "codex", tier: "plus" });
+  assert.equal("price_usd" in payload[0], false); // omitted → snapshot provenance
+  assert.deepEqual(payload[1], { provider_arg: "codex", tier: "plus", price_usd: "18" });
 });
 
 test("tierLabel + tierProvenance render the honesty cues", () => {
