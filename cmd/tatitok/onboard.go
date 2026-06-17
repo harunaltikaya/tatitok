@@ -24,7 +24,7 @@ Usage:
 
 Tiers:
   Claude (anthropic, card "claude-max"):   free | pro | max_5x | max_20x | metered
-  Codex  (openai,    card "chatgpt-plus"): free | plus | pro | metered
+  Codex  (openai,    card "chatgpt-plus"): free | go | plus | pro_100 | pro_200 | metered
   metered → no plan written; that harness stays api_price (per-token billing).
 
 Detection (read-only):
@@ -45,7 +45,7 @@ func cmdOnboard(args []string) error {
 	fs := flag.NewFlagSet("onboard", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprintln(os.Stderr, onboardHelp) }
 	claudeTier := fs.String("claude", "", "Claude tier: free|pro|max_5x|max_20x|metered")
-	codexTier := fs.String("codex", "", "Codex/ChatGPT tier: free|plus|pro|metered")
+	codexTier := fs.String("codex", "", "Codex/ChatGPT tier: free|go|plus|pro_100|pro_200|metered")
 	claudePrice := fs.String("claude-price", "", "override Claude monthly price (USD)")
 	codexPrice := fs.String("codex-price", "", "override Codex monthly price (USD)")
 	dryRun := fs.Bool("dry-run", false, "print the plan entries and target path; write nothing")
