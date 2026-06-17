@@ -16,6 +16,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # The Go binary embeds the built dashboard (web/embed.go: `//go:embed
+      # all:dist`), but web/dist is gitignored and absent in a fresh checkout.
+      # Build the bundle first so every go build/test/vet below can embed it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+      - name: Build web bundle
+        working-directory: web
+        run: npm ci && npm run build
       - name: Fixture leak check
         run: make leakcheck
       - name: Test
@@ -23,7 +32,9 @@ jobs:
         env:
           CGO_ENABLED: "0"
       - name: Cross-compile all targets
-        run: make build-all
+        # Bundle already built above; `-o web` skips the Makefile `web`
+        # prerequisite (which runs `npm test` — node --test, JSX-limited).
+        run: make -o web build-all
       - name: Vet
         run: go vet ./...
       - name: golangci-lint
