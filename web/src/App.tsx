@@ -28,6 +28,7 @@ import {
   type LimitsSnapshot,
   type PlanStatus,
   type OnboardDetect,
+  type OnboardApplyResult,
 } from "./api";
 import {
   displayValue,
@@ -461,8 +462,18 @@ export default function App() {
   };
   // After apply, the server already wrote prices.json + repriced; refetch so the
   // value populates without a manual reload.
-  const onboardApplied = () => {
+  const onboardApplied = (r: OnboardApplyResult) => {
     setShowOnboard(false);
+    // An all-metered apply writes no plan (added + replaced empty), so has_plans
+    // stays false and the first-run trigger would re-open the panel next load.
+    // The user made an explicit choice — record the dismiss so we don't nag.
+    if (r.added.length === 0 && r.replaced.length === 0) {
+      try {
+        localStorage.setItem(ONBOARD_DISMISS_KEY, "1");
+      } catch {
+        /* private mode — first-run may offer again next load */
+      }
+    }
     fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
     loadRange(from, to, fq, tz);
     fetchOnboardDetect().then(setOnboardDetect).catch(() => {});
