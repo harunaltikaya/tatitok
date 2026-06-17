@@ -94,6 +94,91 @@ func postJSON(t *testing.T, h *Hub, path, body string) (int, []byte) {
 	return resp.StatusCode, b
 }
 
+// postRaw POSTs with an explicit Content-Type and arbitrary extra headers — for
+// exercising the CSRF guard (browser-only headers the Go client never sets).
+func postRaw(t *testing.T, h *Hub, path, contentType, body string, headers map[string]string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, "http://"+h.Addr()+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request %s: %v", path, err)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, b
+}
+
+// TestOnboardApplyRejectsCSRF: /apply writes prices.json + reprices, so a
+// browser must not be drivable cross-site into it. The loopback peer gate does
+// NOT stop CSRF, so two header checks do: application/json is required (a
+// CORS-simple content-type forces no preflight and is refused), and a
+// cross-site/same-site Sec-Fetch-Site is refused outright. A rejected request
+// must not write anything (finding #1).
+func TestOnboardApplyRejectsCSRF(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	h := seedHubWith(t, nil, nil)
+	pricesPath := filepath.Join(xdg, "tatitok", "prices.json")
+	valid := `{"cards":[{"provider_arg":"claude","tier":"max_20x"}]}`
+
+	// CORS-simple content-types a cross-origin page can send without a preflight.
+	for _, ct := range []string{"text/plain", "application/x-www-form-urlencoded", "multipart/form-data", ""} {
+		if status, b := postRaw(t, h, "/api/onboard/apply", ct, valid, nil); status != http.StatusUnsupportedMediaType {
+			t.Errorf("apply with Content-Type %q = %d, want 415: %s", ct, status, b)
+		}
+	}
+	// Browser cross-site / same-site signals are refused even with JSON.
+	for _, site := range []string{"cross-site", "same-site"} {
+		if status, b := postRaw(t, h, "/api/onboard/apply", "application/json", valid,
+			map[string]string{"Sec-Fetch-Site": site}); status != http.StatusForbidden {
+			t.Errorf("apply with Sec-Fetch-Site %q = %d, want 403: %s", site, status, b)
+		}
+	}
+	// No rejected request may have written the plan file.
+	if _, err := os.Stat(pricesPath); !os.IsNotExist(err) {
+		t.Fatalf("a rejected CSRF request wrote prices.json (stat err=%v)", err)
+	}
+
+	// The dashboard's own same-origin JSON fetch still works.
+	if status, b := postRaw(t, h, "/api/onboard/apply", "application/json", valid,
+		map[string]string{"Sec-Fetch-Site": "same-origin"}); status != http.StatusOK {
+		t.Fatalf("same-origin apply = %d, want 200: %s", status, b)
+	}
+	if _, err := os.Stat(pricesPath); err != nil {
+		t.Fatalf("same-origin apply did not write prices.json: %v", err)
+	}
+}
+
+// TestOnboardApplyRejectsBadBody: an empty tier is a malformed card (only the
+// literal "metered" removes a plan — finding #4), and trailing data after the
+// JSON object is rejected (finding #6). Neither writes a plan file.
+func TestOnboardApplyRejectsBadBody(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	h := seedHubWith(t, nil, nil)
+
+	if status, b := postJSON(t, h, "/api/onboard/apply",
+		`{"cards":[{"provider_arg":"claude","tier":""}]}`); status != http.StatusBadRequest {
+		t.Errorf("empty-tier apply = %d, want 400: %s", status, b)
+	}
+	if status, b := postJSON(t, h, "/api/onboard/apply",
+		`{"cards":[{"provider_arg":"claude","tier":"max_20x"}]}{"trailing":true}`); status != http.StatusBadRequest {
+		t.Errorf("trailing-data apply = %d, want 400: %s", status, b)
+	}
+	if _, err := os.Stat(filepath.Join(xdg, "tatitok", "prices.json")); !os.IsNotExist(err) {
+		t.Fatalf("a rejected bad-body request wrote prices.json (stat err=%v)", err)
+	}
+}
+
 // TestOnboardDetect: from a fixture-seeded, no-plans DB, /detect reports the
 // detected Codex tier (plus, from the fixtures), the selectable tiers + list
 // prices, and no current plan.

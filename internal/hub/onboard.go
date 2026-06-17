@@ -8,7 +8,10 @@ package hub
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"strings"
@@ -155,6 +158,39 @@ type applyBody struct {
 	Cards []applyCard `json:"cards"`
 }
 
+// rejectCSRF guards a state-changing endpoint against being driven cross-site
+// by a browser. The loopback bind and loopbackOnly gate do NOT stop CSRF: a
+// malicious page can make the browser POST to 127.0.0.1 and the TCP peer is
+// still loopback. Two checks (the extension ingest endpoint, internal/limits,
+// has the equivalent content-type gate but not the Sec-Fetch-Site one):
+//
+//   - Content-Type must be application/json. A cross-origin page can only send
+//     a CORS "simple" content-type (text/plain or a form type) WITHOUT a
+//     preflight; requiring application/json forces a preflight, and the
+//     method-less /apply route answers OPTIONS with a 405 that carries NO
+//     Access-Control-Allow-* headers (the hub sets none anywhere — writeJSON
+//     emits only Content-Type + nosniff), so the browser never sends the real
+//     POST.
+//   - Sec-Fetch-Site, when the browser sends it, must be same-origin or none
+//     (a direct navigation). cross-site/same-site is refused outright — defense
+//     in depth above the content-type gate. Non-browser callers (curl, the Go
+//     test client) omit the header and are unaffected.
+//
+// It returns true when the request was rejected (a response is already written).
+func rejectCSRF(w http.ResponseWriter, r *http.Request) bool {
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		writeErr(w, http.StatusUnsupportedMediaType, "unsupported_media_type",
+			"this endpoint requires Content-Type: application/json")
+		return true
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		writeErr(w, http.StatusForbidden, "forbidden",
+			"cross-site request rejected")
+		return true
+	}
+	return false
+}
+
 // apiOnboardApply builds plan entries via Stage 1's ResolveEntry, merges them
 // into prices.json via write.go (backup + atomic + validate + provenance),
 // removes entries for metered cards, reloads the overrides, and reprices the
@@ -165,11 +201,22 @@ func (h *Hub) apiOnboardApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
 		return
 	}
+	// CSRF defense: /apply writes prices.json and reprices the whole history, so
+	// a browser must not be drivable cross-site into it (see rejectCSRF).
+	if rejectCSRF(w, r) {
+		return
+	}
 	var body applyBody
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_body", "request body is not a valid apply payload: "+err.Error())
+		return
+	}
+	// Exactly one JSON value: a second decode must hit EOF, rejecting trailing
+	// data (matches pricing.LoadOverrides and the limits ingest endpoint).
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, "bad_body", "unexpected trailing data after the JSON body")
 		return
 	}
 	if len(body.Cards) == 0 {
@@ -200,7 +247,14 @@ func (h *Hub) apiOnboardApply(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "bad_body", "unknown provider_arg "+c.ProviderArg)
 			return
 		}
-		if strings.TrimSpace(c.Tier) == "" || strings.TrimSpace(c.Tier) == onboard.MeteredTier {
+		// Only the literal "metered" removes a plan. An empty/missing tier is a
+		// malformed card — reject it rather than silently deleting the plan.
+		if strings.TrimSpace(c.Tier) == "" {
+			writeErr(w, http.StatusBadRequest, "bad_body",
+				"card for "+c.ProviderArg+` has an empty tier (choose a tier, or "metered" to keep per-token billing)`)
+			return
+		}
+		if strings.TrimSpace(c.Tier) == onboard.MeteredTier {
 			remove = append(remove, tpl.PlanName) // metered → ensure no entry
 			continue
 		}
