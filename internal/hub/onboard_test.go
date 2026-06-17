@@ -183,6 +183,18 @@ func TestOnboardApplyRejectsBadBody(t *testing.T) {
 // detected Codex tier (plus, from the fixtures), the selectable tiers + list
 // prices, and no current plan.
 func TestOnboardDetect(t *testing.T) {
+	// Hermetic Codex-tier detection: the /detect handler reads the real
+	// environment via hubProbe(), so point CODEX_HOME at the committed,
+	// sanitized gx10 rollout fixtures (plan_type "plus") rather than the
+	// developer's ~/.codex. Without this the test passes only where real Codex
+	// logs exist and fails `codex detected=""` on a clean CI runner. This is
+	// the same committed fixture internal/onboard's TestDetectCodexTier uses.
+	gx10, err := filepath.Abs(filepath.Join("..", "..", "testdata", "fixtures", "codex", "gx10"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", gx10)
+
 	h := seedHubWith(t, nil, nil)
 	var d detectResp
 	getOK(t, h, "/api/onboard/detect", &d)
