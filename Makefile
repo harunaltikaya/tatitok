@@ -7,7 +7,7 @@ export CGO_ENABLED := 0
 .PHONY: test leakcheck lint web build build-all parity-full parity-full-codex parity-full-opencode soak clean
 
 test: leakcheck
-	go test ./...
+	go test -timeout 15m ./...
 
 # Zero-real-names invariant: fails the build on any leak finding. Without
 # the local alias map (e.g. CI) it runs structural checks only.

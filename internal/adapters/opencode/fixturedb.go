@@ -38,7 +38,15 @@ func BuildFixtureDB(fixtureDir, dbPath string) (int, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return 0, err
 	}
-	db, err := sql.Open("sqlite", "file:"+dbPath)
+	// This database is an ephemeral test/parity fixture — durability is
+	// irrelevant, so disable fsync (synchronous=off) and keep the rollback
+	// journal in memory. Without this, modernc.org/sqlite fsyncs on every
+	// commit; together with the single-transaction batching below it turns
+	// a per-row fsync storm (pathologically slow on CI's slow disks — a
+	// 10-minute hub-suite timeout on the arm runner) into a near-free build.
+	// Pragmas live on the DSN so they apply to every pooled connection.
+	db, err := sql.Open("sqlite",
+		"file:"+dbPath+"?_pragma=synchronous(off)&_pragma=journal_mode(memory)")
 	if err != nil {
 		return 0, err
 	}
@@ -55,10 +63,25 @@ func BuildFixtureDB(fixtureDir, dbPath string) (int, error) {
 		return 0, fmt.Errorf("apply schema: %w", err)
 	}
 
+	// One transaction for all rows: a single commit instead of one
+	// auto-commit per INSERT (each its own fsync, were fsync enabled). Row
+	// content and order are unchanged, so the reconstructed message table —
+	// and the parity expectations computed from it — stay identical.
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO message VALUES (?,?,?,?,?)`)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+
 	inserted := 0
 	for _, f := range files {
 		fh, err := os.Open(f)
 		if err != nil {
+			_ = tx.Rollback()
 			return inserted, err
 		}
 		sc := bufio.NewScanner(fh)
@@ -67,13 +90,14 @@ func BuildFixtureDB(fixtureDir, dbPath string) (int, error) {
 			var r row
 			if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
 				_ = fh.Close()
+				_ = tx.Rollback()
 				return inserted, fmt.Errorf("%s: %w", f, err)
 			}
-			if _, err := db.Exec(
-				`INSERT INTO message VALUES (?,?,?,?,?)`,
+			if _, err := stmt.Exec(
 				r.ID, r.SessionID, r.TimeCreated, r.TimeUpdated,
 				string(compactJSON(r.Data))); err != nil {
 				_ = fh.Close()
+				_ = tx.Rollback()
 				return inserted, fmt.Errorf("%s: %w", f, err)
 			}
 			inserted++
@@ -81,8 +105,16 @@ func BuildFixtureDB(fixtureDir, dbPath string) (int, error) {
 		err = sc.Err()
 		_ = fh.Close()
 		if err != nil {
+			_ = tx.Rollback()
 			return inserted, err
 		}
+	}
+	if err := stmt.Close(); err != nil {
+		_ = tx.Rollback()
+		return inserted, err
+	}
+	if err := tx.Commit(); err != nil {
+		return inserted, err
 	}
 	return inserted, nil
 }
