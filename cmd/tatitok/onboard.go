@@ -19,12 +19,14 @@ section of prices.json (merging, never clobbering); repricing stored events
 is the explicit follow-up step it prints.
 
 Usage:
-  tatitok onboard [--claude TIER] [--codex TIER]
-                  [--claude-price USD] [--codex-price USD] [--dry-run]
+  tatitok onboard [--claude TIER] [--codex TIER] [--google TIER]
+                  [--claude-price USD] [--codex-price USD] [--google-price USD]
+                  [--dry-run]
 
 Tiers:
   Claude (anthropic, card "claude-max"):   free | pro | max_5x | max_20x | metered
   Codex  (openai,    card "chatgpt-plus"): free | go | plus | pro_100 | pro_200 | metered
+  Google (google,    card "google-ai-pro"): ai_pro | metered   (agy / Antigravity CLI)
   metered → no plan written; that harness stays api_price (per-token billing).
 
 Detection (read-only):
@@ -32,12 +34,13 @@ Detection (read-only):
   (payload.rate_limits.plan_type) and pre-fills --codex.
   Claude tier is NOT detectable (service_tier is the API serving class, not
   your subscription) — you must choose it; tatitok never guesses it.
+  Google AI tier is NOT detectable either (no agy adapter yet) — choose it.
 
 Prices default to the published consumer list price for the tier (tatitok's
 embedded tier-prices snapshot) and are overridable with --claude-price /
 --codex-price, or editable in prices.json afterward.
 
-With both tier flags set, onboard is non-interactive; otherwise it prompts.
+With all tier flags set, onboard is non-interactive; otherwise it prompts.
 After writing, run:
   tatitok recompute --pricing && tatitok doctor --pricing`
 
@@ -46,8 +49,10 @@ func cmdOnboard(args []string) error {
 	fs.Usage = func() { fmt.Fprintln(os.Stderr, onboardHelp) }
 	claudeTier := fs.String("claude", "", "Claude tier: free|pro|max_5x|max_20x|metered")
 	codexTier := fs.String("codex", "", "Codex/ChatGPT tier: free|go|plus|pro_100|pro_200|metered")
+	googleTier := fs.String("google", "", "Google AI (agy) tier: ai_pro|metered")
 	claudePrice := fs.String("claude-price", "", "override Claude monthly price (USD)")
 	codexPrice := fs.String("codex-price", "", "override Codex monthly price (USD)")
+	googlePrice := fs.String("google-price", "", "override Google AI monthly price (USD)")
 	dryRun := fs.Bool("dry-run", false, "print the plan entries and target path; write nothing")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -68,12 +73,14 @@ func cmdOnboard(args []string) error {
 	fmt.Println("Detection (read-only):")
 	fmt.Printf("  Codex/ChatGPT: %s\n", detLine(det.Codex))
 	fmt.Printf("  Claude:        %s\n", detLine(det.Claude))
+	fmt.Printf("  Google/agy:    %s\n", detLine(det.Google))
 	fmt.Println()
 
 	// 2) Resolve tiers: flag > detection (codex only) > interactive prompt.
 	in := bufio.NewReader(os.Stdin)
 	codexChoices := strings.Join(onboard.TierChoices("codex", snap), ", ")
 	claudeChoices := strings.Join(onboard.TierChoices("claude", snap), ", ")
+	googleChoices := strings.Join(onboard.TierChoices("google", snap), ", ")
 
 	// Codex is detection-aware AND Pro-split-aware ($100 vs $200 → a choice).
 	ct, ctNote, err := resolveCodexTier(*codexTier, det.Codex.DetectedTier, snap, codexChoices, in)
@@ -85,12 +92,18 @@ func cmdOnboard(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Google/agy is never auto-detected either — flag or prompt.
+	gt, err := resolveTier("google", *googleTier, "", googleChoices, in)
+	if err != nil {
+		return err
+	}
 
 	// 3) Build plan entries.
 	now := time.Now().UTC().Format("2006-01-02")
 	choices := []onboard.PlanChoice{
 		{ProviderArg: "claude", Tier: clt, PriceUSD: *claudePrice},
 		{ProviderArg: "codex", Tier: ct, PriceUSD: *codexPrice, TierNote: ctNote},
+		{ProviderArg: "google", Tier: gt, PriceUSD: *googlePrice},
 	}
 	var entries []onboard.PlanEntryOut
 	fmt.Println("Plan resolution:")
@@ -109,7 +122,7 @@ func cmdOnboard(args []string) error {
 	fmt.Println()
 
 	if len(entries) == 0 {
-		fmt.Println("Both providers metered — no plan entries to write; prices.json left unchanged.")
+		fmt.Println("All providers metered — no plan entries to write; prices.json left unchanged.")
 		return nil
 	}
 

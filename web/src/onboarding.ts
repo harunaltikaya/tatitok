@@ -126,6 +126,8 @@ export function tierLabel(tier: string): string {
       return "Max 5×";
     case "max_20x":
       return "Max 20×";
+    case "ai_pro":
+      return "AI Pro";
     default:
       return tier;
   }

@@ -12,14 +12,16 @@
       "for true pay-per-token usage choose 'metered' at onboard time (no plan written)."
     ],
     "note": "Published consumer plan list prices as seeded; confirm at the source URLs when refreshing.",
+    "2026-09-03_addition": "Google AI Pro (google/ai_pro) added for the agy (Antigravity CLI) card: $20/mo. Google's plan pages geo-localize (this box saw only TRY: ₺869,99/mo) and gave no USD figure on 2026-09-03; $20 is the published US list price ($19.99) rounded like the other tiers — confirm at the source URL when refreshing. Anthropic/OpenAI unchanged.",
     "2026-06-17_correction": "OpenAI Pro split into two price points (both reported as plan_type=\"pro\" in Codex logs): Pro $100 and Pro $200 — indistinguishable in the log, so they are a USER CHOICE (pro_100/pro_200), never guessed. Added the $8 Go tier. Anthropic re-verified unchanged.",
     "source_urls": {
       "anthropic": "https://www.anthropic.com/pricing",
-      "openai": "https://openai.com/chatgpt/pricing/"
+      "openai": "https://openai.com/chatgpt/pricing/",
+      "google": "https://one.google.com/about/google-ai-plans/"
     },
-    "fetched": "2026-06-17"
+    "fetched": "2026-09-03"
   },
-  "version": "tier-prices-2026-06-17.2",
+  "version": "tier-prices-2026-09-03.1",
   "tiers": {
     "anthropic": {
       "free": 0,
@@ -33,6 +35,9 @@
       "plus": 20,
       "pro_100": 100,
       "pro_200": 200
+    },
+    "google": {
+      "ai_pro": 20
     }
   }
 }

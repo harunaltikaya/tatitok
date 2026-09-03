@@ -46,7 +46,7 @@ type onbCurrent struct {
 }
 
 type onbCard struct {
-	ProviderArg        string     `json:"provider_arg"` // "claude" / "codex"
+	ProviderArg        string     `json:"provider_arg"` // "claude" / "codex" / "google"
 	PlanName           string     `json:"plan_name"`    // card label
 	Provider           string     `json:"provider"`     // "anthropic" / "openai"
 	DetectedTier       string     `json:"detected_tier"`
@@ -85,13 +85,10 @@ func (h *Hub) apiOnboardDetect(w http.ResponseWriter, r *http.Request) {
 	}
 	lim := h.lim.Get()
 
-	cards := make([]onbCard, 0, 2)
+	cards := make([]onbCard, 0, len(onboard.ProviderArgs()))
 	for _, arg := range onboard.ProviderArgs() {
 		tpl := onboard.Templates[arg]
-		pd := det.Claude
-		if arg == "codex" {
-			pd = det.Codex
-		}
+		pd := det.For(arg)
 		card := onbCard{
 			ProviderArg:        arg,
 			PlanName:           tpl.PlanName,
@@ -117,7 +114,7 @@ func (h *Hub) apiOnboardDetect(w http.ResponseWriter, r *http.Request) {
 			}
 			card.Note = res.Note
 		} else {
-			card.Note = pd.Source // Claude: the "not derivable" explanation
+			card.Note = pd.Source // Claude / Google: the "not derivable" explanation
 		}
 		// Live limits/windows presence (internal/limits) — a sub-vs-metered
 		// hint only; never sets the tier. Keys match the extension/providerForPlan.

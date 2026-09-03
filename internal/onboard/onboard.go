@@ -32,7 +32,7 @@ type ProviderTemplate struct {
 	Detectable bool
 }
 
-// Templates are the two supported subscription cards, keyed by CLI arg.
+// Templates are the supported subscription cards, keyed by CLI arg.
 var Templates = map[string]ProviderTemplate{
 	"claude": {
 		Arg: "claude", SnapshotKey: "anthropic", PlanName: "claude-max",
@@ -44,10 +44,19 @@ var Templates = map[string]ProviderTemplate{
 		Matcher: PlanMatcherOut{Harness: "codex"},
 		Window:  "5h", WindowStart: "exact", Detectable: true,
 	},
+	// Google AI Pro (agy / Antigravity CLI): 5h + weekly windows like
+	// claude-max; the tier is user-declared (agy's status line names the
+	// plan_tier but tatitok has no agy adapter yet, so nothing is read).
+	// WindowStart "floored" is the default, unverified for Google.
+	"google": {
+		Arg: "google", SnapshotKey: "google", PlanName: "google-ai-pro",
+		Matcher: PlanMatcherOut{Harness: "agy"},
+		Window:  "5h", WindowStart: "floored", Detectable: false,
+	},
 }
 
 // ProviderArgs returns the CLI provider selectors in a stable order.
-func ProviderArgs() []string { return []string{"claude", "codex"} }
+func ProviderArgs() []string { return []string{"claude", "codex", "google"} }
 
 // TierChoices lists the selectable tiers for a provider arg (snapshot tiers
 // plus "metered"), for help text and validation.
@@ -129,6 +138,8 @@ func ResolveEntry(c PlanChoice, snap *TierPrices, now string) (*PlanEntryOut, er
 			tierNote = "detected from codex rate_limits.plan_type, user-confirmed"
 		case tpl.Detectable:
 			tierNote = "user-declared (overriding codex detection)"
+		case tpl.Arg == "google":
+			tierNote = "user-declared (Google AI tier is not auto-detectable)"
 		default:
 			tierNote = "user-declared (Claude tier is not auto-detectable)"
 		}

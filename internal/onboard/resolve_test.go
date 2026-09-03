@@ -7,8 +7,8 @@ import (
 
 func TestSnapshotVersionBumped(t *testing.T) {
 	snap := loadSnap(t)
-	if snap.Version != "tier-prices-2026-06-17.2" {
-		t.Fatalf("version = %q, want tier-prices-2026-06-17.2 (Pro-split correction)", snap.Version)
+	if snap.Version != "tier-prices-2026-09-03.1" {
+		t.Fatalf("version = %q, want tier-prices-2026-09-03.1 (Google AI Pro addition)", snap.Version)
 	}
 	// The split: old openai "pro" is gone; pro_100/pro_200/go present.
 	if _, ok := snap.Price("openai", "pro"); ok {

@@ -12,7 +12,7 @@
 // it is the exact code path that crashed.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reportedFor, providerForPlan } from "./api.ts";
+import { reportedFor, providerForPlan, windowLabel } from "./api.ts";
 
 test("reportedFor: null windows → [] (the HIGH crash case) — no throw", () => {
   // Go marshals an empty windows slice as JSON null; model that exactly.
@@ -49,4 +49,35 @@ test("providerForPlan: tightened — bare 'gpt' no longer mis-maps; unknown → 
   assert.equal(providerForPlan("some-random-plan"), null);
   assert.equal(providerForPlan("openai-pro"), "codex"); // explicit "openai" still maps
   assert.equal(providerForPlan("anthropic-team"), "claude");
+});
+
+test("providerForPlan: Google AI Pro / agy names resolve to the agy bucket", () => {
+  assert.equal(providerForPlan("google-ai-pro"), "agy");
+  assert.equal(providerForPlan("Gemini Advanced"), "agy");
+  assert.equal(providerForPlan("antigravity"), "agy");
+  assert.equal(providerForPlan("my-ai-pro-plan"), "agy");
+  assert.equal(providerForPlan("claude-max"), "claude"); // claude still wins its own names
+});
+
+test("reportedFor: agy plan reads the agy bucket and reports the provider", () => {
+  const limits = {
+    agy: { fetchedAt: 5, windows: [
+      { label: "gemini-5h", usedPercent: 6, resetAt: 1 }, { label: "gemini-weekly", usedPercent: 19, resetAt: 2 },
+      { label: "3p-5h", usedPercent: 0, resetAt: 3 }, { label: "3p-weekly", usedPercent: 20, resetAt: 4 },
+    ] },
+  };
+  const got = reportedFor("google-ai-pro", limits);
+  assert.equal(got.provider, "agy");
+  assert.equal(got.windows.length, 4);
+  assert.equal(reportedFor("chatgpt-plus", limits).windows.length, 0);
+});
+
+test("windowLabel: agy quota keys map to card labels, others pass through", () => {
+  assert.equal(windowLabel("agy", "gemini-5h"), "Gemini 5h");
+  assert.equal(windowLabel("agy", "gemini-weekly"), "Gemini weekly");
+  assert.equal(windowLabel("agy", "3p-5h"), "Claude+GPT 5h");
+  assert.equal(windowLabel("agy", "3p-weekly"), "Claude+GPT weekly");
+  assert.equal(windowLabel("agy", "something-new"), "something-new");
+  assert.equal(windowLabel("codex", "5h"), "5h");
+  assert.equal(windowLabel(null, "gemini-5h"), "gemini-5h");
 });

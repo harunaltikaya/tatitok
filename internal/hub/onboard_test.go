@@ -199,14 +199,14 @@ func TestOnboardDetect(t *testing.T) {
 	var d detectResp
 	getOK(t, h, "/api/onboard/detect", &d)
 
-	if d.SnapshotVersion != "tier-prices-2026-06-17.2" {
+	if d.SnapshotVersion != "tier-prices-2026-09-03.1" {
 		t.Errorf("snapshot_version = %q", d.SnapshotVersion)
 	}
 	if !d.HasUsage || d.HasPlans {
 		t.Errorf("has_usage=%v has_plans=%v, want true/false", d.HasUsage, d.HasPlans)
 	}
-	if len(d.Cards) != 2 {
-		t.Fatalf("want 2 cards, got %d", len(d.Cards))
+	if len(d.Cards) != 3 {
+		t.Fatalf("want 3 cards (claude, codex, google), got %d", len(d.Cards))
 	}
 
 	codex := d.card(t, "codex")
@@ -229,6 +229,13 @@ func TestOnboardDetect(t *testing.T) {
 	claude := d.card(t, "claude")
 	if claude.DetectedTier != "" {
 		t.Errorf("claude detected = %q, want empty (never derivable)", claude.DetectedTier)
+	}
+	google := d.card(t, "google")
+	if google.DetectedTier != "" || google.PlanName != "google-ai-pro" {
+		t.Errorf("google card = %+v, want undetected google-ai-pro", google)
+	}
+	if p, ok := google.price("ai_pro"); !ok || p != "20" {
+		t.Errorf("google ai_pro price = %q, want 20", p)
 	}
 	if p, ok := claude.price("max_20x"); !ok || p != "200" {
 		t.Errorf("claude max_20x price = %q, want 200", p)

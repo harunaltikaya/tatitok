@@ -1,4 +1,4 @@
-import { usd, reportedFor, type PlanStatus, type LimitsSnapshot } from "../api";
+import { usd, reportedFor, windowLabel, type PlanStatus, type LimitsSnapshot } from "../api";
 import Card from "../ui/Card";
 import MeterBar from "../ui/MeterBar";
 import Badge from "../ui/Badge";
@@ -39,7 +39,7 @@ export default function PlanCard({ plan, limits }: { plan: PlanStatus; limits?: 
   // reportedFor maps plan → provider bucket and normalizes its windows (null →
   // [] — see api.ts), so a provider with no windows shows the empty-state rather
   // than crashing on .length. fetchedAt is 0 (→ "unknown") when there's no bucket.
-  const { windows, fetchedAt } = reportedFor(plan.name, limits);
+  const { windows, fetchedAt, provider } = reportedFor(plan.name, limits);
 
   // Weekly cap meter, only when the owner declared a cap (M5). Computed, kept as
   // a separate progress bar; it does not render for plans without a declared cap.
@@ -67,11 +67,13 @@ export default function PlanCard({ plan, limits }: { plan: PlanStatus; limits?: 
           still reads. A provider with no windows (windows: null on the wire)
           yields [] from reportedFor and falls through to the empty-state. */}
       {windows.length > 0 ? (
-        <div className="space-y-2.5">
+        <div className={windows.length === 4 ? "grid grid-cols-2 gap-x-4 gap-y-2.5" : "space-y-2.5"}>
+          {/* Four windows (agy: Gemini 5h/weekly, Claude+GPT 5h/weekly) lay
+              out as two rows of two; labels come from windowLabel (api.ts). */}
           {windows.map((win, i) => (
             <div key={`${win.label}-${i}`}>
               <div className="mb-1 flex justify-between text-xs text-tertiary tabular-nums">
-                <span>{win.label}</span>
+                <span>{windowLabel(provider, win.label)}</span>
                 <span>{Math.round(win.usedPercent)}% used</span>
               </div>
               <MeterBar value={win.usedPercent} max={100} />
@@ -80,7 +82,7 @@ export default function PlanCard({ plan, limits }: { plan: PlanStatus; limits?: 
               </div>
             </div>
           ))}
-          <div className="pt-0.5 text-[11px] text-faint tabular-nums">
+          <div className={(windows.length === 4 ? "col-span-2 " : "") + "pt-0.5 text-[11px] text-faint tabular-nums"}>
             as of {fetchedLabel(fetchedAt)}, local
           </div>
         </div>

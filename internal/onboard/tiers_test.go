@@ -24,6 +24,7 @@ func TestLoadTierPrices(t *testing.T) {
 		{"openai", "plus", "20"},
 		{"openai", "pro_100", "100"},
 		{"openai", "pro_200", "200"},
+		{"google", "ai_pro", "20"},
 	} {
 		got, ok := snap.Price(c.provider, c.tier)
 		if !ok {

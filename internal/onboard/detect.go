@@ -31,6 +31,19 @@ type ProviderDetection struct {
 type Detection struct {
 	Codex  ProviderDetection `json:"codex"`  // OpenAI / ChatGPT (Codex CLI)
 	Claude ProviderDetection `json:"claude"` // Anthropic (Claude Code)
+	Google ProviderDetection `json:"google"` // Google AI (agy / Antigravity CLI)
+}
+
+// For returns the detection for a provider arg (Templates key).
+func (d Detection) For(arg string) ProviderDetection {
+	switch arg {
+	case "codex":
+		return d.Codex
+	case "google":
+		return d.Google
+	default:
+		return d.Claude
+	}
 }
 
 // Detect runs all read-only detection against the probe's environment.
@@ -61,6 +74,16 @@ func Detect(probe adapters.Probe) Detection {
 		d.Claude.SubscriptionSignal = "claude-code logs present (active Claude user; tier still unknown — choose one)"
 	} else {
 		d.Claude.SubscriptionSignal = "no claude-code logs found"
+	}
+
+	// Google / agy — not derivable either: tatitok reads no agy log yet
+	// (the adapter is a later round), so the tier is always the user's
+	// declaration.
+	d.Google = ProviderDetection{
+		Provider:           "google",
+		DetectedTier:       "",
+		Source:             "not derivable — no agy adapter yet; declare your Google AI tier",
+		SubscriptionSignal: "unknown (nothing read)",
 	}
 	return d
 }

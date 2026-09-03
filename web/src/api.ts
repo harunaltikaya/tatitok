@@ -286,7 +286,25 @@ export function providerForPlan(name: string): string | null {
   const n = name.toLowerCase();
   if (n.includes("claude") || n.includes("anthropic")) return "claude";
   if (n.includes("chatgpt") || n.includes("openai") || n.includes("codex")) return "codex";
+  // Google AI Pro via agy (the statusLine hook posts provider "agy").
+  if (n.includes("google") || n.includes("gemini") || n.includes("antigravity") || n.includes("ai-pro")) return "agy";
   return null;
+}
+
+// windowLabel renders a reported window's label for the card. The agy hook
+// posts agy's own quota keys (gemini-5h, gemini-weekly, 3p-5h, 3p-weekly —
+// "3p" = third-party models, i.e. Claude/GPT inside agy); every other
+// provider's labels pass through verbatim. One place, so the component stays
+// label-agnostic.
+const agyWindowLabels: Record<string, string> = {
+  "gemini-5h": "Gemini 5h",
+  "gemini-weekly": "Gemini weekly",
+  "3p-5h": "Claude+GPT 5h",
+  "3p-weekly": "Claude+GPT weekly",
+};
+export function windowLabel(provider: string | null, label: string): string {
+  if (provider === "agy") return agyWindowLabels[label] ?? label;
+  return label;
 }
 
 // reportedFor resolves the reported windows + freshness to render for a plan. It
@@ -298,10 +316,10 @@ export function providerForPlan(name: string): string | null {
 export function reportedFor(
   planName: string,
   limits: LimitsSnapshot | undefined,
-): { windows: LimitWindow[]; fetchedAt: number } {
+): { windows: LimitWindow[]; fetchedAt: number; provider: string | null } {
   const provider = providerForPlan(planName);
   const bucket = provider && limits ? limits[provider] : undefined;
-  return { windows: bucket?.windows ?? [], fetchedAt: bucket?.fetchedAt ?? 0 };
+  return { windows: bucket?.windows ?? [], fetchedAt: bucket?.fetchedAt ?? 0, provider };
 }
 
 // usd renders integer micro-USD; sub-cent totals keep enough digits to
