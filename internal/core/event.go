@@ -1,6 +1,6 @@
 // Package core defines the unified usage-event model shared by every
-// adapter and the store: the Event struct (the M1 subset), the accuracy
-// classes, and the deterministic event ID.
+// adapter and the store: the Event struct, the accuracy classes, the
+// deterministic event ID and the raw-record sanitizer.
 package core
 
 import (
@@ -35,14 +35,15 @@ func (a Accuracy) Valid() bool {
 	return false
 }
 
-// SourceKind values. M1 only ingests harness logs.
+// SourceKind values. Every adapter today ingests harness logs; other
+// kinds (a browser source, an API proxy) would be added here.
 const (
 	SourceKindHarnessLog = "harness_log"
 )
 
 // Event is one LLM interaction (message/request), normalized across
-// sources. The subset needed for M1; later milestones add cost,
-// confidence and latency fields.
+// sources: identity, tokens, the pricing-engine cost columns, accuracy,
+// source-specific meta and the sanitized raw record.
 type Event struct {
 	// ID is the deterministic idempotency key — see EventID / FallbackID.
 	ID string `json:"id"`
@@ -55,8 +56,10 @@ type Event struct {
 	Provider   string `json:"provider"`
 	// Model is the raw model id exactly as reported by the source.
 	Model string `json:"model"`
-	// ModelFamily mirrors Model until the mapping-table milestone —
-	// unknown models pass through raw, never guessed.
+	// ModelFamily is the model-map normalization of Model (internal/
+	// modelmap, applied at ingest and by recompute --model-map); adapters
+	// emit it equal to Model, and unknown models pass through raw, never
+	// guessed.
 	ModelFamily string `json:"model_family"`
 	Project     string `json:"project,omitempty"`
 	SessionID   string `json:"session_id,omitempty"`

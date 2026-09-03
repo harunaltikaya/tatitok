@@ -111,6 +111,12 @@ PREFIX_ID_RE = re.compile(
 # it: global real-id/salt/home literals, map tokens, secrets, emails.
 VECTOR_PREFIX = "testdata/sanitizer-vectors/"
 
+# Obviously synthetic ids used by unit tests as filename placeholders (a
+# UUID-shaped string made of one repeated hex digit per group cannot be a
+# real identifier). Exempt from the unknown-id heuristic ONLY; every other
+# scan still runs on the line.
+SYNTHETIC_IDS = {"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
+
 # Go module manifests: public registry paths only — exempt from the
 # aliased-segment token scan (still scanned for global literals/ids)
 MODULE_MANIFESTS = {"go.mod", "go.sum"}
@@ -136,6 +142,7 @@ SECRET_PATTERNS = [
 # is a real username, and /Users/* (macOS) is never aliased at all.
 HOME_PATH_RE = re.compile(r"/home/(?!user(?![A-Za-z0-9._+-]))[A-Za-z0-9._+-]+")
 MACOS_HOME_RE = re.compile(r"/Users/[A-Za-z0-9._+-]+")
+RESERVED_EMAIL_DOMAINS = {"example.com", "example.net", "example.org"}
 EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 
 
@@ -159,6 +166,10 @@ def scan_map_free(repo, rel, findings):
         for m in MACOS_HOME_RE.finditer(line):
             findings.append((str(rel), lineno, "macos-home-path", m.group()))
         for m in EMAIL_RE.finditer(line):
+            # RFC 2606 reserved domains can never be a real mailbox — unit
+            # tests use them as the placeholder they must prove is dropped.
+            if m.group().lower().rsplit("@", 1)[1] in RESERVED_EMAIL_DOMAINS:
+                continue
             findings.append((str(rel), lineno, "email-address", m.group()))
 
 
@@ -368,7 +379,8 @@ def scan(repo, rel, globals_, tokens, prefixes, pseudonyms, public_tokens,
             continue  # synthetic vector ids are exempt from the unknown-id
             # heuristics only; all literal/token/secret scans above ran
         for match in UUID_RE.findall(line):
-            if match.lower() not in pseudonyms:
+            if match.lower() not in pseudonyms \
+                    and match.lower() not in SYNTHETIC_IDS:
                 findings.append((str(rel), lineno, "unknown-uuid", match))
         for match in PREFIX_ID_RE.findall(line):
             if match not in pseudonyms and match.lower() not in pseudonyms:
@@ -461,6 +473,18 @@ def main():
     for rel in files:
         public_tokens.add(str(rel).lower())
         public_tokens.update(part.lower() for part in rel.parts)
+    # The repo's own .gitignore must NAME the local-only files it keeps out
+    # of the tree (CLAUDE.md, docs/PRD.md, ...); those names are aliased
+    # path keys in the harvest map because the live session edited them,
+    # but an ignore pattern is public by construction, exactly like a
+    # committed path. Only the literal patterns are exempted (leading "/"
+    # stripped), nowhere else.
+    ignore = repo / ".gitignore"
+    if ignore.is_file():
+        for pat in ignore.read_text(encoding="utf-8").splitlines():
+            pat = pat.strip()
+            if pat and not pat.startswith("#"):
+                public_tokens.add(pat.lstrip("/").lower())
 
     for rel in files:
         scan(repo, rel, globals_, tokens, prefixes, pseudonyms,
