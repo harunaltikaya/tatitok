@@ -19,9 +19,12 @@ func TestDailyByMachine(t *testing.T) {
 	ctx := context.Background()
 	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 
-	// Two events on the same day but different machines.
+	// Two events on the same day but different machines. a carries a
+	// resolved rate (api_price cost), b is unpriced (NULL cost).
 	a := event("m1", "r1", "model-a", "s1", ts, TokenSums{Input: 10})
 	a.Machine = "gx10"
+	cost := int64(7)
+	a.CostUSDMicro, a.CostBasis = &cost, "api_price"
 	b := event("m2", "r2", "model-b", "s1", ts.Add(time.Minute), TokenSums{Input: 20, Output: 5})
 	b.Machine = "gx11"
 	if _, err := s.InsertBatch(ctx, []core.Event{a, b}, testSource(2)); err != nil {
@@ -46,6 +49,13 @@ func TestDailyByMachine(t *testing.T) {
 	// The day must be the UTC date of the event.
 	if rows[0].Date != "2026-06-10" {
 		t.Errorf("row[0].Date = %q, want 2026-06-10", rows[0].Date)
+	}
+	// RatedEvents: the priced event counts, the NULL-cost one does not.
+	if rows[0].RatedEvents != 1 || rows[0].UnpricedEvents != 0 {
+		t.Errorf("gx10 rated=%d unpriced=%d, want 1/0", rows[0].RatedEvents, rows[0].UnpricedEvents)
+	}
+	if rows[1].RatedEvents != 0 || rows[1].UnpricedEvents != 1 {
+		t.Errorf("gx11 rated=%d unpriced=%d, want 0/1", rows[1].RatedEvents, rows[1].UnpricedEvents)
 	}
 }
 

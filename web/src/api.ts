@@ -23,6 +23,10 @@ export interface DailyRow extends TokenSums, CostSums {
 export interface DailyByRow extends TokenSums, CostSums {
   date: string;
   key: string;
+  // Events in the group that resolved SOME rate (a cost, or a plan event's
+  // API-equivalent). 0 across a key = the key has no price at all: its $0 is
+  // unknown, not zero — the table says "unpriced" (isUnpriced, aggregate.ts).
+  ratedEvents: number;
 }
 
 // One (weekday, hour) cell of the activity heatmap (M8 1L). weekday is Go's

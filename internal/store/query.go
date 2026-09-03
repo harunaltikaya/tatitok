@@ -437,6 +437,11 @@ type DailyByRow struct {
 	Key  string `json:"key"`
 	TokenSums
 	CostSums
+	// RatedEvents counts the group's events that resolved SOME rate: a cost
+	// (api_price, or the $0 of local/free — priced by design) or, for
+	// plan_included, an API-equivalent. A key whose RatedEvents is 0 has no
+	// price at all — its $0 is unknown, not zero (the UI says "unpriced").
+	RatedEvents int64 `json:"ratedEvents"`
 }
 
 // dailyByDims maps the --by dimension name to its NULL-safe column
@@ -468,7 +473,9 @@ func (s *Store) DailyBy(ctx context.Context, tz *time.Location, dim string, f Fi
 			SUM(COALESCE(tokens_reasoning, 0)),
 			SUM(COALESCE(cost_usd_micro, 0)),
 			SUM(COALESCE(cost_api_equiv_micro, 0)),
-			SUM(cost_usd_micro IS NULL)
+			SUM(cost_usd_micro IS NULL),
+			SUM(cost_usd_micro IS NOT NULL
+				AND NOT (cost_basis = 'plan_included' AND cost_api_equiv_micro IS NULL))
 		FROM usage_events
 		WHERE 1=1`+pred+`
 		GROUP BY day, key
@@ -483,7 +490,7 @@ func (s *Store) DailyBy(ctx context.Context, tz *time.Location, dim string, f Fi
 		if err := rows.Scan(&r.Date, &r.Key,
 			&r.Input, &r.Output, &r.CacheWrite, &r.CacheRead,
 			&r.Reasoning, &r.CostUSDMicro,
-			&r.CostAPIEquivMicro, &r.UnpricedEvents); err != nil {
+			&r.CostAPIEquivMicro, &r.UnpricedEvents, &r.RatedEvents); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

@@ -5,7 +5,7 @@
 // unpriced events gets the CLI's asterisk with a tooltip.
 
 import { compactTokens, usd } from "../api";
-import { dotClassesFor, type KeyTotals, type EconClass } from "../aggregate";
+import { dotClassesFor, isUnpriced, type KeyTotals, type EconClass } from "../aggregate";
 import type { Sort, SortKey } from "../filters";
 import ClassDot, { type DotTone } from "../ui/ClassDot";
 
@@ -27,6 +27,9 @@ const CLASS_DOT: Record<EconClass, { tone: DotTone; label: string }> = {
 
 const unpricedTip = (n: number) =>
   `${n} event${n === 1 ? "" : "s"} in this range carry no resolvable price — the cost shown is a floor, not a total (same convention as the CLI's asterisk).`;
+
+const noPriceTip =
+  "no price is known for this model (not in the price snapshot, no override) — its cost and API-equivalent are unknown, not $0";
 
 // SortHeader is a clickable numeric column header (M8 1D): clicking sorts by
 // its metric and toggles direction; the arrow marks the active column. The
@@ -142,8 +145,14 @@ export default function Breakdown({
             </td>
             <td className="py-1.5 text-right tabular-nums text-secondary">{compactTokens(t.tokens)}</td>
             <td className="py-1.5 text-right tabular-nums">
-              <span className="text-primary">{usd(t.costMicro)}</span>
-              {t.unpriced > 0 && (
+              {isUnpriced(t) ? (
+                /* Honesty: a model with no price at all shows "unpriced", never
+                   a $0.00 that reads as free. */
+                <span className="cursor-help text-tertiary" title={noPriceTip}>unpriced</span>
+              ) : (
+                <span className="text-primary">{usd(t.costMicro)}</span>
+              )}
+              {!isUnpriced(t) && t.unpriced > 0 && (
                 <span className="cursor-help text-warning" title={unpricedTip(t.unpriced)}>
                   *
                 </span>

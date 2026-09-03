@@ -60,7 +60,7 @@ import { useStream } from "./useStream";
 import { THEMES, loadTheme, saveTheme, applyTheme } from "./theme";
 import Chart from "./components/Chart";
 import Breakdown from "./components/Breakdown";
-import { sumByKey, rollupRows, mergeFamilies, chartCells, sortTotals, brandColorFor, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
+import { sumByKey, rollupRows, mergeFamilies, chartCells, sortTotals, brandColorFor, countUnpriced, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
 import PlanCard from "./components/Plans";
 import Heatmap from "./components/Heatmap";
 import MeterBar from "./ui/MeterBar";
@@ -563,6 +563,9 @@ export default function App() {
     [daily],
   );
   const tokenSplit = freshCachedSplit(rangeTokenSums);
+  // Models in range with no price at all (footer honesty count; the by-model
+  // table marks the same rows "unpriced").
+  const unpricedModels = useMemo(() => countUnpriced(sumByKey(byModel)), [byModel]);
   const cachedPct = Math.round(tokenSplit.cachedShare * 100);
   // The caveat (M8 1N) is honesty copy only — the number is exactly what 1K's
   // freshCachedSplit computes from served cache-read tokens; local engine-side
@@ -929,7 +932,7 @@ export default function App() {
 
           <footer className="mt-6 text-xs text-faint tabular-nums">
             {health
-              ? `tatitok ${health.version} · snapshot ${health.price_snapshot} · ${health.overrides} overrides / ${health.reference_models} reference models · db ${health.db_hash} · up ${Math.floor(health.uptime_seconds / 60)}m`
+              ? `tatitok ${health.version} · snapshot ${health.price_snapshot} · ${health.overrides} overrides / ${health.reference_models} reference models · ${unpricedModels} unpriced · db ${health.db_hash} · up ${Math.floor(health.uptime_seconds / 60)}m`
               : "hub unreachable"}
           </footer>
         </main>

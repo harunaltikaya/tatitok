@@ -21,6 +21,7 @@ export interface KeyTotals {
   costMicro: number;
   equivMicro: number;
   unpriced: number;
+  rated: number; // events that resolved a rate (see DailyByRow.ratedEvents)
 }
 
 export function sumByKey(rows: DailyByRow[]): KeyTotals[] {
@@ -28,12 +29,13 @@ export function sumByKey(rows: DailyByRow[]): KeyTotals[] {
   for (const r of rows) {
     const t = acc.get(r.key) ?? {
       key: displayValue(r.key), raw: r.key,
-      tokens: 0, costMicro: 0, equivMicro: 0, unpriced: 0,
+      tokens: 0, costMicro: 0, equivMicro: 0, unpriced: 0, rated: 0,
     };
     t.tokens += totalTokens(r);
     t.costMicro += r.costUSDMicro;
     t.equivMicro += r.costAPIEquivMicro;
     t.unpriced += r.unpricedEvents;
+    t.rated += r.ratedEvents ?? 0;
     acc.set(r.key, t);
   }
   // A deterministic, value-based default order (API-equiv desc) — display
@@ -105,8 +107,22 @@ export function mergeFamilies(rows: DailyByRow[]): DailyByRow[] {
     cur.costUSDMicro += r.costUSDMicro;
     cur.costAPIEquivMicro += r.costAPIEquivMicro;
     cur.unpricedEvents += r.unpricedEvents;
+    cur.ratedEvents = (cur.ratedEvents ?? 0) + (r.ratedEvents ?? 0);
   }
   return [...merged.values()];
+}
+
+// --- unpriced keys (honesty) --------------------------------------------------
+// A key none of whose events resolved a rate has NO price: its $0.00 is
+// unknown, not zero. isUnpriced marks such rows (the table shows "unpriced"
+// instead of a dollar figure); countUnpriced feeds the footer's "N unpriced".
+// A key with any rated event keeps its figures (a partial gap is the asterisk).
+export function isUnpriced(t: KeyTotals): boolean {
+  return t.tokens > 0 && t.rated === 0 && t.costMicro === 0 && t.equivMicro === 0;
+}
+
+export function countUnpriced(totals: KeyTotals[]): number {
+  return totals.filter(isUnpriced).length;
 }
 
 // chartCells builds the stacked daily chart's (date, key) → value map. It SUMS
