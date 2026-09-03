@@ -59,9 +59,9 @@ func TestRecomputePricing(t *testing.T) {
 	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	priced := eventH("claude-code", "m1", "r1", "claude-fable-5", "s1", ts,
 		TokenSums{Input: 1000, Output: 100})
-	unknown := eventH("opencode", "m2", "r2", "deepseek-v4-flash", "s1",
+	unknown := eventH("opencode", "m2", "r2", "nonsuch-v0", "s1",
 		ts.Add(time.Minute), TokenSums{Input: 50})
-	unknown.Provider = "deepseek"
+	unknown.Provider = "nonsuch"
 	local := eventH("opencode", "m3", "r3", "qwen3.6-27b", "s1",
 		ts.Add(2*time.Minute), TokenSums{Output: 7})
 	local.Provider = "vllm"

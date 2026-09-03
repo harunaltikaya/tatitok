@@ -130,10 +130,12 @@ func TestResolveBases(t *testing.T) {
 		{"local-proxy", "qwen", "qwen", BasisUnknown, false},
 		{"fp8-qwen38-dflash2-low", "qwen38", "qwen38", BasisUnknown, false},
 		// Owner ruling: a "-free" NAME alone never means free — without a
-		// source-reported $0 (Apply-level), resolution proceeds normally
-		// and this model is simply absent from the snapshot.
-		{"opencode", "deepseek-v4-flash-free", "deepseek-v4-flash", BasisUnknown, false},
-		{"deepseek", "deepseek-v4-flash", "deepseek-v4-flash", BasisUnknown, false}, // absent from snapshot — honest unknown
+		// source-reported $0 (Apply-level), resolution proceeds normally:
+		// since litellm-2026-09-03 the family deepseek-v4-flash is in the
+		// snapshot, so this resolves api_price (never free).
+		{"opencode", "deepseek-v4-flash-free", "deepseek-v4-flash", BasisAPIPrice, false},
+		{"deepseek", "deepseek-v4-flash", "deepseek-v4-flash", BasisAPIPrice, false},
+		{"nonsuch", "nonsuch-v0", "nonsuch-v0", BasisUnknown, false}, // absent from snapshot — honest unknown
 		{"openai", "", "", BasisUnknown, false},                                     // codex pre-turn_context
 		{"openai", "gpt-5.5", "gpt-5.5", BasisAPIPrice, false},
 	}
@@ -301,9 +303,10 @@ func TestApplyEndToEnd(t *testing.T) {
 		t.Fatalf("inconsistent split must price flat: %d, want 22500", *s.CostUSDMicro)
 	}
 
-	// Unpriceable: NULL cost, basis unknown, no rates.
-	u := core.Event{ID: "y", Harness: "opencode", Provider: "deepseek",
-		Model: "deepseek-v4-flash", ModelFamily: "deepseek-v4-flash",
+	// Unpriceable: NULL cost, basis unknown, no rates (a model no snapshot
+	// carries — deepseek-v4-flash joined the snapshot in litellm-2026-09-03).
+	u := core.Event{ID: "y", Harness: "opencode", Provider: "nonsuch",
+		Model: "nonsuch-v0", ModelFamily: "nonsuch-v0",
 		TokensInput: 100}
 	if err := Apply(&u, nil); err != nil {
 		t.Fatal(err)
@@ -360,9 +363,10 @@ func TestApplyFreeBasis(t *testing.T) {
 		t.Fatalf("family-derived equiv not flagged: basis=%s detail=%+v", fam.CostBasis, detail)
 	}
 
-	// Unresolvable free model: still free, no equivalent.
+	// Unresolvable free model: still free, no equivalent (neither model nor
+	// family in the snapshot).
 	none := free
-	none.ID, none.Model, none.ModelFamily = "f3", "deepseek-v4-flash-free", "deepseek-v4-flash"
+	none.ID, none.Model, none.ModelFamily = "f3", "nonsuch-free", "nonsuch"
 	if err := Apply(&none, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -370,9 +374,10 @@ func TestApplyFreeBasis(t *testing.T) {
 		t.Fatalf("unresolvable free model: %+v", none)
 	}
 
-	// Source billed > $0: NOT free (normal resolution → unknown here).
+	// Source billed > $0: NOT free (normal resolution → unknown here, the
+	// model being absent from the snapshot).
 	paid := free
-	paid.ID, paid.Model, paid.ModelFamily = "f4", "deepseek-v4-pro", "deepseek-v4-pro"
+	paid.ID, paid.Model, paid.ModelFamily = "f4", "nonsuch-pro", "nonsuch-pro"
 	paid.Meta = map[string]any{"source_cost": json.Number("0.05")}
 	if err := Apply(&paid, nil); err != nil {
 		t.Fatal(err)
@@ -612,9 +617,11 @@ func TestOverrideAwareEquivalents(t *testing.T) {
 		t.Fatalf("layered equiv: ok=%v derived=%q rates=%+v", ok, derived, r)
 	}
 
-	// No overrides: pure snapshot behavior is unchanged.
+	// No overrides: pure snapshot behavior — since litellm-2026-09-03 the
+	// upstream bare key carries the 1h rate itself ($6/Mtok), so the
+	// owner's patch above is now redundant but harmless.
 	r, derived, ok = EquivalentRates("claude-sonnet-4-6", "claude-sonnet-4-6", time.Time{}, nil)
-	if !ok || derived != "model" || r.CacheWrite1h != 0 {
+	if !ok || derived != "model" || r.CacheWrite1h != 6_000_000 {
 		t.Fatalf("snapshot-only equiv changed: ok=%v derived=%q rates=%+v", ok, derived, r)
 	}
 }
@@ -959,8 +966,11 @@ func TestRegimeResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The regime does NOT inherit the default patch's 1h rate; the
+	// 6_000_000 here is the snapshot BASE's own 1h rate (upstream carries
+	// it since litellm-2026-09-03) — same value, different provenance.
 	want := Rates{Input: 6_000_000, Output: 15_000_000,
-		CacheWrite: 3_750_000, CacheRead: 300_000} // 1h rate NOT inherited from the default patch
+		CacheWrite: 3_750_000, CacheRead: 300_000, CacheWrite1h: 6_000_000}
 	if *q.Rates != want {
 		t.Fatalf("regime over snapshot base: %+v, want %+v", *q.Rates, want)
 	}

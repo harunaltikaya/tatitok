@@ -2,7 +2,7 @@
   "_doc": [
     "Provenance of the committed price snapshot (prices_snapshot.json).",
     "Prices are INPUTS, not code: refreshing the snapshot is an explicit",
-    "owner/maintainer ceremony —",
+    "owner/maintainer ceremony \u2014",
     "  1. fetch https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
     "  2. review the diff against the current snapshot (price changes are",
     "     deliberate input changes, never drive-by edits)",
@@ -13,9 +13,15 @@
     "No network calls happen at runtime or in tests; this file is the",
     "record of the one fetch that produced the committed snapshot."
   ],
-  "snapshot_version": "litellm-2026-06-11-3ceb8bff",
+  "snapshot_version": "litellm-2026-09-03-723753fa",
   "source_url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
-  "source_commit": "3b40ac987fb4fe08061b67dda91b286dc41bee28",
-  "sha256": "3ceb8bff5ba6e98c074fb4b459a986b7d5d7f6fd983c2c5a0f3bd039cfc8215c",
-  "fetched": "2026-06-11"
+  "source_commit": "6fa02887c4225d04edb8c540176f54487f3f7834",
+  "sha256": "723753fa1a11e7c2279814112ac56a1e933c6ab2507e3755340e3535ae0fd7f2",
+  "fetched": "2026-09-03",
+  "previous": {
+    "snapshot_version": "litellm-2026-06-11-3ceb8bff",
+    "source_commit": "3b40ac987fb4fe08061b67dda91b286dc41bee28",
+    "fetched": "2026-06-11",
+    "refresh_note": "2026-09-03 refresh: +748 keys / -14 keys upstream. Newly priced models with events on the owner's box: claude-opus-5, claude-sonnet-5, claude-fable-5-1, gpt-5.6, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna (bare keys), deepseek-v4-flash, deepseek-v4-pro (overrides still win). No rate changed for a previously priced key in use (claude-fable-5, claude-opus-4-8, claude-sonnet-4-6, gpt-5.5, gpt-5.4 identical)."
+  }
 }
