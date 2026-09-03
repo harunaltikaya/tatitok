@@ -25,6 +25,7 @@ lint:
 # makes no external requests.
 web:
 	cd web && npm ci && npm test && npm run build
+	touch web/dist/.gitkeep
 	go test -count=1 -run 'TestDistNoExternalOrigins$$' ./web
 
 build: web
