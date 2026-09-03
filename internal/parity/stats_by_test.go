@@ -32,7 +32,7 @@ func TestDailyByBreakdownConsistency(t *testing.T) {
 		wantDays[d.Date] = d
 	}
 
-	for _, dim := range []string{"harness", "provider", "model", "project"} {
+	for _, dim := range []string{"harness", "provider", "model", "project", "machine"} {
 		rows, err := st.DailyBy(ctx, time.UTC, dim, store.Filters{})
 		if err != nil {
 			t.Fatal(err)

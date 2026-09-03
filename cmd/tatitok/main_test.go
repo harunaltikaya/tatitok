@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"testing"
 )
@@ -40,6 +41,48 @@ func TestRunExitCodes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestErrAsUnwraps is a regression test for the exitError unwrapping fix.
+// errAs must behave like the standard library's errors.As: an exitError
+// wrapped in the chain (via fmt.Errorf %w or a custom wrapper) must still
+// resolve to its exit code and message. The wrapped cases below FAIL on the
+// old implementation, which used a single-step type assertion that only saw
+// the outermost concrete type.
+func TestErrAs(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantOK   bool
+		wantCode int
+		wantMsg  string
+	}{
+		{"nil", nil, false, 0, ""},
+		{"direct value", exitError{code: 1, msg: "doctor found issues"}, true, 1, "doctor found issues"},
+		{"single wrap", fmt.Errorf("op: %w", exitError{code: 3, msg: "skipped"}), true, 3, "skipped"},
+		{"double wrap", fmt.Errorf("a: %w", fmt.Errorf("b: %w", exitError{code: 3, msg: "skipped"})), true, 3, "skipped"},
+		{"no exitError in chain", fmt.Errorf("plain failure"), false, 0, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ec exitError
+			got := errAs(tc.err, &ec)
+			if got != tc.wantOK {
+				t.Errorf("errAs(%v) = %v, want ok=%v", errStr(tc.err), got, tc.wantOK)
+				return
+			}
+			if tc.wantOK && (ec.code != tc.wantCode || ec.msg != tc.wantMsg) {
+				t.Errorf("errAs target = %+v, want {%d %q}", ec, tc.wantCode, tc.wantMsg)
+			}
+		})
+	}
+}
+
+func errStr(e error) string {
+	if e == nil {
+		return "nil"
+	}
+	return e.Error()
 }
 
 // quiet redirects stdout/stderr to the null device for the duration of fn so

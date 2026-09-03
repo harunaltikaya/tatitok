@@ -431,7 +431,7 @@ func (s *Store) Sessions(ctx context.Context, tz *time.Location, harness string)
 }
 
 // DailyByRow is one (day, dimension value) group of `stats --daily
-// --by harness|provider|model|project` (M3 Task 4).
+// --by harness|provider|model|project|machine` (M3 Task 4).
 type DailyByRow struct {
 	Date string `json:"date"`
 	Key  string `json:"key"`
@@ -442,12 +442,14 @@ type DailyByRow struct {
 // dailyByDims maps the --by dimension name to its NULL-safe column
 // expression. model is the RAW model string (consistent with every
 // other stats surface); family-level slicing is deferred — the rollup
-// table carries model_family for it.
+// table carries model_family for it. machine is NOT NULL on events, so
+// no COALESCE is needed (like provider/model).
 var dailyByDims = map[string]string{
 	"harness":  "COALESCE(harness, '')",
 	"provider": "provider",
 	"model":    "model",
 	"project":  "COALESCE(project, '')",
+	"machine":  "machine",
 }
 
 // DailyBy returns per-day sums broken down by one dimension, oldest day
@@ -456,7 +458,7 @@ var dailyByDims = map[string]string{
 func (s *Store) DailyBy(ctx context.Context, tz *time.Location, dim string, f Filters) ([]DailyByRow, error) {
 	expr, ok := dailyByDims[dim]
 	if !ok {
-		return nil, fmt.Errorf("unknown --by dimension %q (supported: harness, provider, model, project)", dim)
+		return nil, fmt.Errorf("unknown --by dimension %q (supported: harness, provider, model, project, machine)", dim)
 	}
 	pred, fargs := f.eventsPredicate()
 	rows, err := s.db.QueryContext(ctx, `SELECT tatitok_day(ts, ?) AS day,

@@ -138,7 +138,7 @@ export function fetchDaily(from: string, to: string, fq = "", tz = "UTC"): Promi
 }
 
 export function fetchDailyBy(
-  by: "harness" | "provider" | "model" | "project",
+  by: "harness" | "provider" | "model" | "project" | "machine",
   from: string,
   to: string,
   fq = "",

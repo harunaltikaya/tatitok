@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -35,8 +36,8 @@ import (
 const usageText = `tatitok — local-first AI token usage tracker
 
 Usage:
-  tatitok ingest --backfill [--db PATH] [--source claude-code|codex|opencode]
-  tatitok stats  --daily [--by harness|provider|model|project] | --session
+  tatitok ingest --backfill [--db PATH] [--source claude-code|codex|opencode|pi]
+  tatitok stats  --daily [--by harness|provider|model|project|machine] | --session
                  [--json] [--db PATH] [--timezone TZ] [--harness NAME]
   tatitok doctor --scan-content [--db PATH] [LITERAL...]
   tatitok doctor --provenance [--db PATH] [--json]
@@ -140,12 +141,12 @@ type exitError struct {
 
 func (e exitError) Error() string { return e.msg }
 
+// errAs behaves like the standard library's errors.As: it unwraps the whole
+// error chain (any fmt.Errorf %w wrapping) to find an exitError, rather than
+// only seeing the outermost concrete type. A command that wraps its exitError
+// (e.g. fmt.Errorf("%s: %w", ...) ) still resolves to the exit code + message.
 func errAs(err error, target *exitError) bool {
-	e, ok := err.(exitError)
-	if ok {
-		*target = e
-	}
-	return ok
+	return errors.As(err, target)
 }
 
 func defaultDBPath() string {
@@ -294,7 +295,7 @@ func cmdStats(args []string) error {
 	fs := flag.NewFlagSet("stats", flag.ExitOnError)
 	daily := fs.Bool("daily", false, "per-day token sums")
 	session := fs.Bool("session", false, "per-session token sums")
-	by := fs.String("by", "", "break the daily report down by one dimension (harness, provider, model, project)")
+	by := fs.String("by", "", "break the daily report down by one dimension (harness, provider, model, project, machine)")
 	asJSON := fs.Bool("json", false, "JSON output")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	tzName := fs.String("timezone", "local", "IANA timezone for day bucketing")

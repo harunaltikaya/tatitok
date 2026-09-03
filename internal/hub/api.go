@@ -255,7 +255,7 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			if strings.Contains(err.Error(), "unknown --by dimension") {
 				writeErr(w, http.StatusBadRequest, "bad_param",
-					fmt.Sprintf("by: %q (supported: harness, provider, model, project)", by))
+					fmt.Sprintf("by: %q (supported: harness, provider, model, project, machine)", by))
 				return
 			}
 			storeError(w, r, err)

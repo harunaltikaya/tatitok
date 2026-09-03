@@ -290,7 +290,7 @@ func TestAPITimezone(t *testing.T) {
 
 func TestAPIStatsDailyBy(t *testing.T) {
 	h := seedHub(t)
-	for _, by := range []string{"harness", "provider", "model", "project"} {
+	for _, by := range []string{"harness", "provider", "model", "project", "machine"} {
 		var got struct {
 			By      string             `json:"by"`
 			DailyBy []store.DailyByRow `json:"daily_by"`
