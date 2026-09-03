@@ -45,10 +45,17 @@ func RegisterHTTP(mux *http.ServeMux, st *Store) {
 // handler carries ONLY the display-only store — never the event store.
 type handler struct{ st *Store }
 
-// get returns the latest snapshot under "providers". An absent snapshot
+// get returns the latest snapshot under "providers". Loopback only (403
+// otherwise), like post: the reported limits are the owner's own account
+// state and must not be readable by another host. An absent snapshot
 // (nothing POSTed since start) is a clean empty object, NOT an error — the
 // dashboard renders its "waiting for companion extension" state.
 func (h *handler) get(w http.ResponseWriter, r *http.Request) {
+	if !isLoopback(r.RemoteAddr) {
+		writeErr(w, http.StatusForbidden, "forbidden",
+			"GET /api/v1/limits accepts loopback callers only")
+		return
+	}
 	if len(r.URL.Query()) > 0 {
 		writeErr(w, http.StatusBadRequest, "bad_param", "GET /api/v1/limits takes no query parameters")
 		return

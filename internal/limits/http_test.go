@@ -132,6 +132,28 @@ func TestLimitsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLimitsGetLoopbackGate(t *testing.T) {
+	st := NewStore()
+	st.Set(sample())
+	h := &handler{st: st}
+	for _, tc := range []struct {
+		addr string
+		want int
+	}{
+		{"203.0.113.7:9999", http.StatusForbidden}, // TEST-NET-3, not loopback
+		{"127.0.0.1:4321", http.StatusOK},
+		{"[::1]:4321", http.StatusOK},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/limits", nil)
+		req.RemoteAddr = tc.addr
+		rec := httptest.NewRecorder()
+		h.get(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("GET from %s = %d, want %d", tc.addr, rec.Code, tc.want)
+		}
+	}
+}
+
 func TestLimitsPostRejectsNonLoopback(t *testing.T) {
 	// httptest.Server is always loopback, so drive the handler directly with a
 	// crafted non-loopback RemoteAddr to exercise the 403 gate.
