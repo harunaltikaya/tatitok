@@ -19,12 +19,15 @@ stopped or stalled hub never delays the parent.
 """
 
 import datetime as _dt
+import fcntl
 import json
 import os
 import re
+import select
 import signal
 import stat
 import sys
+import time
 import urllib.request
 
 # The hub's display-only ingest endpoint. TATITOK_HUB_URL overrides the
@@ -39,7 +42,11 @@ POST_MIN_INTERVAL_S = 90
 POST_TIMEOUT_S = 0.15  # connect + read, in the detached child
 
 # stdin bound: a status object is a few KiB; anything past this is not agy.
+# The read is also wall-clock bounded: agy writes the object in one go, so
+# whatever has arrived by the deadline is what gets parsed (a pipe that stays
+# open without EOF must not hold the status line).
 STDIN_LIMIT = 256 * 1024
+STDIN_BUDGET_S = 0.15
 
 QUOTA_WINDOWS = ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly")
 
@@ -164,12 +171,13 @@ def post_quota(payload, url=None, timeout=POST_TIMEOUT_S):
             signal.signal(signal.SIGALRM, prev)
 
 
-def post_quota_detached(payload, state_path, now):
+def post_quota_detached(payload, state_path, now, lock_fd=None):
     """Deliver the POST from a detached grandchild (double fork, new session,
     stdio on /dev/null) so the status-line parent never waits on the
     network. On 2xx the grandchild records last_post_at=now in the state
-    file itself. Returns None: delivery was handed off, outcome unknown to
-    the caller."""
+    file itself, under the state lock (it drops the inherited lock fd first
+    and re-opens state.lock, so it never shares the parent's lock). Returns
+    None: delivery was handed off, outcome unknown to the caller."""
     try:
         pid = os.fork()
     except OSError:
@@ -186,19 +194,54 @@ def post_quota_detached(payload, state_path, now):
         os.setsid()
         if os.fork() > 0:
             os._exit(0)
+        if lock_fd is not None:
+            os.close(lock_fd)  # the parent's lock is the parent's
         devnull = os.open(os.devnull, os.O_RDWR)
         for fd in (0, 1, 2):
             os.dup2(devnull, fd)
         if devnull > 2:
             os.close(devnull)
         if post_quota(payload):
-            state = load_state(state_path)
-            state["last_post_at"] = now
-            save_state(state_path, state)
+            with state_lock(os.path.dirname(state_path), block=True) as held:
+                if held:
+                    state = load_state(state_path)
+                    state["last_post_at"] = now
+                    save_state(state_path, state)
     except Exception:  # noqa: BLE001
         pass
     finally:
         os._exit(0)
+
+
+class state_lock:
+    """flock on <dir>/state.lock. Non-blocking by default: `held` is False
+    when another refresh is mid-flight (the caller then skips this refresh —
+    the next one does the work). block=True waits (the grandchild's
+    last_post_at write)."""
+
+    def __init__(self, ddir, block=False):
+        self.path = os.path.join(ddir, "state.lock")
+        self.block = block
+        self.fd = None
+
+    def __enter__(self):
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, stat.S_IRUSR | stat.S_IWUSR)
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | (0 if self.block else fcntl.LOCK_NB))
+        except (BlockingIOError, InterruptedError, OSError):
+            os.close(self.fd)
+            self.fd = None
+            return False
+        return True
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self.fd)
+            self.fd = None
+        return False
 
 
 def _is_num(v):
@@ -252,11 +295,23 @@ def totals_of(obj):
             int(cw.get("total_output_tokens") or 0)]
 
 
+class Result:
+    """process() outcome. busy=True means another refresh held the state
+    lock: nothing was logged or posted this time (the next refresh will)."""
+
+    __slots__ = ("appended", "posted", "busy")
+
+    def __init__(self, appended=False, posted=False, busy=False):
+        self.appended, self.posted, self.busy = appended, posted, busy
+
+
 def process(obj, ddir, now=None, poster=None):
-    """Run the hook logic on one parsed status object. Returns
-    (appended: bool, posted: bool|None). `poster(payload)` returning
-    True/False is synchronous (tests); the default detaches the POST and
-    reports None — the child records success itself."""
+    """Run the hook logic on one parsed status object. `poster(payload)`
+    returning True/False is synchronous (tests); the default detaches the
+    POST and reports None — the child records success itself. The state
+    lock is held from the state load through the eligibility check, the
+    last_attempt_at stamp and the fork handoff (or the synchronous poster
+    call), so two overlapping refreshes can never both pass the throttle."""
     if now is None:
         now = now_ms()
     obj = dict(obj)
@@ -265,55 +320,87 @@ def process(obj, ddir, now=None, poster=None):
     os.makedirs(ddir, mode=stat.S_IRWXU, exist_ok=True)
     os.chmod(ddir, stat.S_IRWXU)
     state_path = os.path.join(ddir, "state.json")
-    state = load_state(state_path)
-    dirty = False
 
-    appended = False
-    conv = obj.get("conversation_id")
-    if isinstance(conv, str) and conv:
-        totals = totals_of(obj)
-        last = state.setdefault("last_totals", {})
-        if last.get(conv) != totals:
-            rec = dict(obj)
-            rec["logged_at"] = rfc3339_ms(now)
-            with _open_private(os.path.join(ddir, "statusline.jsonl"), "a") as fh:
-                fh.write(json.dumps(rec, separators=(",", ":"), ensure_ascii=False) + "\n")
-            last[conv] = totals
-            appended = dirty = True
+    lock = state_lock(ddir)
+    with lock as held:
+        if not held:
+            return Result(busy=True)  # another refresh is mid-flight; skip
+        state = load_state(state_path)
+        dirty = False
 
-    # Both successes and attempts are throttled to the interval: a hub that
-    # is down is retried every 90 s, not every status refresh; last_post_at
-    # itself only ever moves on a 2xx.
-    posted = False
-    payload = quota_payload(obj.get("quota"), now)
-    since = max(state.get("last_post_at") or 0, state.get("last_attempt_at") or 0)
-    if payload is not None and now - since >= POST_MIN_INTERVAL_S * 1000:
-        state["last_attempt_at"] = now
-        dirty = True
+        appended = False
+        conv = obj.get("conversation_id")
+        if isinstance(conv, str) and conv:
+            totals = totals_of(obj)
+            last = state.setdefault("last_totals", {})
+            if last.get(conv) != totals:
+                rec = dict(obj)
+                rec["logged_at"] = rfc3339_ms(now)
+                with _open_private(os.path.join(ddir, "statusline.jsonl"), "a") as fh:
+                    fh.write(json.dumps(rec, separators=(",", ":"), ensure_ascii=False) + "\n")
+                last[conv] = totals
+                appended = dirty = True
+
+        # Both successes and attempts are throttled to the interval: a hub
+        # that is down is retried every 90 s, not every status refresh;
+        # last_post_at itself only ever moves on a 2xx.
+        posted = False
+        payload = quota_payload(obj.get("quota"), now)
+        since = max(state.get("last_post_at") or 0, state.get("last_attempt_at") or 0)
+        if payload is not None and now - since >= POST_MIN_INTERVAL_S * 1000:
+            state["last_attempt_at"] = now
+            save_state(state_path, state)  # stamped under the lock, before the handoff
+            if poster is None:
+                posted = post_quota_detached(payload, state_path, now, lock.fd)
+            else:
+                posted = poster(payload)
+                if posted:
+                    state = load_state(state_path)
+                    state["last_post_at"] = now
+                    save_state(state_path, state)
+            return Result(appended, posted)
+
         if dirty:
-            save_state(state_path, state)  # written BEFORE the child may write
-        if poster is None:
-            posted = post_quota_detached(payload, state_path, now)
-        else:
-            posted = poster(payload)
-            if posted:
-                state = load_state(state_path)
-                state["last_post_at"] = now
-                save_state(state_path, state)
-        return appended, posted
-
-    if dirty:
-        save_state(state_path, state)
-    return appended, posted
+            save_state(state_path, state)
+        return Result(appended, posted)
 
 
-def read_stdin_bounded(stream=None, limit=STDIN_LIMIT):
-    """Read at most limit+1 bytes; None when the input exceeds the limit."""
+def read_stdin_bounded(stream=None, limit=STDIN_LIMIT, budget_s=STDIN_BUDGET_S):
+    """Read stdin up to limit+1 bytes within a wall-clock budget. Returns the
+    bytes read (at EOF, or whatever arrived by the deadline — agy writes the
+    object in one go), or None when the input exceeds the limit. A stream
+    without a file descriptor (tests) is read directly."""
     stream = stream or sys.stdin.buffer
-    data = stream.read(limit + 1)
-    if data is None or len(data) > limit:
-        return None
-    return data
+    try:
+        fd = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        data = stream.read(limit + 1)
+        return None if data is None or len(data) > limit else data
+    deadline = time.monotonic() + budget_s
+    chunks, total = [], 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            ready, _, _ = select.select([fd], [], [], remaining)
+        except (OSError, ValueError):
+            break
+        if not ready:
+            break  # deadline: parse what we have
+        try:
+            chunk = os.read(fd, 65536)
+        except BlockingIOError:
+            continue
+        except OSError:
+            break
+        if not chunk:
+            break  # EOF
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > limit:
+            return None
+    return b"".join(chunks)
 
 
 def run_hook(stdin_bytes):

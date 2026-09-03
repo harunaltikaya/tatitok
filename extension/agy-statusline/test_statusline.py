@@ -1,12 +1,15 @@
 """python3 -m unittest extension/agy-statusline/test_statusline.py"""
 
+import fcntl
 import importlib.util
 import io
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -92,19 +95,20 @@ class HookTests(unittest.TestCase):
         self.assertEqual(os.stat(self.ddir).st_mode & 0o777, 0o700)
 
     def test_dedup_on_totals(self):
-        a, _ = sl.process(status(), self.ddir, now=NOW, poster=self.poster)
-        b, _ = sl.process(status(), self.ddir, now=NOW + 1000, poster=self.poster)
-        self.assertTrue(a)
-        self.assertFalse(b)
+        a = sl.process(status(), self.ddir, now=NOW, poster=self.poster)
+        b = sl.process(status(), self.ddir, now=NOW + 1000, poster=self.poster)
+        self.assertTrue(a.appended)
+        self.assertFalse(b.appended)
+        self.assertFalse(a.busy or b.busy)
         self.assertEqual(len(self.lines()), 1)
-        c, _ = sl.process(status(tout=21), self.ddir, now=NOW + 2000, poster=self.poster)
-        self.assertTrue(c)
+        c = sl.process(status(tout=21), self.ddir, now=NOW + 2000, poster=self.poster)
+        self.assertTrue(c.appended)
         self.assertEqual(len(self.lines()), 2)
-        d, _ = sl.process(status(conv="conv-2"), self.ddir, now=NOW + 3000, poster=self.poster)
-        self.assertTrue(d)
+        d = sl.process(status(conv="conv-2"), self.ddir, now=NOW + 3000, poster=self.poster)
+        self.assertTrue(d.appended)
         self.assertEqual(len(self.lines()), 3)
-        e, _ = sl.process(status(conv=""), self.ddir, now=NOW + 4000, poster=self.poster)
-        self.assertFalse(e)
+        e = sl.process(status(conv=""), self.ddir, now=NOW + 4000, poster=self.poster)
+        self.assertFalse(e.appended)
         self.assertEqual(len(self.lines()), 3)
 
     # ---- quota payload ----------------------------------------------------
@@ -127,20 +131,20 @@ class HookTests(unittest.TestCase):
         self.assertIsNone(sl.quota_payload({}, NOW))
 
     def test_post_rate_limited_and_state_on_success_only(self):
-        _, p1 = sl.process(status(), self.ddir, now=NOW, poster=self.poster)
-        _, p2 = sl.process(status(tout=21), self.ddir, now=NOW + 89_000, poster=self.poster)
-        _, p3 = sl.process(status(tout=22), self.ddir, now=NOW + 90_000, poster=self.poster)
+        p1 = sl.process(status(), self.ddir, now=NOW, poster=self.poster).posted
+        p2 = sl.process(status(tout=21), self.ddir, now=NOW + 89_000, poster=self.poster).posted
+        p3 = sl.process(status(tout=22), self.ddir, now=NOW + 90_000, poster=self.poster).posted
         self.assertEqual((p1, p2, p3), (True, False, True))
         self.assertEqual(len(self.posts), 2)
         # a failed POST advances only the attempt stamp, never last_post_at
-        _, p4 = sl.process(status(tout=23), self.ddir, now=NOW + 200_000, poster=lambda _p: False)
+        p4 = sl.process(status(tout=23), self.ddir, now=NOW + 200_000, poster=lambda _p: False).posted
         self.assertFalse(p4)
         st = read_json(os.path.join(self.ddir, "state.json"))
         self.assertEqual(st["last_post_at"], NOW + 90_000)
         self.assertEqual(st["last_attempt_at"], NOW + 200_000)
         self.assertEqual(st["last_totals"]["conv-1"], [100, 23])
         # and the failed attempt is not retried before the interval elapses
-        _, p5 = sl.process(status(tout=24), self.ddir, now=NOW + 250_000, poster=self.poster)
+        p5 = sl.process(status(tout=24), self.ddir, now=NOW + 250_000, poster=self.poster).posted
         self.assertFalse(p5)
         self.assertEqual(len(self.posts), 2)
 
@@ -166,9 +170,9 @@ class HookTests(unittest.TestCase):
         self.assertEqual(sl.load_state(sp), {})
         # A list-shaped last_totals still logs AND posts: fresh start.
         write_json(sp, {"last_totals": [["conv-1", [100, 20]]], "last_post_at": NOW})
-        appended, posted = sl.process(status(), self.ddir, now=NOW + 1000, poster=self.poster)
-        self.assertTrue(appended)
-        self.assertTrue(posted)
+        r = sl.process(status(), self.ddir, now=NOW + 1000, poster=self.poster)
+        self.assertTrue(r.appended)
+        self.assertTrue(r.posted)
         st = read_json(sp)
         self.assertEqual(st["last_totals"], {"conv-1": [100, 20]})
         self.assertEqual(st["last_post_at"], NOW + 1000)
@@ -208,6 +212,121 @@ class HookTests(unittest.TestCase):
         lines = read_text(os.path.join(self.tmp.name, "tatitok", "agy", "statusline.jsonl")).splitlines()
         self.assertEqual(len(lines), 1)
         self.assertNotIn("email", lines[0])
+
+    # ---- state lock -----------------------------------------------------------
+
+    def test_lock_busy_skips_refresh(self):
+        os.makedirs(self.ddir, mode=0o700)
+        fd = os.open(os.path.join(self.ddir, "state.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            r = sl.process(status(), self.ddir, now=NOW, poster=self.poster)
+        finally:
+            os.close(fd)
+        self.assertTrue(r.busy)
+        self.assertEqual(self.lines(), [])
+        self.assertEqual(self.posts, [])
+        self.assertFalse(os.path.exists(os.path.join(self.ddir, "state.json")))
+        # released → the next refresh does the work
+        r = sl.process(status(), self.ddir, now=NOW, poster=self.poster)
+        self.assertFalse(r.busy)
+        self.assertEqual(len(self.lines()), 1)
+        self.assertEqual(len(self.posts), 1)
+
+    def test_lock_race_one_attempt(self):
+        # Two processes racing on one state dir: the first holds the lock
+        # through its (slow) poster call, the second finds it busy and skips.
+        # Exactly one attempt is stamped and exactly one poster call happens.
+        os.makedirs(self.ddir, mode=0o700)
+        calls = os.path.join(self.tmp.name, "poster-calls")
+        results = os.path.join(self.tmp.name, "results")
+        os.makedirs(calls)
+        os.makedirs(results)
+
+        def worker(tag, delay):
+            time.sleep(delay)
+
+            def poster(_payload):
+                with open(os.path.join(calls, tag), "w") as fh:
+                    fh.write("1")
+                time.sleep(0.4)  # keep the lock held so the sibling collides
+                return True
+
+            r = sl.process(status(), self.ddir, now=NOW, poster=poster)
+            with open(os.path.join(results, tag), "w") as fh:
+                json.dump({"busy": r.busy, "posted": bool(r.posted), "appended": r.appended}, fh)
+
+        ctx = multiprocessing.get_context("fork")
+        a = ctx.Process(target=worker, args=("a", 0.0))
+        b = ctx.Process(target=worker, args=("b", 0.15))
+        a.start()
+        b.start()
+        a.join(5)
+        b.join(5)
+        self.assertEqual((a.exitcode, b.exitcode), (0, 0))
+        got = {t: read_json(os.path.join(results, t)) for t in ("a", "b")}
+        self.assertEqual(sorted(os.listdir(calls)), ["a"], got)  # one poster call
+        self.assertEqual(got["a"], {"busy": False, "posted": True, "appended": True})
+        self.assertEqual(got["b"], {"busy": True, "posted": False, "appended": False})
+        st = read_json(os.path.join(self.ddir, "state.json"))
+        self.assertEqual(st["last_attempt_at"], NOW)
+        self.assertEqual(st["last_post_at"], NOW)
+        self.assertEqual(len(self.lines()), 1)
+
+    # ---- stdin deadline ---------------------------------------------------------
+
+    def test_stdin_open_pipe_full_object_is_parsed(self):
+        obj = status()
+        del obj["quota"]
+        env = dict(os.environ, XDG_DATA_HOME=self.tmp.name)
+        t0 = time.perf_counter()
+        p = subprocess.Popen([sys.executable, SCRIPT], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, env=env)
+        p.stdin.write(json.dumps(obj).encode())
+        p.stdin.flush()  # NOT closed: no EOF ever arrives
+        out, err = p.stdout.read(), p.stderr.read()
+        p.wait(5)
+        elapsed = time.perf_counter() - t0
+        p.stdin.close()
+        p.stdout.close()
+        p.stderr.close()
+        self.assertEqual((p.returncode, out), (0, b"tatitok"), err)
+        self.assertLess(elapsed, 0.5, "hook did not stop at the stdin deadline")
+        lines = read_text(os.path.join(self.tmp.name, "tatitok", "agy", "statusline.jsonl")).splitlines()
+        self.assertEqual(len(lines), 1)
+
+    def test_stdin_half_object_stall(self):
+        half = json.dumps(status())[:40]
+        env = dict(os.environ, XDG_DATA_HOME=self.tmp.name)
+        t0 = time.perf_counter()
+        p = subprocess.Popen([sys.executable, SCRIPT], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, env=env)
+        p.stdin.write(half.encode())
+        p.stdin.flush()
+        out = p.stdout.read()
+        p.wait(5)
+        elapsed = time.perf_counter() - t0
+        p.stdin.close()
+        p.stdout.close()
+        p.stderr.close()
+        self.assertEqual((p.returncode, out), (0, b"tatitok"))
+        self.assertLess(elapsed, 0.5)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "tatitok", "agy", "statusline.jsonl")))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "tatitok", "agy", "state.json")))
+
+    def test_read_stdin_bounded_deadline_and_limit(self):
+        r, w = os.pipe()
+        try:
+            os.write(w, b'{"a":1}')
+            t0 = time.perf_counter()
+            with open(r, "rb", buffering=0, closefd=False) as fh:
+                got = sl.read_stdin_bounded(fh, budget_s=0.1)
+            self.assertEqual(got, b'{"a":1}')
+            self.assertLess(time.perf_counter() - t0, 0.3)
+        finally:
+            os.close(r)
+            os.close(w)
+        self.assertIsNone(sl.read_stdin_bounded(io.BytesIO(b"x" * (sl.STDIN_LIMIT + 1))))
 
     # ---- (e) hub URL validation ------------------------------------------
 
