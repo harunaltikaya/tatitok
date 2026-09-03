@@ -85,6 +85,13 @@ package pricing
 // out-of-tolerance groups informationally at exit 0 instead of failing
 // — a permanently failing check is a dead check. The stored costs are
 // untouched either way; this only declassifies the report finding.
+// Rulings so far: deepseek-v4-pro (retired 2026-06-12 once the dated
+// regime represented the price cut); ds4 / deepseek-v4-flash (owner
+// ruling 2026-09-03, current): ccusage does not know the "ds4"
+// provider label and reports $0 for its events, while ours carries
+// the official DeepSeek v4-flash rates from this file's overrides —
+// a source gap, not a rate error, so the group is explained rather
+// than represented. The entry lives in the owner's prices.json.
 
 import (
 	"bytes"
