@@ -18,9 +18,12 @@
 //                     sends an ISO string and Codex sends Unix seconds.
 //
 //   "rules": knobs.
-//     { pollIntervalSeconds: number, claudeOrgId: string }
+//     { pollIntervalSeconds: number, claudeOrgId: string, hubUrl: string }
 //       claudeOrgId — OPTIONAL owner override (options page); "" → the Claude
 //                     org is auto-discovered from the logged-in session.
+//       hubUrl      — the tatitok hub origin (options page), default
+//                     http://127.0.0.1:8284 — loopback hosts only, which is
+//                     what the manifest's host_permissions grant.
 //     (The ChatGPT message-cap rules arrive with the counter chunk, not here.)
 //
 //   "claudeOrg": the Claude org id discovered from the live claude.ai session,
@@ -33,7 +36,30 @@ export const RULES_KEY = "rules";
 export const ORG_KEY = "claudeOrg"; // cached discovered Claude org id (per-user)
 
 // claudeOrgId is the OPTIONAL owner override (options page); "" → auto-discover.
-export const DEFAULT_RULES = { pollIntervalSeconds: 90, claudeOrgId: "" };
+export const DEFAULT_HUB_URL = "http://127.0.0.1:8284";
+export const DEFAULT_RULES = {
+  pollIntervalSeconds: 90,
+  claudeOrgId: "",
+  hubUrl: DEFAULT_HUB_URL,
+};
+
+// The hub URL is restricted to a loopback ORIGIN (http, 127.0.0.1 or
+// localhost, optional port, no path): that is exactly what the manifest's
+// host_permissions cover, so a value outside it could never be fetched anyway
+// and the extension keeps its loopback-only posture.
+export const HUB_URL_RE = /^http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?$/;
+
+export function isValidHubUrl(url) {
+  return typeof url === "string" && HUB_URL_RE.test(url.trim());
+}
+
+// hubUrl returns the configured hub origin, falling back to the default when
+// the stored value is missing or (from an older rules shape) invalid.
+export async function hubUrl() {
+  const rules = await getRules();
+  const v = (rules.hubUrl ?? "").trim();
+  return isValidHubUrl(v) ? v : DEFAULT_HUB_URL;
+}
 
 // Documents the "limits" shape before the first successful poll.
 export const EMPTY_LIMITS = { claude: null, codex: null };

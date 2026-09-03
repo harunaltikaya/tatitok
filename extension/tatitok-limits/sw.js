@@ -20,18 +20,16 @@ import {
   setDiscoveredOrg,
   clearDiscoveredOrg,
   isValidClaudeOrgId,
+  hubUrl,
 } from "./storage.js";
 
 // ---- constants --------------------------------------------------------
 
 const ALARM_NAME = "poll-limits";
-const DASHBOARD_URL_PREFIX = "http://127.0.0.1:8284";
-
-// The hub's chunk-1 display-only ingest endpoint. Derived from the dashboard
-// prefix so the host:port has one source of truth.
-// TODO(addr): make configurable if the owner runs the hub on a custom --addr
-// (the host_permission + DASHBOARD_URL_PREFIX would move together then).
-const INGEST_URL = `${DASHBOARD_URL_PREFIX}/api/v1/limits`;
+// The hub origin comes from rules.hubUrl (options page; default
+// http://127.0.0.1:8284, loopback only) — see storage.js hubUrl(). The ingest
+// endpoint is derived from it so the host:port has one source of truth.
+const INGEST_PATH = "/api/v1/limits";
 
 // Gentle, rate-friendly band; rules.pollIntervalSeconds is clamped into it.
 const MIN_INTERVAL_S = 60;
@@ -95,13 +93,14 @@ chrome.action.onClicked.addListener(async () => {
 // ---- dashboard gate ---------------------------------------------------
 
 // True if any open tab is the local tatitok dashboard. tab.url is visible for
-// that tab because http://127.0.0.1:8284/* is in host_permissions (no "tabs"
+// that tab because the loopback origins are in host_permissions (no "tabs"
 // permission needed); tabs we lack host access to report url === undefined
 // and are simply skipped.
 async function dashboardOpen() {
+  const prefix = await hubUrl();
   const tabs = await chrome.tabs.query({});
   return tabs.some(
-    (t) => typeof t.url === "string" && t.url.startsWith(DASHBOARD_URL_PREFIX),
+    (t) => typeof t.url === "string" && t.url.startsWith(prefix),
   );
 }
 
@@ -117,9 +116,9 @@ async function pollAll() {
 }
 
 // postSnapshotToHub sends the WHOLE current snapshot to the hub in ONE request.
-// The hub's store is last-write-wins (it REPLACES the snapshot, never merges),
-// so two per-provider POSTs would clobber each other and drop a provider —
-// always send both providers together. Providers still null (never successfully
+// The hub's store merges per provider key (so the agy statusLine hook's
+// "agy" POSTs coexist with ours); we still send both providers together in
+// one request. Providers still null (never successfully
 // polled) are omitted; a present provider carries its last-good value (storage
 // only ever holds successes, so a transient poll failure can't blank it).
 //
@@ -140,7 +139,7 @@ async function postSnapshotToHub(limits) {
   if (Object.keys(snapshot).length === 0) return; // nothing polled yet — nothing to send
 
   try {
-    const res = await fetch(INGEST_URL, {
+    const res = await fetch(`${await hubUrl()}${INGEST_PATH}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(snapshot),

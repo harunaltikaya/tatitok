@@ -23,10 +23,11 @@ import stat
 import sys
 import urllib.request
 
-# The hub's display-only ingest endpoint (loopback only).
-# TODO(addr): make configurable if the owner runs the hub on a custom --addr
-# (kept in step with extension/tatitok-limits/sw.js INGEST_URL).
-INGEST_URL = "http://127.0.0.1:8284/api/v1/limits"
+# The hub's display-only ingest endpoint. TATITOK_HUB_URL (the hub's --addr as
+# an origin, e.g. http://127.0.0.1:9000) overrides the default; the hub itself
+# only accepts loopback callers.
+DEFAULT_HUB_URL = "http://127.0.0.1:8284"
+INGEST_URL = (os.environ.get("TATITOK_HUB_URL") or DEFAULT_HUB_URL).rstrip("/") + "/api/v1/limits"
 POST_MIN_INTERVAL_S = 90
 POST_TIMEOUT_S = 1.0
 

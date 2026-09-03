@@ -41,6 +41,16 @@
       except in the per-user request to claude.ai.
     </p>
 
+    <label for="hubUrl">tatitok hub URL</label>
+    <input id="hubUrl" type="text" autocomplete="off" spellcheck="false"
+           placeholder="http://127.0.0.1:8284" />
+    <p class="help">
+      Where the running <code>tatitok serve</code> listens (its <code>--addr</code>).
+      Loopback only: <code>http://127.0.0.1[:port]</code> or
+      <code>http://localhost[:port]</code> — the extension never talks to a
+      non-loopback hub. Blank restores the default.
+    </p>
+
     <button id="save" type="button">Save</button>
     <span id="status" role="status" aria-live="polite"></span>
 
