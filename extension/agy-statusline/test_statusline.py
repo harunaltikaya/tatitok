@@ -62,6 +62,7 @@ class HookTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.ddir = os.path.join(self.tmp.name, "agy")
         self.posts = []
+        sl.T0 = time.monotonic()  # each test is its own hook invocation
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -318,15 +319,105 @@ class HookTests(unittest.TestCase):
         r, w = os.pipe()
         try:
             os.write(w, b'{"a":1}')
+            sl.T0 = time.monotonic()
             t0 = time.perf_counter()
-            with open(r, "rb", buffering=0, closefd=False) as fh:
-                got = sl.read_stdin_bounded(fh, budget_s=0.1)
-            self.assertEqual(got, b'{"a":1}')
+            got, retained = sl.read_bounded(r, deadline_s=0.1)
+            self.assertEqual((got, retained), (b'{"a":1}', 7))
             self.assertLess(time.perf_counter() - t0, 0.3)
         finally:
             os.close(r)
             os.close(w)
         self.assertIsNone(sl.read_stdin_bounded(io.BytesIO(b"x" * (sl.STDIN_LIMIT + 1))))
+
+    def test_read_bounded_retains_exactly_limit_plus_one(self):
+        # A writer pushes well past the bound; the reader must reject having
+        # held EXACTLY limit + 1 bytes (per-read size = remaining capacity).
+        limit = sl.STDIN_LIMIT
+        r, w = os.pipe()
+        payload = b"x" * (limit + 100_000)
+
+        def writer():
+            try:
+                view = memoryview(payload)
+                while view:
+                    n = os.write(w, view)
+                    view = view[n:]
+            except OSError:
+                pass  # reader closed early — expected once it rejects
+            finally:
+                os.close(w)
+
+        import threading
+        th = threading.Thread(target=writer)
+        th.start()
+        try:
+            sl.T0 = time.monotonic()
+            got, retained = sl.read_bounded(r, limit, deadline_s=2.0)
+        finally:
+            os.close(r)
+            th.join(5)
+        self.assertIsNone(got)
+        self.assertEqual(retained, limit + 1)
+        # Exactly at the limit is accepted whole.
+        r, w = os.pipe()
+        exact = b"y" * 70_000  # fits the pipe buffer? no — write in a thread too
+
+        def writer2():
+            try:
+                view = memoryview(exact)
+                while view:
+                    n = os.write(w, view)
+                    view = view[n:]
+            finally:
+                os.close(w)
+
+        th = threading.Thread(target=writer2)
+        th.start()
+        try:
+            sl.T0 = time.monotonic()
+            got, retained = sl.read_bounded(r, 70_000, deadline_s=2.0)
+        finally:
+            os.close(r)
+            th.join(5)
+        self.assertEqual((len(got), retained), (70_000, 70_000))
+
+    # ---- end-to-end budget --------------------------------------------------------
+
+    def test_budget_exhausted_writes_nothing(self):
+        sl.T0 = time.monotonic() - 1.0  # the whole budget is already spent
+        with self.assertRaises(sl.Budget):
+            sl.process(status(), self.ddir, now=NOW, poster=self.poster)
+        self.assertEqual(self.lines(), [])
+        self.assertEqual(self.posts, [])
+        self.assertFalse(os.path.exists(os.path.join(self.ddir, "state.json")))
+        # run_hook swallows it and still answers agy
+        out = io.StringIO()
+        real = sys.stdout
+        sys.stdout = out
+        try:
+            rc = sl.run_hook(json.dumps(status()).encode())
+        finally:
+            sys.stdout = real
+        self.assertEqual((rc, out.getvalue()), (0, "tatitok"))
+
+    def test_append_line_is_one_write(self):
+        os.makedirs(self.ddir, mode=0o700)
+        p = os.path.join(self.ddir, "statusline.jsonl")
+        calls = []
+        real_write = os.write
+
+        def spy(fd, data):
+            calls.append(len(data))
+            return real_write(fd, data)
+
+        sl.os.write = spy
+        try:
+            sl.append_line(p, b'{"x":1}\n')
+        finally:
+            sl.os.write = real_write
+        self.assertEqual(calls, [8])
+        self.assertEqual(read_text(p), '{"x":1}\n')
+        self.assertEqual(os.stat(p).st_mode & 0o777, 0o600)
 
     # ---- (e) hub URL validation ------------------------------------------
 

@@ -18,17 +18,23 @@ stopped or stalled hub never delays the parent.
   --uninstall  remove the statusLine key again (only if it is ours; backup kept)
 """
 
-import datetime as _dt
-import fcntl
-import json
-import os
-import re
-import select
-import signal
-import stat
-import sys
 import time
-import urllib.request
+
+# t0: the hook's one clock. Every budget below is measured from here, taken
+# before anything else is imported so the interpreter's own startup is the
+# only time not under our control.
+T0 = time.monotonic()
+
+import datetime as _dt  # noqa: E402
+import fcntl  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+import select  # noqa: E402
+import signal  # noqa: E402
+import stat  # noqa: E402
+import sys  # noqa: E402
+import urllib.request  # noqa: E402
 
 # The hub's display-only ingest endpoint. TATITOK_HUB_URL overrides the
 # default origin, but ONLY a loopback origin is accepted — the same rule as
@@ -42,11 +48,35 @@ POST_MIN_INTERVAL_S = 90
 POST_TIMEOUT_S = 0.15  # connect + read, in the detached child
 
 # stdin bound: a status object is a few KiB; anything past this is not agy.
-# The read is also wall-clock bounded: agy writes the object in one go, so
-# whatever has arrived by the deadline is what gets parsed (a pipe that stays
-# open without EOF must not hold the status line).
+# The reader never holds more than limit + 1 bytes (per-iteration read size
+# is capped to the remaining capacity).
 STDIN_LIMIT = 256 * 1024
-STDIN_BUDGET_S = 0.15
+
+# One end-to-end budget, measured from T0: stdin may be read until 100 ms
+# (agy writes the object in one go, so the normal path never waits); every
+# later step checks the remaining budget, and a SIGALRM at 190 ms ends the
+# hook wherever it is — it prints "tatitok" and exits 0 regardless. The log
+# line is appended in ONE os.write so an interrupt can never leave a partial
+# line behind.
+STDIN_DEADLINE_S = 0.100
+HOOK_DEADLINE_S = 0.190
+
+
+def elapsed():
+    return time.monotonic() - T0
+
+
+def remaining(deadline_s=HOOK_DEADLINE_S):
+    return deadline_s - elapsed()
+
+
+class Budget(Exception):
+    """The 190 ms hook budget is spent; the caller prints "tatitok" and exits."""
+
+
+def check_budget():
+    if remaining() <= 0:
+        raise Budget()
 
 QUOTA_WINDOWS = ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly")
 
@@ -287,6 +317,19 @@ def save_state(path, state):
     os.replace(tmp, path)
 
 
+def append_line(path, data):
+    """Append data (a complete line) with ONE os.write on an O_APPEND fd, so
+    a budget interrupt can only fall before or after the line, never inside
+    it. A short write would leave a partial line; treat it as a failure."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, stat.S_IRUSR | stat.S_IWUSR)
+    try:
+        n = os.write(fd, data)
+        if n != len(data):
+            raise OSError("short write to %s (%d of %d bytes)" % (path, n, len(data)))
+    finally:
+        os.close(fd)
+
+
 def totals_of(obj):
     cw = obj.get("context_window")
     if not isinstance(cw, dict):
@@ -321,6 +364,7 @@ def process(obj, ddir, now=None, poster=None):
     os.chmod(ddir, stat.S_IRWXU)
     state_path = os.path.join(ddir, "state.json")
 
+    check_budget()
     lock = state_lock(ddir)
     with lock as held:
         if not held:
@@ -336,10 +380,12 @@ def process(obj, ddir, now=None, poster=None):
             if last.get(conv) != totals:
                 rec = dict(obj)
                 rec["logged_at"] = rfc3339_ms(now)
-                with _open_private(os.path.join(ddir, "statusline.jsonl"), "a") as fh:
-                    fh.write(json.dumps(rec, separators=(",", ":"), ensure_ascii=False) + "\n")
+                line = (json.dumps(rec, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+                check_budget()  # never start a write we may not finish
+                append_line(os.path.join(ddir, "statusline.jsonl"), line)
                 last[conv] = totals
                 appended = dirty = True
+        check_budget()
 
         # Both successes and attempts are throttled to the interval: a hub
         # that is down is retried every 90 s, not every status refresh;
@@ -365,31 +411,25 @@ def process(obj, ddir, now=None, poster=None):
         return Result(appended, posted)
 
 
-def read_stdin_bounded(stream=None, limit=STDIN_LIMIT, budget_s=STDIN_BUDGET_S):
-    """Read stdin up to limit+1 bytes within a wall-clock budget. Returns the
-    bytes read (at EOF, or whatever arrived by the deadline — agy writes the
-    object in one go), or None when the input exceeds the limit. A stream
-    without a file descriptor (tests) is read directly."""
-    stream = stream or sys.stdin.buffer
-    try:
-        fd = stream.fileno()
-    except (AttributeError, OSError, ValueError):
-        data = stream.read(limit + 1)
-        return None if data is None or len(data) > limit else data
-    deadline = time.monotonic() + budget_s
+def read_bounded(fd, limit=STDIN_LIMIT, deadline_s=STDIN_DEADLINE_S):
+    """Read fd up to limit+1 bytes until EOF or the stdin deadline (measured
+    from T0). Returns (data, retained): data is None when the input exceeds
+    the limit; retained is how many bytes the reader held at that point —
+    never more than limit + 1, because each read asks for at most the
+    remaining capacity."""
     chunks, total = [], 0
     while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
+        rem = deadline_s - elapsed()
+        if rem <= 0:
+            break  # deadline: parse what we have
         try:
-            ready, _, _ = select.select([fd], [], [], remaining)
+            ready, _, _ = select.select([fd], [], [], rem)
         except (OSError, ValueError):
             break
         if not ready:
-            break  # deadline: parse what we have
+            break
         try:
-            chunk = os.read(fd, 65536)
+            chunk = os.read(fd, min(65536, limit + 1 - total))
         except BlockingIOError:
             continue
         except OSError:
@@ -399,20 +439,54 @@ def read_stdin_bounded(stream=None, limit=STDIN_LIMIT, budget_s=STDIN_BUDGET_S):
         chunks.append(chunk)
         total += len(chunk)
         if total > limit:
-            return None
-    return b"".join(chunks)
+            return None, total
+    return b"".join(chunks), total
+
+
+def read_stdin_bounded(stream=None, limit=STDIN_LIMIT, deadline_s=STDIN_DEADLINE_S):
+    """stdin as bytes (None when over the limit). A stream without a file
+    descriptor (tests) is read directly, with the same exact bound."""
+    stream = stream or sys.stdin.buffer
+    try:
+        fd = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        data = stream.read(limit + 1)
+        return None if data is None or len(data) > limit else data
+    data, _ = read_bounded(fd, limit, deadline_s)
+    return data
+
+
+def _budget_alarm(signum, frame):
+    raise Budget()
 
 
 def run_hook(stdin_bytes):
+    """Parse + process under the hook budget: a SIGALRM at HOOK_DEADLINE_S
+    (from T0) raises Budget wherever the parent is, on top of the explicit
+    checks; either way the hook prints "tatitok" and exits 0."""
+    armed = False
     try:
+        rem = remaining()
+        if rem <= 0:
+            raise Budget()
+        try:
+            signal.signal(signal.SIGALRM, _budget_alarm)
+            signal.setitimer(signal.ITIMER_REAL, rem)
+            armed = True
+        except (ValueError, OSError, AttributeError):
+            pass  # not the main thread: explicit checks only
         if stdin_bytes is None:
             raise ValueError("stdin exceeds the size bound")
         obj = json.loads(stdin_bytes)
         if not isinstance(obj, dict):
             raise ValueError("status object is not a JSON object")
         process(obj, data_dir())
-    except Exception:  # noqa: BLE001 — never crash agy's status line
+    except Exception:  # noqa: BLE001 — never crash agy's status line (Budget included)
         pass
+    finally:
+        if armed:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, signal.SIG_DFL)
     sys.stdout.write("tatitok")
     sys.stdout.flush()
     return 0
