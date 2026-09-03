@@ -214,11 +214,20 @@ func SnapshotVersion() (string, error) {
 	return snapVersion, loadErr
 }
 
-// isLocalProvider: vLLM serving (any owner recipe alias) prices as
-// `local`, cost 0 in M3 — the energy model is a later milestone. Other
+// isLocalProvider: the owner's own serving prices as `local`, cost 0 in
+// M3 — the energy model is a later milestone. Matched by NAME, case-
+// insensitively: the prefixes vllm / sglang / robotlab (bare or followed
+// by "-") and the suffix "-local" — the label conventions the owner's
+// opencode and pi provider entries use for 127.0.0.1 endpoints. Other
 // local engines (ollama, llama.cpp) join when their adapters do.
 func isLocalProvider(provider string) bool {
-	return provider == "vllm" || strings.HasPrefix(provider, "vllm-")
+	p := strings.ToLower(provider)
+	for _, prefix := range []string{"vllm", "sglang", "robotlab"} {
+		if p == prefix || strings.HasPrefix(p, prefix+"-") {
+			return true
+		}
+	}
+	return strings.HasSuffix(p, "-local")
 }
 
 // snapshotCanPriceKey reports whether the embedded snapshot could

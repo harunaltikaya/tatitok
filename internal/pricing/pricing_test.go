@@ -117,6 +117,18 @@ func TestResolveBases(t *testing.T) {
 		{"vllm", "qwen3.6-27b", "qwen3.6-27b", BasisLocal, true},
 		{"vllm-tecnigmaai-nvfp4", "qwen3.6-35b-nvfp4-tecnigmaai", "qwen3.6-35b", BasisLocal, true},
 		{"vllm-delegate", "gx10", "gx10", BasisLocal, true},
+		// Widened local rule: sglang / robotlab prefixes, "-local" suffix,
+		// case-insensitive; a bare name that merely CONTAINS one of them
+		// (or "-local" inside the name) does not match.
+		{"sglang", "qwen38-fp8", "qwen38-fp8", BasisLocal, true},
+		{"sglang-dflash2", "qwen38-fp8", "qwen38-fp8", BasisLocal, true},
+		{"robotlab-qwen38-dflash2-low", "qwen38-r0b0tlab", "qwen38-r0b0tlab", BasisLocal, true},
+		{"aeon-qwen36-35b-heretic-local", "aeon-qwen36-deep", "aeon-qwen36-deep", BasisLocal, true},
+		{"VLLM-Flash-Next", "qwen3.8-flash-next", "qwen3.8-flash-next", BasisLocal, true},
+		{"Laguna-W4A4-LOCAL", "laguna", "laguna", BasisLocal, true},
+		{"myvllm", "qwen", "qwen", BasisUnknown, false},
+		{"local-proxy", "qwen", "qwen", BasisUnknown, false},
+		{"fp8-qwen38-dflash2-low", "qwen38", "qwen38", BasisUnknown, false},
 		// Owner ruling: a "-free" NAME alone never means free — without a
 		// source-reported $0 (Apply-level), resolution proceeds normally
 		// and this model is simply absent from the snapshot.
