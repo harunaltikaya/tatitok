@@ -39,18 +39,31 @@ func TestStoreSetGet(t *testing.T) {
 	}
 }
 
-func TestStoreLastWriteWins(t *testing.T) {
+func TestStoreMergesPerProviderKey(t *testing.T) {
 	s := NewStore()
 	s.Set(sample())
-	// A second snapshot REPLACES the first (never merges): drop codex, change
-	// claude — the store must reflect exactly the last write.
-	s.Set(Snapshot{"claude": {FetchedAt: 9, Windows: []Window{{Label: "All models", UsedPercent: 12, ResetAt: 5}}}})
+	// A POST from one feeder (the agy statusLine hook) carries only "agy":
+	// it must be added WITHOUT removing claude/codex.
+	s.Set(Snapshot{"agy": {FetchedAt: 9, Windows: []Window{{Label: "gemini-5h", UsedPercent: 12, ResetAt: 5}}}})
 	got := s.Get()
-	if _, ok := got["codex"]; ok {
-		t.Error("codex still present after a write that omitted it — Set merged instead of replacing")
+	if len(got) != 3 {
+		t.Fatalf("after agy write got %d providers, want 3 (claude, codex, agy): %+v", len(got), got)
 	}
-	if len(got) != 1 || got["claude"].Windows[0].UsedPercent != 12 {
-		t.Errorf("after last write, got %+v, want only claude@12%%", got)
+	if got["codex"].Windows[0].UsedPercent != 90 || got["claude"].Windows[0].UsedPercent != 42 {
+		t.Errorf("claude/codex changed by a write that omitted them: %+v", got)
+	}
+	if got["agy"].Windows[0].UsedPercent != 12 {
+		t.Errorf("agy = %+v, want gemini-5h@12%%", got["agy"])
+	}
+	// And vice versa: the extension's claude+codex snapshot must not remove
+	// agy; within a key the write is last-write-wins.
+	s.Set(Snapshot{"claude": {FetchedAt: 10, Windows: []Window{{Label: "All models", UsedPercent: 55, ResetAt: 6}}}})
+	got = s.Get()
+	if _, ok := got["agy"]; !ok {
+		t.Error("agy dropped by a claude-only write")
+	}
+	if got["claude"].Windows[0].UsedPercent != 55 || len(got["claude"].Windows) != 1 {
+		t.Errorf("claude not replaced within its key: %+v", got["claude"])
 	}
 }
 

@@ -6,8 +6,10 @@
 // shown on the dashboard and NEVER mixed with tatitok's counted token/cost
 // data — they never enter the store, pricing, rollups or the parity pipeline.
 //
-// Storage is in-memory and last-write-wins: the latest POSTed snapshot replaces
-// the previous one. It is intentionally NOT persisted — empty after a restart
+// Storage is in-memory and merges PER PROVIDER KEY: a POST carrying "agy"
+// updates only "agy" and leaves "claude"/"codex" as they were (each feeder —
+// the browser extension, the agy statusLine hook — posts only the providers it
+// knows). Within one key it is last-write-wins. It is intentionally NOT persisted — empty after a restart
 // until the extension's next poll. That is correct for a freshness-stamped live
 // mirror and keeps the fence trivial (no schema, no migration, no disk).
 package limits
@@ -71,9 +73,9 @@ func (s Snapshot) Validate() error {
 	return nil
 }
 
-// Store holds the latest reported snapshot, safe for one concurrent POST
-// (writer) and many GET (readers). Last-write-wins: Set replaces the whole
-// snapshot, never merges.
+// Store holds the latest reported snapshot, safe for concurrent POSTs
+// (writers) and many GET (readers). Set merges per provider key; a key is
+// last-write-wins, keys absent from a write are kept.
 type Store struct {
 	mu   sync.RWMutex
 	snap Snapshot // nil until the first Set
@@ -82,12 +84,21 @@ type Store struct {
 // NewStore returns an empty store — no snapshot until the first POST.
 func NewStore() *Store { return &Store{} }
 
-// Set replaces the stored snapshot (last-write-wins). The Store takes ownership
-// of snap; callers must not mutate it afterwards.
+// Set merges snap into the stored snapshot per provider key: every key in snap
+// replaces the stored entry for that key; keys not in snap are kept. The
+// stored map is never mutated in place — a fresh map is installed on every
+// Set, so references handed out by Get stay stable.
 func (s *Store) Set(snap Snapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.snap = snap
+	merged := make(Snapshot, len(s.snap)+len(snap))
+	for k, p := range s.snap {
+		merged[k] = p
+	}
+	for k, p := range snap {
+		merged[k] = p
+	}
+	s.snap = merged
 }
 
 // Get returns the latest snapshot, or nil if none has been stored yet. The

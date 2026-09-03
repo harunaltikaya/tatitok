@@ -64,8 +64,8 @@ func (h *handler) get(w http.ResponseWriter, r *http.Request) {
 // only (403 otherwise). The body is size-capped and decoded as a SINGLE JSON
 // value: trailing data is rejected, a literal null is rejected (it must not
 // clear the stored snapshot), and the payload must validate. Any failure is a
-// 400 that leaves the stored snapshot untouched. Success replaces it
-// (last-write-wins) and returns 204.
+// 400 that leaves the stored snapshot untouched. Success merges it per
+// provider key (see Store.Set) and returns 204.
 func (h *handler) post(w http.ResponseWriter, r *http.Request) {
 	if !isLoopback(r.RemoteAddr) {
 		writeErr(w, http.StatusForbidden, "forbidden",
