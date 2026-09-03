@@ -1,6 +1,7 @@
 """python3 -m unittest extension/agy-statusline/test_statusline.py"""
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -15,7 +16,7 @@ _spec = importlib.util.spec_from_file_location("statusline", SCRIPT)
 sl = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sl)
 
-NOW = 1_788_432_000_000  # epoch ms
+NOW = 1_788_432_000_000  # epoch ms (2026-09-03T10:40:00Z)
 
 
 def status(conv="conv-1", tin=100, tout=20, email="someone@example.com"):
@@ -38,6 +39,21 @@ def status(conv="conv-1", tin=100, tout=20, email="someone@example.com"):
     }
 
 
+def read_text(path):
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def read_json(path):
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def write_json(path, obj):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh)
+
+
 class HookTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -51,23 +67,28 @@ class HookTests(unittest.TestCase):
         self.posts.append(payload)
         return True
 
+    def log_path(self):
+        return os.path.join(self.ddir, "statusline.jsonl")
+
     def lines(self):
-        p = os.path.join(self.ddir, "statusline.jsonl")
-        if not os.path.exists(p):
+        if not os.path.exists(self.log_path()):
             return []
-        with open(p, encoding="utf-8") as fh:
-            return [json.loads(l) for l in fh.read().splitlines() if l]
+        return [json.loads(l) for l in read_text(self.log_path()).splitlines() if l]
+
+    def run_script(self, stdin, **env):
+        e = dict(os.environ, XDG_DATA_HOME=self.tmp.name, **env)
+        return subprocess.run([sys.executable, SCRIPT], input=stdin, capture_output=True, env=e)
+
+    # ---- logging --------------------------------------------------------
 
     def test_email_never_written(self):
         sl.process(status(email="secret@example.com"), self.ddir, now=NOW, poster=self.poster)
-        raw = open(os.path.join(self.ddir, "statusline.jsonl"), encoding="utf-8").read()
+        raw = read_text(self.log_path())
         self.assertNotIn("secret@example.com", raw)
         self.assertNotIn("email", raw)
         self.assertNotIn("secret@example.com", json.dumps(self.posts))
-        self.assertIn("logged_at", self.lines()[0])
         self.assertEqual(self.lines()[0]["logged_at"], "2026-09-03T10:40:00.000Z")
-        mode = os.stat(os.path.join(self.ddir, "statusline.jsonl")).st_mode & 0o777
-        self.assertEqual(mode, 0o600)
+        self.assertEqual(os.stat(self.log_path()).st_mode & 0o777, 0o600)
         self.assertEqual(os.stat(self.ddir).st_mode & 0o777, 0o700)
 
     def test_dedup_on_totals(self):
@@ -79,14 +100,14 @@ class HookTests(unittest.TestCase):
         c, _ = sl.process(status(tout=21), self.ddir, now=NOW + 2000, poster=self.poster)
         self.assertTrue(c)
         self.assertEqual(len(self.lines()), 2)
-        # another conversation with the same totals is its own first line
         d, _ = sl.process(status(conv="conv-2"), self.ddir, now=NOW + 3000, poster=self.poster)
         self.assertTrue(d)
         self.assertEqual(len(self.lines()), 3)
-        # empty conversation_id never logs
         e, _ = sl.process(status(conv=""), self.ddir, now=NOW + 4000, poster=self.poster)
         self.assertFalse(e)
         self.assertEqual(len(self.lines()), 3)
+
+    # ---- quota payload ----------------------------------------------------
 
     def test_quota_payload_shape(self):
         p = sl.quota_payload(status()["quota"], NOW)
@@ -98,10 +119,10 @@ class HookTests(unittest.TestCase):
         self.assertAlmostEqual(by["gemini-weekly"]["usedPercent"], 50.0)
         self.assertAlmostEqual(by["3p-5h"]["usedPercent"], 0.0)
         self.assertAlmostEqual(by["3p-weekly"]["usedPercent"], 100.0)
-        self.assertEqual(by["gemini-5h"]["resetAt"], 1_788_436_800_000)      # 2026-09-03T12:00:00Z
-        self.assertEqual(by["gemini-weekly"]["resetAt"], 1_788_566_400_500)  # fractional seconds kept
-        self.assertEqual(by["3p-5h"]["resetAt"], NOW + 60_000)               # fallback: reset_in_seconds
-        self.assertEqual(by["3p-weekly"]["resetAt"], 1_788_645_600_000)      # +02:00 offset honoured
+        self.assertEqual(by["gemini-5h"]["resetAt"], 1_788_436_800_000)
+        self.assertEqual(by["gemini-weekly"]["resetAt"], 1_788_566_400_500)
+        self.assertEqual(by["3p-5h"]["resetAt"], NOW + 60_000)
+        self.assertEqual(by["3p-weekly"]["resetAt"], 1_788_645_600_000)
         self.assertIsNone(sl.quota_payload(None, NOW))
         self.assertIsNone(sl.quota_payload({}, NOW))
 
@@ -111,49 +132,152 @@ class HookTests(unittest.TestCase):
         _, p3 = sl.process(status(tout=22), self.ddir, now=NOW + 90_000, poster=self.poster)
         self.assertEqual((p1, p2, p3), (True, False, True))
         self.assertEqual(len(self.posts), 2)
-        # a failed POST does not advance last_post_at
+        # a failed POST advances only the attempt stamp, never last_post_at
         _, p4 = sl.process(status(tout=23), self.ddir, now=NOW + 200_000, poster=lambda _p: False)
         self.assertFalse(p4)
-        st = json.load(open(os.path.join(self.ddir, "state.json")))
+        st = read_json(os.path.join(self.ddir, "state.json"))
         self.assertEqual(st["last_post_at"], NOW + 90_000)
+        self.assertEqual(st["last_attempt_at"], NOW + 200_000)
         self.assertEqual(st["last_totals"]["conv-1"], [100, 23])
+        # and the failed attempt is not retried before the interval elapses
+        _, p5 = sl.process(status(tout=24), self.ddir, now=NOW + 250_000, poster=self.poster)
+        self.assertFalse(p5)
+        self.assertEqual(len(self.posts), 2)
+
+    # ---- (b) state validation ---------------------------------------------
+
+    def test_corrupt_state_is_discarded(self):
+        os.makedirs(self.ddir, mode=0o700)
+        sp = os.path.join(self.ddir, "state.json")
+        bad_states = [
+            {"last_totals": [["conv-1", [1, 2]]], "last_post_at": NOW},   # list, not dict
+            {"last_totals": {"conv-1": "12"}, "last_post_at": NOW},        # value not [int,int]
+            {"last_totals": {"conv-1": [1, 2, 3]}},                        # wrong arity
+            {"last_totals": {"conv-1": [1, True]}},                        # bool is not int
+            {"last_totals": {}, "last_post_at": "yesterday"},              # wrong type
+            {"last_totals": {}, "last_attempt_at": None},                  # wrong type
+            "just a string", [1, 2], 42,
+        ]
+        for bad in bad_states:
+            write_json(sp, bad)
+            self.assertEqual(sl.load_state(sp), {}, bad)
+        with open(sp, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        self.assertEqual(sl.load_state(sp), {})
+        # A list-shaped last_totals still logs AND posts: fresh start.
+        write_json(sp, {"last_totals": [["conv-1", [100, 20]]], "last_post_at": NOW})
+        appended, posted = sl.process(status(), self.ddir, now=NOW + 1000, poster=self.poster)
+        self.assertTrue(appended)
+        self.assertTrue(posted)
+        st = read_json(sp)
+        self.assertEqual(st["last_totals"], {"conv-1": [100, 20]})
+        self.assertEqual(st["last_post_at"], NOW + 1000)
+        # A valid state round-trips unchanged.
+        self.assertEqual(sl.load_state(sp), st)
+
+    # ---- (c) bounded stdin ------------------------------------------------
+
+    def test_stdin_bound(self):
+        limit = sl.STDIN_LIMIT
+        self.assertIsNone(sl.read_stdin_bounded(io.BytesIO(b"x" * (limit + 1))))
+        self.assertIsNone(sl.read_stdin_bounded(io.BytesIO(b"x" * (limit + 5000))))
+        self.assertEqual(len(sl.read_stdin_bounded(io.BytesIO(b"x" * limit))), limit)
+        # Over the limit end to end: a VALID object padded past 256 KiB must
+        # print "tatitok", exit 0 and write nothing.
+        obj = status()
+        del obj["quota"]
+        obj["pad"] = "p" * (limit + 10)
+        r = self.run_script(json.dumps(obj).encode())
+        self.assertEqual((r.returncode, r.stdout), (0, b"tatitok"), r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "tatitok", "agy", "statusline.jsonl")))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "tatitok", "agy", "state.json")))
 
     def test_malformed_stdin(self):
-        env = dict(os.environ, XDG_DATA_HOME=self.tmp.name)
         for bad in (b"", b"{not json", b"[1,2]", b"null"):
-            r = subprocess.run([sys.executable, SCRIPT], input=bad, capture_output=True, env=env)
+            r = self.run_script(bad)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout, b"tatitok")
         self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "tatitok", "agy", "statusline.jsonl")))
         self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "tatitok", "agy", "state.json")))
 
     def test_end_to_end_stdin(self):
-        env = dict(os.environ, XDG_DATA_HOME=self.tmp.name)
-        # quota removed so the subprocess makes no network call
         obj = status()
-        del obj["quota"]
-        r = subprocess.run([sys.executable, SCRIPT], input=json.dumps(obj).encode(),
-                           capture_output=True, env=env)
+        del obj["quota"]  # no network call from the subprocess
+        r = self.run_script(json.dumps(obj).encode())
         self.assertEqual((r.returncode, r.stdout), (0, b"tatitok"))
-        lines = open(os.path.join(self.tmp.name, "tatitok", "agy", "statusline.jsonl")).read().splitlines()
+        lines = read_text(os.path.join(self.tmp.name, "tatitok", "agy", "statusline.jsonl")).splitlines()
         self.assertEqual(len(lines), 1)
         self.assertNotIn("email", lines[0])
 
+    # ---- (e) hub URL validation ------------------------------------------
+
+    def test_hub_url_loopback_only(self):
+        for ok in ("http://127.0.0.1:8284", "http://127.0.0.1", "http://localhost:9000", "http://localhost"):
+            self.assertEqual(sl.hub_url(ok), ok)
+            self.assertEqual(sl.ingest_url(ok), ok + "/api/v1/limits")
+        # The same 12 negative cases the Go test pins HUB_URL_RE to.
+        for bad in (
+            "https://127.0.0.1:8284", "http://127.0.0.1:8284/", "http://127.0.0.1:8284/api",
+            "http://127.0.0.1.evil.example", "http://localhost.evil.example", "http://evil.example",
+            "http://10.0.0.5:8284", "http://[::1]:8284", "http://127.0.0.1:8284?x=1",
+            "http://user@127.0.0.1:8284", "ftp://127.0.0.1", " http://127.0.0.1:8284",
+        ):
+            self.assertEqual(sl.hub_url(bad), sl.DEFAULT_HUB_URL, bad)
+        for bad in ("http://127.1", "http://0x7f000001", "http://127.0.0.1#f", "http://127.0.0.1:8284\n"):
+            self.assertEqual(sl.hub_url(bad), sl.DEFAULT_HUB_URL, bad)
+        self.assertEqual(sl.hub_url(""), sl.DEFAULT_HUB_URL)
+        self.assertEqual(sl.hub_url(None) if "TATITOK_HUB_URL" not in os.environ else sl.DEFAULT_HUB_URL,
+                         sl.DEFAULT_HUB_URL)
+        # A non-loopback override is never POSTed to: the synchronous poster
+        # is handed the validated URL only.
+        seen = []
+
+        def fake_urlopen(req, timeout=None):
+            seen.append(req.full_url)
+            raise OSError("no network in tests")
+
+        orig = sl.urllib.request.urlopen
+        sl.urllib.request.urlopen = fake_urlopen
+        try:
+            self.assertFalse(sl.post_quota({"agy": {}}, url=sl.ingest_url("http://evil.example")))
+        finally:
+            sl.urllib.request.urlopen = orig
+        self.assertEqual(seen, ["http://127.0.0.1:8284/api/v1/limits"])
+
+    # ---- (d) install / uninstall ------------------------------------------
+
     def test_install_uninstall(self):
         sp = os.path.join(self.tmp.name, "settings.json")
-        with open(sp, "w") as fh:
-            json.dump({"model": "x"}, fh)
+        write_json(sp, {"model": "x"})
         sl.install(settings_path=sp, script="/abs/hook.py")
         self.assertTrue(os.path.exists(sp + ".pre-tatitok"))
-        self.assertEqual(json.load(open(sp))["statusLine"], {"command": "/abs/hook.py"})
+        self.assertEqual(read_json(sp)["statusLine"], {"command": "/abs/hook.py"})
         with self.assertRaises(SystemExit):  # backup exists → refuse
             sl.install(settings_path=sp, script="/abs/hook.py")
         os.remove(sp + ".pre-tatitok")
         with self.assertRaises(SystemExit):  # key exists → refuse
             sl.install(settings_path=sp, script="/abs/hook.py")
-        sl.uninstall(settings_path=sp)
-        self.assertNotIn("statusLine", json.load(open(sp)))
-        self.assertEqual(json.load(open(sp))["model"], "x")
+        self.assertEqual(sl.uninstall(settings_path=sp, script="/abs/hook.py"), 0)
+        self.assertNotIn("statusLine", read_json(sp))
+        self.assertEqual(read_json(sp)["model"], "x")
+        self.assertEqual(sl.uninstall(settings_path=sp, script="/abs/hook.py"), 0)  # nothing to do
+
+    def test_uninstall_refuses_foreign_statusline(self):
+        sp = os.path.join(self.tmp.name, "settings.json")
+        before = {"model": "x", "statusLine": {"command": "/somewhere/else.sh"}}
+        write_json(sp, before)
+        mtime = os.stat(sp).st_mtime_ns
+        out = io.StringIO()
+        real = sys.stdout
+        sys.stdout = out
+        try:
+            rc = sl.uninstall(settings_path=sp, script="/abs/hook.py")
+        finally:
+            sys.stdout = real
+        self.assertEqual(rc, 1)
+        self.assertIn("/somewhere/else.sh", out.getvalue())
+        self.assertEqual(read_json(sp), before)
+        self.assertEqual(os.stat(sp).st_mtime_ns, mtime)
 
 
 if __name__ == "__main__":

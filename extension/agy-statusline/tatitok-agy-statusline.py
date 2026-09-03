@@ -10,26 +10,36 @@ object on stdin (no trailing newline). The hook does exactly two things:
      display-only limits endpoint (/api/v1/limits, provider key "agy").
 
 It ALWAYS prints "tatitok" and exits 0 — a broken hook must never break agy's
-status line. stdlib only; budget <200 ms.
+status line. stdlib only; the status-line path stays under 200 ms: the POST
+runs in a detached child (double fork, stdio closed) with a 0.15 s cap, so a
+stopped or stalled hub never delays the parent.
 
   --install    add the statusLine command to agy's settings.json (backs it up)
-  --uninstall  remove the statusLine key again (backup is kept)
+  --uninstall  remove the statusLine key again (only if it is ours; backup kept)
 """
 
 import datetime as _dt
 import json
 import os
+import re
+import signal
 import stat
 import sys
 import urllib.request
 
-# The hub's display-only ingest endpoint. TATITOK_HUB_URL (the hub's --addr as
-# an origin, e.g. http://127.0.0.1:9000) overrides the default; the hub itself
-# only accepts loopback callers.
+# The hub's display-only ingest endpoint. TATITOK_HUB_URL overrides the
+# default origin, but ONLY a loopback origin is accepted — the same rule as
+# the browser extension's HUB_URL_RE (http, 127.0.0.1 or localhost, optional
+# decimal port, nothing else). Anything else falls back to the default and is
+# never contacted: quota data must not leave the machine.
 DEFAULT_HUB_URL = "http://127.0.0.1:8284"
-INGEST_URL = (os.environ.get("TATITOK_HUB_URL") or DEFAULT_HUB_URL).rstrip("/") + "/api/v1/limits"
+HUB_URL_RE = re.compile(r"^http://(127\.0\.0\.1|localhost)(:\d{1,5})?$")
+INGEST_PATH = "/api/v1/limits"
 POST_MIN_INTERVAL_S = 90
-POST_TIMEOUT_S = 1.0
+POST_TIMEOUT_S = 0.15  # connect + read, in the detached child
+
+# stdin bound: a status object is a few KiB; anything past this is not agy.
+STDIN_LIMIT = 256 * 1024
 
 QUOTA_WINDOWS = ("gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly")
 
@@ -42,6 +52,20 @@ BACKUP_SUFFIX = ".pre-tatitok"
 def data_dir():
     base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     return os.path.join(base, "tatitok", "agy")
+
+
+def hub_url(value=None):
+    """The hub origin: TATITOK_HUB_URL if it is a loopback origin, else the
+    default. `value` overrides the environment lookup (tests)."""
+    if value is None:
+        value = os.environ.get("TATITOK_HUB_URL", "")
+    if isinstance(value, str) and HUB_URL_RE.fullmatch(value):
+        return value
+    return DEFAULT_HUB_URL
+
+
+def ingest_url(value=None):
+    return hub_url(value) + INGEST_PATH
 
 
 def _open_private(path, mode):
@@ -107,27 +131,110 @@ def quota_payload(quota, now):
     return {"agy": {"fetchedAt": now, "windows": windows}}
 
 
-def post_quota(payload, url=INGEST_URL, timeout=POST_TIMEOUT_S):
-    """POST the payload; True on 2xx, False on any failure (never raises)."""
+class _Deadline(Exception):
+    pass
+
+
+def _deadline_hit(signum, frame):
+    raise _Deadline()
+
+
+def post_quota(payload, url=None, timeout=POST_TIMEOUT_S):
+    """POST the payload synchronously; True on 2xx, False on any failure
+    (never raises). The WHOLE request (connect + send + read) is capped at
+    `timeout` seconds of wall time: the socket timeout alone is per
+    operation, so a wall-clock alarm enforces the total."""
+    prev = None
     try:
         body = json.dumps(payload, separators=(",", ":")).encode()
-        req = urllib.request.Request(url, data=body, method="POST",
+        req = urllib.request.Request(url or ingest_url(), data=body, method="POST",
                                      headers={"Content-Type": "application/json"})
+        try:
+            prev = signal.signal(signal.SIGALRM, _deadline_hit)
+            signal.setitimer(signal.ITIMER_REAL, timeout)
+        except (ValueError, OSError, AttributeError):
+            prev = None  # not the main thread / no itimer: socket timeout only
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return 200 <= resp.status < 300
-    except Exception:  # noqa: BLE001 — failure is silent by contract
+    except Exception:  # noqa: BLE001 — failure (incl. the deadline) is silent by contract
         return False
+    finally:
+        if prev is not None:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, prev)
+
+
+def post_quota_detached(payload, state_path, now):
+    """Deliver the POST from a detached grandchild (double fork, new session,
+    stdio on /dev/null) so the status-line parent never waits on the
+    network. On 2xx the grandchild records last_post_at=now in the state
+    file itself. Returns None: delivery was handed off, outcome unknown to
+    the caller."""
+    try:
+        pid = os.fork()
+    except OSError:
+        return None
+    if pid > 0:
+        # Parent: reap the intermediate child (it exits at once) and go on.
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+        return None
+    # Intermediate child: detach and fork the worker, then exit.
+    try:
+        os.setsid()
+        if os.fork() > 0:
+            os._exit(0)
+        devnull = os.open(os.devnull, os.O_RDWR)
+        for fd in (0, 1, 2):
+            os.dup2(devnull, fd)
+        if devnull > 2:
+            os.close(devnull)
+        if post_quota(payload):
+            state = load_state(state_path)
+            state["last_post_at"] = now
+            save_state(state_path, state)
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        os._exit(0)
+
+
+def _is_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _valid_totals(v):
+    return (isinstance(v, list) and len(v) == 2
+            and all(isinstance(x, int) and not isinstance(x, bool) for x in v))
 
 
 def load_state(path):
+    """Load state.json, validating EVERY field; any corrupt, missing-shape or
+    wrong-typed value discards the whole state (fresh start), so a bad file
+    can never wedge logging or POSTs."""
     try:
         with open(path, encoding="utf-8") as fh:
             st = json.load(fh)
-        if isinstance(st, dict):
-            return st
     except Exception:  # noqa: BLE001
-        pass
-    return {}
+        return {}
+    if not isinstance(st, dict):
+        return {}
+    out = {}
+    lt = st.get("last_totals", {})
+    if not isinstance(lt, dict):
+        return {}
+    for k, v in lt.items():
+        if not isinstance(k, str) or not _valid_totals(v):
+            return {}
+    out["last_totals"] = dict(lt)
+    for key in ("last_post_at", "last_attempt_at"):
+        if key in st:
+            if not _is_num(st[key]):
+                return {}
+            out[key] = st[key]
+    return out
 
 
 def save_state(path, state):
@@ -145,10 +252,11 @@ def totals_of(obj):
             int(cw.get("total_output_tokens") or 0)]
 
 
-def process(obj, ddir, now=None, poster=post_quota):
+def process(obj, ddir, now=None, poster=None):
     """Run the hook logic on one parsed status object. Returns
-    (appended: bool, posted: bool). Raises nothing to the caller's benefit —
-    the caller wraps it."""
+    (appended: bool, posted: bool|None). `poster(payload)` returning
+    True/False is synchronous (tests); the default detaches the POST and
+    reports None — the child records success itself."""
     if now is None:
         now = now_ms()
     obj = dict(obj)
@@ -173,22 +281,46 @@ def process(obj, ddir, now=None, poster=post_quota):
             last[conv] = totals
             appended = dirty = True
 
+    # Both successes and attempts are throttled to the interval: a hub that
+    # is down is retried every 90 s, not every status refresh; last_post_at
+    # itself only ever moves on a 2xx.
     posted = False
     payload = quota_payload(obj.get("quota"), now)
-    last_post = state.get("last_post_at") or 0
-    if payload is not None and now - last_post >= POST_MIN_INTERVAL_S * 1000:
-        if poster(payload):
-            state["last_post_at"] = now
-            posted = dirty = True
+    since = max(state.get("last_post_at") or 0, state.get("last_attempt_at") or 0)
+    if payload is not None and now - since >= POST_MIN_INTERVAL_S * 1000:
+        state["last_attempt_at"] = now
+        dirty = True
+        if dirty:
+            save_state(state_path, state)  # written BEFORE the child may write
+        if poster is None:
+            posted = post_quota_detached(payload, state_path, now)
+        else:
+            posted = poster(payload)
+            if posted:
+                state = load_state(state_path)
+                state["last_post_at"] = now
+                save_state(state_path, state)
+        return appended, posted
 
     if dirty:
         save_state(state_path, state)
     return appended, posted
 
 
-def run_hook(stdin_text):
+def read_stdin_bounded(stream=None, limit=STDIN_LIMIT):
+    """Read at most limit+1 bytes; None when the input exceeds the limit."""
+    stream = stream or sys.stdin.buffer
+    data = stream.read(limit + 1)
+    if data is None or len(data) > limit:
+        return None
+    return data
+
+
+def run_hook(stdin_bytes):
     try:
-        obj = json.loads(stdin_text)
+        if stdin_bytes is None:
+            raise ValueError("stdin exceeds the size bound")
+        obj = json.loads(stdin_bytes)
         if not isinstance(obj, dict):
             raise ValueError("status object is not a JSON object")
         process(obj, data_dir())
@@ -220,17 +352,27 @@ def install(settings_path=SETTINGS_PATH, script=None):
     print("installed statusLine -> %s\nbackup: %s" % (script, backup))
 
 
-def uninstall(settings_path=SETTINGS_PATH):
+def uninstall(settings_path=SETTINGS_PATH, script=None):
+    """Remove statusLine ONLY when its command is exactly this script; any
+    other value is printed and left untouched (exit 1)."""
+    script = script or os.path.abspath(__file__)
     with open(settings_path, encoding="utf-8") as fh:
         settings = json.load(fh)
-    if settings.pop("statusLine", None) is None:
+    cur = settings.get("statusLine")
+    if cur is None:
         print("no statusLine key in %s; nothing to do" % settings_path)
-        return
+        return 0
+    if not (isinstance(cur, dict) and cur.get("command") == script):
+        print("refusing: statusLine in %s is not this hook, leaving it alone:\n  %s"
+              % (settings_path, json.dumps(cur)))
+        return 1
+    del settings["statusLine"]
     with open(settings_path, "w", encoding="utf-8") as fh:
         json.dump(settings, fh, indent=2)
         fh.write("\n")
     print("removed statusLine from %s (backup %s kept)"
           % (settings_path, settings_path + BACKUP_SUFFIX))
+    return 0
 
 
 def main(argv):
@@ -238,9 +380,8 @@ def main(argv):
         install()
         return 0
     if len(argv) > 1 and argv[1] == "--uninstall":
-        uninstall()
-        return 0
-    return run_hook(sys.stdin.read())
+        return uninstall()
+    return run_hook(read_stdin_bounded())
 
 
 if __name__ == "__main__":
