@@ -17,7 +17,6 @@ import {
   browserTZ,
   availableTZs,
   todayInTZ,
-  daysAgoInTZ,
   tzOffsetLabel,
   type ActivityBucket,
   type DailyByRow,
@@ -49,6 +48,7 @@ import {
 } from "./filters";
 import { dayTotal, topModelsAtDay } from "./tooltip";
 import { touchedInRange } from "./invalidate";
+import { presets, presetRange, initialRange, activePreset } from "./range";
 import {
   LAYOUT_KEY,
   defaultLayout,
@@ -81,12 +81,7 @@ import { shouldOfferOnboarding } from "./onboarding";
 // the layout/theme). The header "plans" button always re-opens regardless.
 const ONBOARD_DISMISS_KEY = "tatitok.onboard.dismissed";
 
-const presets = [
-  { label: "7d", days: 7 },
-  { label: "30d", days: 30 },
-  { label: "90d", days: 90 },
-  { label: "all", days: 0 },
-] as const;
+// Range presets + default live in range.ts (pure, tested).
 
 const axisText = { color: "#a1a1aa", fontSize: 11, fontFamily: "Jost, sans-serif" };
 
@@ -261,8 +256,12 @@ export default function App() {
   // tz-offset clarity label next to the selector (M8 1I) — display only.
   const tzOffset = useMemo(() => tzOffsetLabel(tz), [tz]);
   const [filters, setFilters] = useState<FilterState>(initial.filters);
-  const [from, setFrom] = useState(initial.from ?? daysAgoInTZ(initialTZ, 29));
-  const [to, setTo] = useState(initial.to ?? todayInTZ(initialTZ));
+  // Default range (no from/to in the URL): the last 7 days in the selected
+  // zone — today−6d → today — so the 7d preset reads as active; an explicit
+  // URL range wins (range.ts, tested).
+  const initialRangeValue = useMemo(() => initialRange(initial.from, initial.to, initialTZ), [initial, initialTZ]);
+  const [from, setFrom] = useState(initialRangeValue.from);
+  const [to, setTo] = useState(initialRangeValue.to);
   // Page (M8 1A): home | detail. Shareable view state → URL (owner ruling),
   // restored by popstate/refresh like filters/range/tz. Default home.
   const [view, setView] = useState<View>(initial.view);
@@ -499,6 +498,9 @@ export default function App() {
   // range no bar matches and nothing is flagged. Display marker only — the
   // partial day's value stays exactly as served.
   const openDay = todayInTZ(tz);
+  // Which preset button is lit: the one whose span equals the current range
+  // today in tz; a custom or stale range lights none (range.ts).
+  const activeRangePreset = useMemo(() => activePreset(from, to, tz), [from, to, tz]);
   const providerSeries = useMemo(() => mergeFamilies(byProvider), [byProvider]);
   const equivChart = useMemo(
     () => dailyStackedChart(providerSeries, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`,
@@ -660,9 +662,12 @@ export default function App() {
             <Button
               key={p.label}
               size="sm"
+              active={activeRangePreset === p.label}
+              aria-pressed={activeRangePreset === p.label}
               onClick={() => {
-                setFrom(p.days === 0 ? "1970-01-01" : daysAgoInTZ(tz, p.days - 1));
-                setTo(todayInTZ(tz));
+                const r = presetRange(p.label, tz);
+                setFrom(r.from);
+                setTo(r.to);
               }}
             >
               {p.label}
