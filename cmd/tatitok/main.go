@@ -25,6 +25,7 @@ import (
 	"github.com/harunaltikaya/tatitok/internal/adapters/claudecode"
 	"github.com/harunaltikaya/tatitok/internal/adapters/codex"
 	"github.com/harunaltikaya/tatitok/internal/adapters/opencode"
+	"github.com/harunaltikaya/tatitok/internal/adapters/pi"
 	"github.com/harunaltikaya/tatitok/internal/hub"
 	"github.com/harunaltikaya/tatitok/internal/modelmap"
 	"github.com/harunaltikaya/tatitok/internal/pricing"
@@ -167,7 +168,7 @@ func openStore(path string) (*store.Store, error) {
 
 // allAdapters is the registry; ingest with no --source runs every one.
 var allAdapters = []adapters.Adapter{
-	claudecode.Adapter{}, codex.Adapter{}, opencode.Adapter{},
+	claudecode.Adapter{}, codex.Adapter{}, opencode.Adapter{}, pi.Adapter{},
 }
 
 func adapterFor(name string) (adapters.Adapter, error) {
@@ -277,7 +278,7 @@ func cmdIngest(args []string) error {
 		}
 	}
 	if ingested == 0 {
-		return fmt.Errorf("no log roots found for any adapter (claude-code, codex, opencode)")
+		return fmt.Errorf("no log roots found for any adapter (claude-code, codex, opencode, pi)")
 	}
 	if skippedTotal > 0 {
 		// Distinct from parse errors and from exit 0: the run finished,
@@ -297,7 +298,7 @@ func cmdStats(args []string) error {
 	asJSON := fs.Bool("json", false, "JSON output")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	tzName := fs.String("timezone", "local", "IANA timezone for day bucketing")
-	harness := fs.String("harness", "", "restrict to harness(es), comma-separated (claude-code, codex, opencode)")
+	harness := fs.String("harness", "", "restrict to harness(es), comma-separated (claude-code, codex, opencode, pi)")
 	provider := fs.String("provider", "", "restrict to provider(s), comma-separated")
 	model := fs.String("model", "", "restrict to model(s), comma-separated (raw model strings)")
 	project := fs.String("project", "", "restrict to project(s), comma-separated")
@@ -401,7 +402,7 @@ func cmdRecompute(args []string) error {
 	rollups := fs.Bool("rollups", false, "rebuild rollup_daily from the event table")
 	dryRun := fs.Bool("dry-run", false, "print the plan and change nothing")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
-	source := fs.String("source", "", "restrict to one adapter (claude-code, codex, opencode)")
+	source := fs.String("source", "", "restrict to one adapter (claude-code, codex, opencode, pi)")
 	_ = fs.Parse(args)
 	modes := 0
 	for _, m := range []bool{*provenance, *modelMap, *prices, *rollups} {
