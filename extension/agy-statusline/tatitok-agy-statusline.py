@@ -56,8 +56,9 @@ STDIN_LIMIT = 256 * 1024
 # (agy writes the object in one go, so the normal path never waits); every
 # later step checks the remaining budget, and a SIGALRM at 190 ms ends the
 # hook wherever it is — it prints "tatitok" and exits 0 regardless. The log
-# line is appended in ONE os.write so an interrupt can never leave a partial
-# line behind.
+# line is appended in ONE os.write so an interrupt cannot land inside it; a
+# short write (the kernel's call) is terminated with "\n" so at most one
+# malformed line results, which the readers count as a parse error.
 STDIN_DEADLINE_S = 0.100
 HOOK_DEADLINE_S = 0.190
 
@@ -320,11 +321,17 @@ def save_state(path, state):
 def append_line(path, data):
     """Append data (a complete line) with ONE os.write on an O_APPEND fd, so
     a budget interrupt can only fall before or after the line, never inside
-    it. A short write would leave a partial line; treat it as a failure."""
+    it. A short write leaves a partial line: terminate it with one "\n"
+    (best effort) so the damage is one malformed line the readers skip as a
+    parse error, then treat the append as a failure."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, stat.S_IRUSR | stat.S_IWUSR)
     try:
         n = os.write(fd, data)
         if n != len(data):
+            try:
+                os.write(fd, b"\n")
+            except OSError:
+                pass
             raise OSError("short write to %s (%d of %d bytes)" % (path, n, len(data)))
     finally:
         os.close(fd)

@@ -419,6 +419,55 @@ class HookTests(unittest.TestCase):
         self.assertEqual(read_text(p), '{"x":1}\n')
         self.assertEqual(os.stat(p).st_mode & 0o777, 0o600)
 
+    def test_append_line_short_write_terminates_line(self):
+        os.makedirs(self.ddir, mode=0o700)
+        p = os.path.join(self.ddir, "statusline.jsonl")
+        calls = []
+        real_write = os.write
+
+        def short(fd, data):
+            calls.append(bytes(data))
+            if len(data) > 1:
+                return real_write(fd, data[:3])  # fake fd: 3 of 8 bytes land
+            return real_write(fd, data)
+
+        sl.os.write = short
+        try:
+            with self.assertRaises(OSError):
+                sl.append_line(p, b'{"x":1}\n')
+        finally:
+            sl.os.write = real_write
+        # the partial line is terminated by exactly one extra "\n" write
+        self.assertEqual(calls, [b'{"x":1}\n', b"\n"])
+        self.assertEqual(read_text(p), '{"x\n')
+        # and the file is still one-line-per-record: the next append is clean
+        sl.append_line(p, b'{"y":2}\n')
+        self.assertEqual(read_text(p).split("\n"), ['{"x', '{"y":2}', ""])
+
+    def test_short_write_still_answers_agy(self):
+        real_write = os.write
+
+        def short(fd, data):
+            return real_write(fd, data[:3]) if len(data) > 1 else real_write(fd, data)
+
+        sl.os.write = short
+        out = io.StringIO()
+        real = sys.stdout
+        sys.stdout = out
+        saved = os.environ.get("XDG_DATA_HOME")
+        os.environ["XDG_DATA_HOME"] = self.tmp.name  # run_hook resolves data_dir() itself
+        try:
+            rc = sl.run_hook(json.dumps(status()).encode())
+        finally:
+            sys.stdout = real
+            sl.os.write = real_write
+            if saved is None:
+                del os.environ["XDG_DATA_HOME"]
+            else:
+                os.environ["XDG_DATA_HOME"] = saved
+        self.assertEqual((rc, out.getvalue()), (0, "tatitok"))
+        self.assertTrue(read_text(os.path.join(self.tmp.name, "tatitok", "agy", "statusline.jsonl")).endswith("\n"))
+
     # ---- (e) hub URL validation ------------------------------------------
 
     def test_hub_url_loopback_only(self):
