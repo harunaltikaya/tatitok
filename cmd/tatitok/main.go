@@ -23,6 +23,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/harunaltikaya/tatitok/internal/adapters"
+	"github.com/harunaltikaya/tatitok/internal/adapters/agy"
 	"github.com/harunaltikaya/tatitok/internal/adapters/claudecode"
 	"github.com/harunaltikaya/tatitok/internal/adapters/codex"
 	"github.com/harunaltikaya/tatitok/internal/adapters/opencode"
@@ -36,7 +37,7 @@ import (
 const usageText = `tatitok — local-first AI token usage tracker
 
 Usage:
-  tatitok ingest --backfill [--db PATH] [--source claude-code|codex|opencode|pi]
+  tatitok ingest --backfill [--db PATH] [--source claude-code|codex|opencode|pi|agy]
   tatitok stats  --daily [--by harness|provider|model|project|machine] | --session
                  [--json] [--db PATH] [--timezone TZ] [--harness NAME]
   tatitok doctor --scan-content [--db PATH] [LITERAL...]
@@ -169,7 +170,7 @@ func openStore(path string) (*store.Store, error) {
 
 // allAdapters is the registry; ingest with no --source runs every one.
 var allAdapters = []adapters.Adapter{
-	claudecode.Adapter{}, codex.Adapter{}, opencode.Adapter{}, pi.Adapter{},
+	claudecode.Adapter{}, codex.Adapter{}, opencode.Adapter{}, pi.Adapter{}, agy.Adapter{},
 }
 
 func adapterFor(name string) (adapters.Adapter, error) {
@@ -178,7 +179,7 @@ func adapterFor(name string) (adapters.Adapter, error) {
 			return a, nil
 		}
 	}
-	return nil, fmt.Errorf("unknown --source %q (supported: claude-code, codex, opencode)", name)
+	return nil, fmt.Errorf("unknown --source %q (supported: claude-code, codex, opencode, pi, agy)", name)
 }
 
 func realProbe() adapters.Probe {
@@ -279,7 +280,7 @@ func cmdIngest(args []string) error {
 		}
 	}
 	if ingested == 0 {
-		return fmt.Errorf("no log roots found for any adapter (claude-code, codex, opencode, pi)")
+		return fmt.Errorf("no log roots found for any adapter (claude-code, codex, opencode, pi, agy)")
 	}
 	if skippedTotal > 0 {
 		// Distinct from parse errors and from exit 0: the run finished,
@@ -299,7 +300,7 @@ func cmdStats(args []string) error {
 	asJSON := fs.Bool("json", false, "JSON output")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
 	tzName := fs.String("timezone", "local", "IANA timezone for day bucketing")
-	harness := fs.String("harness", "", "restrict to harness(es), comma-separated (claude-code, codex, opencode, pi)")
+	harness := fs.String("harness", "", "restrict to harness(es), comma-separated (claude-code, codex, opencode, pi, agy)")
 	provider := fs.String("provider", "", "restrict to provider(s), comma-separated")
 	model := fs.String("model", "", "restrict to model(s), comma-separated (raw model strings)")
 	project := fs.String("project", "", "restrict to project(s), comma-separated")
@@ -403,7 +404,7 @@ func cmdRecompute(args []string) error {
 	rollups := fs.Bool("rollups", false, "rebuild rollup_daily from the event table")
 	dryRun := fs.Bool("dry-run", false, "print the plan and change nothing")
 	dbPath := fs.String("db", defaultDBPath(), "database path")
-	source := fs.String("source", "", "restrict to one adapter (claude-code, codex, opencode, pi)")
+	source := fs.String("source", "", "restrict to one adapter (claude-code, codex, opencode, pi, agy)")
 	_ = fs.Parse(args)
 	modes := 0
 	for _, m := range []bool{*provenance, *modelMap, *prices, *rollups} {

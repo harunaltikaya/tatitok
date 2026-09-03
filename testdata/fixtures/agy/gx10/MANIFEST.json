@@ -1,0 +1,34 @@
+{
+  "harvest_date": "2026-09-03",
+  "source": "agy",
+  "machine_label": "gx10",
+  "log_roots": [
+    "~/.local/share/tatitok/agy"
+  ],
+  "hook": "extension/agy-statusline/ (tatitok-agy-statusline.py)",
+  "agy_versions_seen": [
+    "1.1.25"
+  ],
+  "files": [
+    {
+      "source": "~/.local/share/tatitok/agy/statusline.jsonl",
+      "fixture": "statusline.jsonl",
+      "lines": 9,
+      "malformed_lines": 0,
+      "expected_events": 6,
+      "models": [
+        "Gemini 3.8 Flash (Low)"
+      ],
+      "redaction": "cwd/workspace paths aliased to /home/user/project-<6hex>; transcript_path stripped to a placeholder; conversation_id/session_id pseudonymized (shape kept, stable per id); usage, totals, timestamps, quota, plan_tier, version untouched. Hand-built from the real log's first lines (indexes below are 0-based lines of the source at harvest time) — NOT a harvest_fixtures.py run.",
+      "derivations": [
+        "fixture line 1 = source 0 (conversation A, totals 0/0)",
+        "fixture line 2 = source 3 (conversation B; source line 2, B's 0/0 line, OMITTED so B's first fixture line carries a delta from 0)",
+        "fixture line 3 = source 1 (conversation A) MOVED after a B line to interleave the two conversations (the real log has A's two lines first)",
+        "fixture line 4 = source 4; fixture line 5 = source 4 REPEATED (same totals — the hook never writes this; tolerance case)",
+        "fixture line 6 = source 5 with context_window totals EDITED 25745/271 → 12000/100 (a decrease; the real log has no /compact yet) — the only line whose numbers are not real",
+        "fixture lines 7-9 = source 6, 7, 8",
+        "the short-written (malformed) line case is NOT in this file — committed fixtures must parse line by line (leak checker convention); agy_test.go builds it at run time from a byte prefix of fixture line 7"
+      ]
+    }
+  ]
+}
