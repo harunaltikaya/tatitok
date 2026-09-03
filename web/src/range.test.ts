@@ -2,7 +2,7 @@
 // preset detection (the "lit" button) — pure helpers, no .tsx.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { defaultRange, initialRange, activePreset, presetRange, daysAgo, ALL_FROM } from "./range.ts";
+import { defaultRange, initialRange, activePreset, presetRange, daysAgo, shiftDay, ALL_FROM } from "./range.ts";
 
 const now = new Date("2026-09-03T11:30:00Z"); // 14:30 in Europe/Istanbul, 04:30 in America/Los_Angeles
 
@@ -37,4 +37,35 @@ test("presetRange: spans are inclusive day counts; all opens at 1970", () => {
   assert.deepEqual(presetRange("90d", "UTC", now), { from: "2026-06-06", to: "2026-09-03" });
   assert.deepEqual(presetRange("all", "UTC", now), { from: ALL_FROM, to: "2026-09-03" });
   assert.equal(daysAgo("UTC", 0, now), "2026-09-03");
+});
+
+// The review-0903 MED: subtracting 24 h periods in UTC before zoning skipped a
+// local calendar day across a spring-forward in a negative-offset zone. The US
+// 2026 spring-forward is Sunday 2026-03-08 (02:00 PST → 03:00 PDT).
+test("daysAgo: a 7d preset spans exactly 7 calendar days across the 2026 US spring-forward", () => {
+  const tz = "America/Los_Angeles";
+  const calendarDays = (from: string, to: string) =>
+    (Date.UTC(+to.slice(0, 4), +to.slice(5, 7) - 1, +to.slice(8)) - Date.UTC(+from.slice(0, 4), +from.slice(5, 7) - 1, +from.slice(8))) / 864e5 + 1;
+  // 00:30 PDT on Monday 2026-03-09 = 07:30Z; the old math gave from=03-02
+  // (six days) because 07:30Z − 6×24 h = 03-03T07:30Z = 23:30 PST on 03-02.
+  const now = new Date("2026-03-09T07:30:00Z");
+  assert.equal(daysAgo(tz, 0, now), "2026-03-09");
+  const r = presetRange("7d", tz, now);
+  assert.deepEqual(r, { from: "2026-03-03", to: "2026-03-09" });
+  assert.equal(calendarDays(r.from, r.to), 7);
+  // Every hour of the DST week: the preset is 7 calendar days, the endpoints
+  // are the zoned today and today−6, and the lit button round-trips.
+  for (let h = 0; h < 24 * 9; h++) {
+    const t = new Date(Date.UTC(2026, 2, 6, h, 30));
+    const p = presetRange("7d", tz, t);
+    assert.equal(calendarDays(p.from, p.to), 7, t.toISOString());
+    assert.equal(p.to, daysAgo(tz, 0, t));
+    assert.equal(daysAgo(tz, 6, t), shiftDay(p.to, -6));
+    assert.equal(activePreset(p.from, p.to, tz, t), "7d");
+  }
+  // shiftDay is plain calendar arithmetic: month and year edges, both ways.
+  assert.equal(shiftDay("2026-03-01", -1), "2026-02-28");
+  assert.equal(shiftDay("2026-01-01", -1), "2025-12-31");
+  assert.equal(shiftDay("2025-12-31", 1), "2026-01-01");
+  assert.equal(shiftDay("2024-03-01", -1), "2024-02-29");
 });

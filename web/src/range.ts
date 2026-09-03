@@ -20,11 +20,20 @@ export type PresetLabel = (typeof presets)[number]["label"];
 export const ALL_FROM = "1970-01-01";
 export const DEFAULT_PRESET: PresetLabel = "7d";
 
-// daysAgo: the calendar day n days before `now` in tz (0 = today).
+// daysAgo: the calendar day n days before `now` in tz (0 = today). The zoned
+// YYYY-MM-DD is derived FIRST, then n is subtracted on the date parts as
+// calendar days (Date.UTC over the parts — a DST-free proleptic calendar), so
+// the answer is always exactly n local calendar days back. Subtracting n UTC
+// days before zoning (the old way) is n×24 h, which across a spring-forward
+// in a negative-offset zone lands one local day short (a six-day "7d").
 export function daysAgo(tz: string, n: number, now: Date = new Date()): string {
-  const d = new Date(now.getTime());
-  d.setUTCDate(d.getUTCDate() - n);
-  return dayInTZ(d, tz);
+  return shiftDay(dayInTZ(now, tz), -n);
+}
+
+// shiftDay: YYYY-MM-DD ± n calendar days, timezone-free (the date parts only).
+export function shiftDay(day: string, n: number): string {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
 }
 
 // presetRange: the from/to a preset selects at `now` in tz. "all" is an

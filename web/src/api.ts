@@ -388,7 +388,7 @@ export function availableTZs(): string[] {
 }
 
 // dayInTZ formats an instant as its YYYY-MM-DD calendar day in tz
-// (en-CA renders ISO order). todayInTZ / daysAgoInTZ drive the range
+// (en-CA renders ISO order). todayInTZ / range.ts daysAgo drive the range
 // presets so "today" and "last N days" mean the viewer's local days.
 export function dayInTZ(date: Date, tz: string): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -398,12 +398,6 @@ export function dayInTZ(date: Date, tz: string): string {
 
 export function todayInTZ(tz: string): string {
   return dayInTZ(new Date(), tz);
-}
-
-export function daysAgoInTZ(tz: string, n: number): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - n);
-  return dayInTZ(d, tz);
 }
 
 // tzOffsetLabel renders a zone's UTC offset for the selector annotation (M8 1I)
