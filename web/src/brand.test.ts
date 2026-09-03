@@ -33,7 +33,7 @@ test("brand: anthropic → brand colour, others → none, clear of amber + dange
   assert.equal(brandColorFor("openai"), null);
   assert.equal(brandColorFor("deepseek"), null);
   assert.equal(brandColorFor("google"), null);
-  assert.equal(brandColorFor("vllm"), null); // collapsed family bucket
+  assert.equal(brandColorFor("local"), null); // collapsed family bucket
   assert.equal(brandColorFor("others"), null); // aggregate bucket
 
   // Collision guard: the brand clay must read distinct from the two warm tones

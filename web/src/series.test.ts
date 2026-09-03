@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mergeFamilies } from "./aggregate.ts";
+import { mergeFamilies, LOCAL_KEY } from "./aggregate.ts";
 import type { DailyByRow } from "./api.ts";
 
 // row builds a DailyByRow with a key + a couple of measures (others 0).
@@ -23,7 +23,7 @@ function row(date: string, key: string, equiv: number, tokens: number, cost = 0)
 const sumEquiv = (rs: DailyByRow[]) => rs.reduce((s, r) => s + r.costAPIEquivMicro, 0);
 const sumTokens = (rs: DailyByRow[]) => rs.reduce((s, r) => s + r.inputTokens, 0);
 
-test("1H: detail by-provider chart series collapse vllm (conserved), other families intact", () => {
+test("1H: detail by-provider chart series collapse the local family (conserved), cloud intact", () => {
   const providerRows = [
     row("2026-06-01", "anthropic", 500, 5000),
     row("2026-06-01", "openai", 400, 4000),
@@ -33,24 +33,28 @@ test("1H: detail by-provider chart series collapse vllm (conserved), other famil
     row("2026-06-02", "deepseek", 300, 3000),
     row("2026-06-02", "vllm-35b", 5, 50),
   ];
-  const series = mergeFamilies(providerRows);
+  // Membership comes from the served basis, not the name: the bare "vllm"
+  // provider is local too, so it is a member.
+  const locals = new Set(["vllm-35b", "vllm-delegate", "vllm"]);
+  const series = mergeFamilies(providerRows, locals);
 
-  // vllm-* fold into ONE "vllm" series per day = the SUM of its members.
-  const vllm0601 = series.find((r) => r.date === "2026-06-01" && r.key === "vllm");
+  // The local providers fold into ONE "local" series per day = the SUM of
+  // its members.
+  const vllm0601 = series.find((r) => r.date === "2026-06-01" && r.key === LOCAL_KEY);
   assert.ok(vllm0601);
   assert.equal(vllm0601.costAPIEquivMicro, 10 + 7 + 3);
   assert.equal(vllm0601.inputTokens, 100 + 70 + 30);
-  const vllm0602 = series.find((r) => r.date === "2026-06-02" && r.key === "vllm");
+  const vllm0602 = series.find((r) => r.date === "2026-06-02" && r.key === LOCAL_KEY);
   assert.ok(vllm0602);
   assert.equal(vllm0602.costAPIEquivMicro, 5);
-  // Exactly one "vllm" row per day (members merged, not stacked separately),
-  // and no vllm-* variant survives as its own series.
-  assert.equal(series.filter((r) => r.key === "vllm").length, 2);
-  assert.ok(!series.some((r) => r.key.startsWith("vllm-")));
+  // Exactly one "local" row per day (members merged, not stacked separately),
+  // and no member survives as its own series.
+  assert.equal(series.filter((r) => r.key === LOCAL_KEY).length, 2);
+  assert.ok(!series.some((r) => r.key.startsWith("vllm")));
 
   // Every non-vllm provider family stays — NO top-N drop, NO "others" bucket.
   const keys = new Set(series.map((r) => r.key));
-  for (const p of ["anthropic", "openai", "deepseek", "vllm"]) assert.ok(keys.has(p), `missing ${p}`);
+  for (const p of ["anthropic", "openai", "deepseek", LOCAL_KEY]) assert.ok(keys.has(p), `missing ${p}`);
   assert.ok(!keys.has("others"));
 
   // Conservation: the collapsed series totals equal the input totals.

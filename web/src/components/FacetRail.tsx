@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { FacetValue } from "../api";
 import { compactTokens } from "../api";
 import { displayValue, facetDims, hasValue, type FacetDim, type FilterState } from "../filters";
-import { railItems, FILTER_TOP_N } from "../aggregate";
+import { railItems, FILTER_TOP_N, type Locals } from "../aggregate";
 import Card from "../ui/Card";
 
 // The left facet rail (M5 Task 4, the owner's Qlik-style direction): every
@@ -12,10 +12,11 @@ import Card from "../ui/Card";
 // obeys. Project values render locally only — the hub serves localhost, and
 // nothing here is ever exported.
 //
-// M8 1G — density on BOTH rails (home + detail): family collapse (vllm-* → one
-// "vllm" group) + top-N "+others" on the long dims, rendered as EXPANDABLE
-// groups. Display-only (railItems is a pure regroup of the served counts);
-// group headers are expand toggles, the leaves filter by exact value.
+// M8 1G — density on BOTH rails (home + detail): family collapse (the
+// local-basis providers → one "local" group; membership comes from the served
+// inventory, never from the name) + top-N "+others" on the long dims, rendered
+// as EXPANDABLE groups. Display-only (railItems is a pure regroup of the served
+// counts); group headers are expand toggles, the leaves filter by exact value.
 
 // Long dims get the top-N + "others" tail; short dims (harness/provider/basis)
 // show every (family-collapsed) value.
@@ -39,10 +40,14 @@ function loadExpanded(): Set<string> {
 export default function FacetRail({
   facets,
   filters,
+  locals,
   onToggle,
 }: {
   facets: Record<string, FacetValue[]>;
   filters: FilterState;
+  // The local-basis provider set (App: localProviders); applied to the
+  // provider dim only — every other dim keeps its values as plain leaves.
+  locals?: Locals;
   onToggle: (dim: FacetDim, value: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(loadExpanded);
@@ -95,7 +100,7 @@ export default function FacetRail({
       {facetDims.map((dim) => {
         const all = facets[dim] ?? [];
         if (all.length === 0) return null;
-        const items = railItems(all, ROLLED_DIMS.includes(dim), FILTER_TOP_N);
+        const items = railItems(all, ROLLED_DIMS.includes(dim), FILTER_TOP_N, dim === "provider" ? locals : undefined);
         return (
           <Card key={dim} padding={12} title={dim}>
             <ul className="space-y-px text-sm">

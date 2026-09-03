@@ -43,7 +43,7 @@ test("countUnpriced: counts only rows with no price; zero-token rows never count
 test("mergeFamilies carries ratedEvents through the collapse", () => {
   const merged = mergeFamilies([
     row("vllm-a", { ratedEvents: 1 }), row("vllm-b", { ratedEvents: 2 }),
-  ]);
+  ], new Set(["vllm-a", "vllm-b"]));
   const total = merged.reduce((n, r) => n + (r.ratedEvents ?? 0), 0);
   assert.equal(total, 3);
 });

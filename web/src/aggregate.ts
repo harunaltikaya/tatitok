@@ -10,7 +10,7 @@
 // loaded directly by Node's test runner (groupby.test.ts), whose ESM resolver
 // needs the extension — unlike the bundle, where Vite resolves extensionless.
 // tsconfig allowImportingTsExtensions makes tsc accept them.
-import type { DailyByRow, FacetValue, ActivityBucket } from "./api.ts";
+import type { DailyByRow, FacetValue, ActivityBucket, ModelInfo } from "./api.ts";
 import { totalTokens } from "./api.ts";
 import { displayValue, type Sort } from "./filters.ts";
 
@@ -59,24 +59,51 @@ export const FILTER_TOP_N = 10;
 // families) so a rolled-up bucket never applies a bogus single-value filter.
 export const OTHERS_KEY = "others";
 
-// FAMILY_PREFIXES collapse related providers to one family bucket on the home
-// overview (vllm-0.6, vllm-0.7 → "vllm"). Conservative: only a declared prefix
-// as a whole token or "<prefix>-…" collapses, so model names like
-// "claude-sonnet-4-6" are never split.
-const FAMILY_PREFIXES = ["vllm"];
+// LOCAL_KEY is the one family bucket: every provider whose served events are
+// all cost_basis "local" (the box's own vllm-*/sglang-*/robotlab-*/*-local
+// endpoints) folds into it on the provider channel. It replaced the vllm-*
+// name-prefix family: the basis is DECIDED FROM THE SERVED DATA (the
+// /api/v1/meta/models inventory carries costBasis per (provider, model)), so
+// no name matching happens in the frontend — a cloud provider never lands
+// here by spelling, and a local endpoint named anything at all does.
+export const LOCAL_KEY = "local";
 
-export function familyOf(key: string): string {
-  for (const p of FAMILY_PREFIXES) {
-    if (key === p || key.startsWith(p + "-")) return p;
+// Family membership: the set of provider names to fold into LOCAL_KEY. The
+// caller derives it with localProviders() and passes it ONLY on the provider
+// dimension — model and harness keys carry no family, so with no set every
+// key is its own family (identity).
+export type Locals = ReadonlySet<string>;
+
+// localProviders: the providers EVERY served (provider, model) row of which
+// has costBasis "local". A provider with any other basis (api_price, free,
+// plan_included, unknown, …) is not purely local and stays its own series —
+// a mixed bucket would misstate its non-local part. Pure over the inventory.
+export function localProviders(models: ModelInfo[]): Set<string> {
+  const bases = new Map<string, Set<string>>();
+  for (const m of models) {
+    let b = bases.get(m.provider);
+    if (!b) {
+      b = new Set();
+      bases.set(m.provider, b);
+    }
+    b.add(m.costBasis);
   }
-  return key;
+  const out = new Set<string>();
+  for (const [provider, b] of bases) {
+    if (b.size === 1 && b.has("local")) out.add(provider);
+  }
+  return out;
+}
+
+export function familyOf(key: string, locals?: Locals): string {
+  return locals?.has(key) ? LOCAL_KEY : key;
 }
 
 // collapseFamilies relabels each row to its family (display-only; preserves
 // every number → the family bucket equals the sum of its members).
-export function collapseFamilies(rows: DailyByRow[]): DailyByRow[] {
+export function collapseFamilies(rows: DailyByRow[], locals?: Locals): DailyByRow[] {
   return rows.map((r) => {
-    const fam = familyOf(r.key);
+    const fam = familyOf(r.key, locals);
     return fam === r.key ? r : { ...r, key: fam };
   });
 }
@@ -87,12 +114,12 @@ export function collapseFamilies(rows: DailyByRow[]): DailyByRow[] {
 // bare collapseFamilies it merges the duplicate (date, key) rows the relabel
 // creates, so a chart that keys cells by (date, key) shows the family SUM
 // rather than one arbitrary member. The detail by-provider charts feed this
-// (M8 1H): the vllm-* wall folds into one "vllm" series = Σ its members
-// (conserved), every other family intact. Pure — the input rows (the full
-// table's data) are never mutated.
-export function mergeFamilies(rows: DailyByRow[]): DailyByRow[] {
+// (M8 1H): the local-basis wall folds into one "local" series = Σ its
+// members (conserved), every cloud provider intact. Pure — the input rows
+// (the full table's data) are never mutated.
+export function mergeFamilies(rows: DailyByRow[], locals?: Locals): DailyByRow[] {
   const merged = new Map<string, DailyByRow>(); // `${date}|${family}` → summed row
-  for (const r of collapseFamilies(rows)) {
+  for (const r of collapseFamilies(rows, locals)) {
     const id = `${r.date}|${r.key}`;
     const cur = merged.get(id);
     if (!cur) {
@@ -126,7 +153,7 @@ export function countUnpriced(totals: KeyTotals[]): number {
 }
 
 // chartCells builds the stacked daily chart's (date, key) → value map. It SUMS
-// rows that share a (date, key) cell: a collapsed family ("vllm") or a folded
+// rows that share a (date, key) cell: a collapsed family ("local") or a folded
 // "others" arrives as SEVERAL rows on the same day after rollupRows/
 // mergeFamilies relabel their keys, so the bar must show the SUM of its
 // members — not whichever row was written last (the chart≠donut bug). Pure, so
@@ -147,8 +174,8 @@ export function chartCells(rows: DailyByRow[], value: (r: DailyByRow) => number)
 // top-N + others = grand total for every measure. Feed the result to the same
 // dailyStackedChart / valueDonut / sumByKey the detail page uses — the rollup
 // is the only change between the two presentations.
-export function rollupRows(rows: DailyByRow[], topN: number): DailyByRow[] {
-  const collapsed = collapseFamilies(rows);
+export function rollupRows(rows: DailyByRow[], topN: number, locals?: Locals): DailyByRow[] {
+  const collapsed = collapseFamilies(rows, locals);
   const equiv = new Map<string, number>();
   const tokens = new Map<string, number>();
   for (const r of collapsed) {
@@ -165,8 +192,8 @@ export function rollupRows(rows: DailyByRow[], topN: number): DailyByRow[] {
 }
 
 // railItems is the facet rail's display structure (M8 1G): the SAME family
-// collapse the main view uses (familyOf) folds vllm-* into one "vllm" group,
-// then — for long dims — the tail past top-N folds into an "others" group. Both
+// collapse the main view uses (familyOf) folds the local-basis providers into
+// one "local" group (locals — passed on the provider dim only), then — for long dims — the tail past top-N folds into an "others" group. Both
 // are expandable GROUPS (the rail renders the members when open). A pure
 // regroup/relabel of the served facet counts: a family group's count is the sum
 // of its members, and top-N + others = the dimension total (conserved — the
@@ -177,12 +204,13 @@ export type RailItem =
   | { kind: "leaf"; value: string; events: number }
   | { kind: "family" | "others"; key: string; label: string; events: number; members: { value: string; events: number }[] };
 
-export function railItems(values: FacetValue[], rolled: boolean, topN: number): RailItem[] {
-  // 1. Group by family (vllm-* → "vllm"), preserving first-seen order.
+export function railItems(values: FacetValue[], rolled: boolean, topN: number, locals?: Locals): RailItem[] {
+  // 1. Group by family (local-basis providers → "local"), preserving
+  //    first-seen order.
   const byFam = new Map<string, FacetValue[]>();
   const order: string[] = [];
   for (const v of values) {
-    const fam = familyOf(v.value);
+    const fam = familyOf(v.value, locals);
     const g = byFam.get(fam);
     if (g) g.push(v);
     else {
@@ -222,7 +250,7 @@ export function railItems(values: FacetValue[], rolled: boolean, topN: number): 
 // stays at the bottom regardless of sort direction.
 function bucketRank(key: string): number {
   if (key === OTHERS_KEY) return 2;
-  if (FAMILY_PREFIXES.includes(key)) return 1;
+  if (key === LOCAL_KEY) return 1;
   return 0;
 }
 

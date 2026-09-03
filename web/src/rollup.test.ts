@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sumByKey, collapseFamilies, familyOf, rollupRows, OTHERS_KEY } from "./aggregate.ts";
+import { sumByKey, collapseFamilies, familyOf, rollupRows, OTHERS_KEY, LOCAL_KEY } from "./aggregate.ts";
 import type { DailyByRow } from "./api.ts";
 
 // row builds a DailyByRow with a key and a couple of measures; unused token
@@ -30,13 +30,16 @@ const grand = (rows: DailyByRow[]) => {
 };
 
 test("rollup: family collapse + top-N/others conserve, for every dimension", () => {
-  // familyOf folds only the declared prefixes; model names are untouched.
-  assert.equal(familyOf("vllm"), "vllm");
-  assert.equal(familyOf("vllm-0.6.3"), "vllm");
-  assert.equal(familyOf("anthropic"), "anthropic");
+  // familyOf folds only the members of the passed local set; with no set
+  // (model/harness channels) every key is its own family.
+  const locals = new Set(["vllm-0.6.3", "vllm-0.7.0"]);
+  assert.equal(familyOf("vllm-0.6.3", locals), LOCAL_KEY);
+  assert.equal(familyOf("vllm-0.7.0", locals), LOCAL_KEY);
+  assert.equal(familyOf("anthropic", locals), "anthropic");
+  assert.equal(familyOf("vllm-0.6.3"), "vllm-0.6.3");
   assert.equal(familyOf("claude-sonnet-4-6"), "claude-sonnet-4-6");
 
-  // Family collapse: the "vllm" bucket equals the sum of its members, and
+  // Family collapse: the "local" bucket equals the sum of its members, and
   // collapsing conserves the grand total.
   const providerRows = [
     row("2026-06-01", "vllm-0.6.3", 100, 1_000),
@@ -47,14 +50,14 @@ test("rollup: family collapse + top-N/others conserve, for every dimension", () 
     row("2026-06-02", "vllm-0.7.0", 50, 500),
     row("2026-06-02", "google", 50, 500),
   ];
-  const collapsed = sumByKey(collapseFamilies(providerRows));
-  const vllm = collapsed.find((k) => k.raw === "vllm")!;
-  assert.equal(vllm.equivMicro, 100 + 200 + 50);
-  assert.equal(vllm.tokens, 1_000 + 2_000 + 500);
-  assert.deepEqual(grand(collapseFamilies(providerRows)), grand(providerRows));
+  const collapsed = sumByKey(collapseFamilies(providerRows, locals));
+  const local = collapsed.find((k) => k.raw === LOCAL_KEY)!;
+  assert.equal(local.equivMicro, 100 + 200 + 50);
+  assert.equal(local.tokens, 1_000 + 2_000 + 500);
+  assert.deepEqual(grand(collapseFamilies(providerRows, locals)), grand(providerRows));
 
   // top-N + others = grand total (and families fold first).
-  const rolled = rollupRows(providerRows, 2);
+  const rolled = rollupRows(providerRows, 2, locals);
   assert.deepEqual(grand(rolled), grand(providerRows));
   const keys = new Set(rolled.map((r) => r.key));
   assert.ok(keys.size <= 3); // top-2 + others

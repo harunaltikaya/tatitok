@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseSort, filtersToURL, filtersFromURL, emptyFilters, DEFAULT_SORT } from "./filters.ts";
-import { sortTotals, OTHERS_KEY, type KeyTotals } from "./aggregate.ts";
+import { sortTotals, OTHERS_KEY, LOCAL_KEY, type KeyTotals } from "./aggregate.ts";
 
 function kt(key: string, equiv: number, tokens: number, cost = 0): KeyTotals {
   return { key, raw: key, tokens, costMicro: cost, equivMicro: equiv, unpriced: 0 };
@@ -46,26 +46,26 @@ test("sort: parseSort round-trip, default equiv-desc omitted, reorder keeps aggr
   assert.deepEqual(filtersFromURL(equivAsc).sort, { key: "equiv", dir: "asc" });
 
   // Reorder: real entities rank by the metric; the collapsed family bucket
-  // ("vllm") sits below them; "others" is always dead last — both directions.
+  // ("local") sits below them; "others" is always dead last — both directions.
   const rows = [
     kt("anthropic", 500, 5_000),
     kt("openai", 900, 1_000),
     kt(OTHERS_KEY, 9_999, 9_999), // an aggregate, even if huge → stays last
-    kt("vllm", 700, 8_000), // collapsed family → below real entities
+    kt(LOCAL_KEY, 700, 8_000), // collapsed family → below real entities
     kt("deepseek", 300, 2_000),
   ];
   const keysOf = (s: KeyTotals[]) => s.map((t) => t.key);
   assert.deepEqual(
     keysOf(sortTotals(rows, { key: "equiv", dir: "desc" })),
-    ["openai", "anthropic", "deepseek", "vllm", OTHERS_KEY],
+    ["openai", "anthropic", "deepseek", LOCAL_KEY, OTHERS_KEY],
   );
   assert.deepEqual(
     keysOf(sortTotals(rows, { key: "equiv", dir: "asc" })),
-    ["deepseek", "anthropic", "openai", "vllm", OTHERS_KEY],
+    ["deepseek", "anthropic", "openai", LOCAL_KEY, OTHERS_KEY],
   );
   // tokens key ranks by tokens; aggregates still pinned last.
   assert.deepEqual(
     keysOf(sortTotals(rows, { key: "tokens", dir: "desc" })),
-    ["anthropic", "deepseek", "openai", "vllm", OTHERS_KEY],
+    ["anthropic", "deepseek", "openai", LOCAL_KEY, OTHERS_KEY],
   );
 });

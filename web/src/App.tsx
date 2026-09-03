@@ -60,7 +60,7 @@ import { useStream } from "./useStream";
 import { THEMES, loadTheme, saveTheme, applyTheme } from "./theme";
 import Chart from "./components/Chart";
 import Breakdown from "./components/Breakdown";
-import { sumByKey, rollupRows, mergeFamilies, chartCells, sortTotals, brandColorFor, countUnpriced, OTHERS_KEY, HOME_TOP_N } from "./aggregate";
+import { sumByKey, rollupRows, mergeFamilies, chartCells, sortTotals, brandColorFor, countUnpriced, localProviders, OTHERS_KEY, LOCAL_KEY, HOME_TOP_N } from "./aggregate";
 import PlanCard from "./components/Plans";
 import Heatmap from "./components/Heatmap";
 import MeterBar from "./ui/MeterBar";
@@ -486,11 +486,12 @@ export default function App() {
   // (M6 Task 3); the actual-cost chart gets the day total only (post-plans
   // it is near-empty, so a model breakdown of ~$0 adds nothing). byModel
   // is the same filtered/timezoned set the bars use.
-  // These three are the detail charts — always by provider. The vllm family is
-  // collapsed into one "vllm" series (M8 1H: mergeFamilies sums the members,
-  // conserved) so the stacked charts lose the vllm-* wall; the by-provider
-  // table below keeps every vllm-* row as the full drill-down. NO top-N here —
-  // every provider family stays. The series take the brand-aware providerColor
+  // These three are the detail charts — always by provider. The local-basis
+  // providers are collapsed into one "local" series (M8 1H: mergeFamilies sums
+  // the members, conserved; membership = localProviders, decided from the
+  // served costBasis, not by name) so the stacked charts lose the local wall;
+  // the by-provider table below keeps every local row as the full drill-down.
+  // NO top-N here — every cloud provider stays. The series take the brand-aware providerColor
   // resolver (M8 1F: Anthropic clay, others hashed). The by-model tooltip stays
   // on the raw byModel rows (models carry no family).
   // The in-progress day to flag as provisional across every daily chart (M8
@@ -501,7 +502,11 @@ export default function App() {
   // Which preset button is lit: the one whose span equals the current range
   // today in tz; a custom or stale range lights none (range.ts).
   const activeRangePreset = useMemo(() => activePreset(from, to, tz), [from, to, tz]);
-  const providerSeries = useMemo(() => mergeFamilies(byProvider), [byProvider]);
+  // locals: the providers whose served events are ALL cost_basis "local"
+  // (from the /meta/models inventory — the same served data the basis facet
+  // reflects). Passed on the PROVIDER channel only.
+  const locals = useMemo(() => localProviders(models), [models]);
+  const providerSeries = useMemo(() => mergeFamilies(byProvider, locals), [byProvider, locals]);
   const equivChart = useMemo(
     () => dailyStackedChart(providerSeries, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`,
       { rows: byModel, value: (r) => r.costAPIEquivMicro / 1e6 }, providerColor, openDay),
@@ -517,11 +522,13 @@ export default function App() {
     [providerSeries, byModel, openDay],
   );
   // Click-to-filter on a chart series → filter that provider, but skip the
-  // collapsed "vllm" series: it's a family aggregate, not one provider value
-  // (filtering provider="vllm" would match nothing). Real providers still
-  // filter; the full table is the way to filter an individual vllm-* member.
+  // collapsed "local" series: it's a family aggregate, not one provider value
+  // (filtering provider="local" would match nothing, or the wrong thing if a
+  // provider happens to carry that name). Real providers still filter; the
+  // full table is the way to filter an individual local member.
   const onProviderSeries = (seriesName: string) => {
     const raw = rawValue(seriesName);
+    if (raw === LOCAL_KEY && locals.size > 0) return;
     if (!(facets.provider ?? []).some((fv) => fv.value === raw)) return;
     toggle("provider", raw);
   };
@@ -578,11 +585,15 @@ export default function App() {
   // per-dimension panels, so groupBy drives home only. groupRows just selects
   // which already-fetched daily_by set the home chart/donut/table read.
   const groupRows = groupBy === "harness" ? byHarness : groupBy === "model" ? byModel : byProvider;
-  // Rollup (M8 1C): collapse families (vllm-*) and fold all but the top-N into
-  // an "others" bucket — a pure relabel of the same served rows (conserved).
+  // Rollup (M8 1C): collapse the local family (provider channel only) and fold
+  // all but the top-N into an "others" bucket — a pure relabel of the same
+  // served rows (conserved).
   // Feeding the rolled rows to the same chart/donut/sumByKey yields a calm
   // top-N overview; the detail page keeps the full per-entity breakdown.
-  const homeRollup = useMemo(() => rollupRows(groupRows, HOME_TOP_N), [groupRows]);
+  const homeRollup = useMemo(
+    () => rollupRows(groupRows, HOME_TOP_N, groupBy === "provider" ? locals : undefined),
+    [groupRows, groupBy, locals],
+  );
   // homeColor (M8 1F): the brand-aware resolver only when the home channel IS
   // provider; for model/harness it stays plain per-entity, so the brand colour
   // never reaches a non-provider grouping.
@@ -599,6 +610,7 @@ export default function App() {
   // collapsed families) are display aggregates, not single filter values, so a
   // click on one is ignored rather than applying a filter that matches nothing.
   const onGroupSelect = (raw: string) => {
+    if (groupBy === "provider" && raw === LOCAL_KEY && locals.size > 0) return;
     if (!(facets[groupBy] ?? []).some((fv) => fv.value === raw)) return;
     toggle(groupBy, raw);
   };
@@ -772,7 +784,7 @@ export default function App() {
       )}
 
       <div className="flex gap-4">
-        <FacetRail facets={facets} filters={filters} onToggle={toggle} />
+        <FacetRail facets={facets} filters={filters} locals={locals} onToggle={toggle} />
 
         <main className="min-w-0 flex-1">
           {view === "home" ? (
