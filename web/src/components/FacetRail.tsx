@@ -13,8 +13,8 @@ import Card from "../ui/Card";
 // nothing here is ever exported.
 //
 // M8 1G — density on BOTH rails (home + detail): family collapse (the
-// local-basis providers → one "local" group; membership comes from the served
-// inventory, never from the name) + top-N "+others" on the long dims, rendered
+// local-basis providers, and the local-basis models, → one "local" group on
+// their dim; membership comes from the served inventory, never from the name) + top-N "+others" on the long dims, rendered
 // as EXPANDABLE groups. Display-only (railItems is a pure regroup of the served
 // counts); group headers are expand toggles, the leaves filter by exact value.
 
@@ -40,14 +40,14 @@ function loadExpanded(): Set<string> {
 export default function FacetRail({
   facets,
   filters,
-  locals,
+  localsFor,
   onToggle,
 }: {
   facets: Record<string, FacetValue[]>;
   filters: FilterState;
-  // The local-basis provider set (App: localProviders); applied to the
-  // provider dim only — every other dim keeps its values as plain leaves.
-  locals?: Locals;
+  // The local-basis set for a dim (App: localProviders / localModels on the
+  // provider / model dims; undefined elsewhere → plain leaves).
+  localsFor?: (dim: FacetDim) => Locals | undefined;
   onToggle: (dim: FacetDim, value: string) => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(loadExpanded);
@@ -100,7 +100,7 @@ export default function FacetRail({
       {facetDims.map((dim) => {
         const all = facets[dim] ?? [];
         if (all.length === 0) return null;
-        const items = railItems(all, ROLLED_DIMS.includes(dim), FILTER_TOP_N, dim === "provider" ? locals : undefined);
+        const items = railItems(all, ROLLED_DIMS.includes(dim), FILTER_TOP_N, localsFor?.(dim));
         return (
           <Card key={dim} padding={12} title={dim}>
             <ul className="space-y-px text-sm">

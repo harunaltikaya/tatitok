@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { localProviders, familyOf, mergeFamilies, rollupRows, railItems, sumByKey, LOCAL_KEY, FILTER_TOP_N } from "./aggregate.ts";
+import { localProviders, localModels, localKeys, familyOf, mergeFamilies, rollupRows, railItems, sumByKey, LOCAL_KEY, FILTER_TOP_N } from "./aggregate.ts";
 import type { DailyByRow, ModelInfo } from "./api.ts";
 
 function info(provider: string, model: string, costBasis: string, events = 1): ModelInfo {
@@ -43,6 +43,16 @@ test("localProviders: basis-driven, name-blind, mixed providers excluded", () =>
     ["laguna-w4a4-kvcal-local", "robotlab-qwen38-dflash2-low", "sglang-qwen38", "vllm"],
   );
   assert.equal(localProviders([]).size, 0);
+
+  // The model channel: the SAME rule keyed by model name (localKeys). A model
+  // name served under any non-local basis anywhere is out; "qwen3.8" is local
+  // under sglang/robotlab but unknown under fp8-* → out.
+  const mLocals = localModels(models);
+  assert.deepEqual([...mLocals].sort(), ["a", "qwen", "qwen3.6", "qwen3.6-27b"]);
+  assert.ok(!mLocals.has("qwen3.8"));
+  assert.ok(!mLocals.has("claude-opus-5") && !mLocals.has("deepseek-v4-flash"));
+  assert.deepEqual(localKeys(models, (m) => m.model), mLocals);
+  assert.deepEqual(localKeys(models, (m) => m.provider), locals);
 
   // familyOf folds exactly the set; no set → identity even for local names.
   assert.equal(familyOf("sglang-qwen38", locals), LOCAL_KEY);
@@ -97,4 +107,20 @@ test("local family: charts, home rollup and rail fold to ONE bucket, conserved",
   assert.equal(groups[0].events, 10 + 7 + 8);
   assert.equal(groups[0].members.length, 3);
   assert.deepEqual(items.filter((i) => i.kind === "leaf").map((i) => i.value).sort(), ["anthropic", "ds4"]);
+
+  // Model rail (a rolled dim): the local group folds BEFORE top-N and counts
+  // as one item; local members never surface as top-N leaves. Conserved.
+  const mLocals = new Set(Array.from({ length: 6 }, (_, i) => `qwen-local-${i}`));
+  const mValues = [
+    ...Array.from({ length: FILTER_TOP_N + 2 }, (_, i) => ({ value: `cloud-${i}`, events: 100 - i })),
+    ...[...mLocals].map((v, i) => ({ value: v, events: 50 + i })),
+  ];
+  const mItems = railItems(mValues, true, FILTER_TOP_N, mLocals);
+  const mGroups = mItems.filter((i) => i.kind === "family");
+  assert.equal(mGroups.length, 1);
+  assert.equal(mGroups[0].key, LOCAL_KEY);
+  assert.equal(mGroups[0].members.length, 6);
+  assert.equal(mGroups[0].events, [...mLocals].reduce((s, _, i) => s + 50 + i, 0));
+  assert.ok(!mItems.some((i) => i.kind === "leaf" && mLocals.has(i.value)));
+  assert.equal(mItems.reduce((s, i) => s + i.events, 0), mValues.reduce((s, v) => s + v.events, 0));
 });

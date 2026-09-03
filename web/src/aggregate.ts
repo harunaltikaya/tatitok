@@ -68,31 +68,43 @@ export const OTHERS_KEY = "others";
 // here by spelling, and a local endpoint named anything at all does.
 export const LOCAL_KEY = "local";
 
-// Family membership: the set of provider names to fold into LOCAL_KEY. The
-// caller derives it with localProviders() and passes it ONLY on the provider
-// dimension — model and harness keys carry no family, so with no set every
-// key is its own family (identity).
+// Family membership: the set of keys to fold into LOCAL_KEY on ONE dimension.
+// The caller derives it with localProviders() / localModels() and passes the
+// matching set on the provider / model channel — the harness channel gets
+// none, and with no set every key is its own family (identity).
 export type Locals = ReadonlySet<string>;
 
-// localProviders: the providers EVERY served (provider, model) row of which
-// has costBasis "local". A provider with any other basis (api_price, free,
-// plan_included, unknown, …) is not purely local and stays its own series —
-// a mixed bucket would misstate its non-local part. Pure over the inventory.
-export function localProviders(models: ModelInfo[]): Set<string> {
+// localKeys: the values of one inventory dimension (keyOf: provider or model
+// name) EVERY served (provider, model) row of which has costBasis "local". A
+// value with any other basis (api_price, free, plan_included, unknown, …) is
+// not purely local and stays its own entry — a mixed bucket would misstate
+// its non-local part. The ONE grouping rule; the per-dimension helpers below
+// only pick the key. Pure over the inventory.
+export function localKeys(models: ModelInfo[], keyOf: (m: ModelInfo) => string): Set<string> {
   const bases = new Map<string, Set<string>>();
   for (const m of models) {
-    let b = bases.get(m.provider);
+    const key = keyOf(m);
+    let b = bases.get(key);
     if (!b) {
       b = new Set();
-      bases.set(m.provider, b);
+      bases.set(key, b);
     }
     b.add(m.costBasis);
   }
   const out = new Set<string>();
-  for (const [provider, b] of bases) {
-    if (b.size === 1 && b.has("local")) out.add(provider);
+  for (const [key, b] of bases) {
+    if (b.size === 1 && b.has("local")) out.add(key);
   }
   return out;
+}
+
+// localProviders / localModels: the provider and model channels' local sets.
+export function localProviders(models: ModelInfo[]): Set<string> {
+  return localKeys(models, (m) => m.provider);
+}
+
+export function localModels(models: ModelInfo[]): Set<string> {
+  return localKeys(models, (m) => m.model);
 }
 
 export function familyOf(key: string, locals?: Locals): string {

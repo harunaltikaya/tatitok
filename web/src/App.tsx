@@ -60,7 +60,7 @@ import { useStream } from "./useStream";
 import { THEMES, loadTheme, saveTheme, applyTheme } from "./theme";
 import Chart from "./components/Chart";
 import Breakdown from "./components/Breakdown";
-import { sumByKey, rollupRows, mergeFamilies, chartCells, sortTotals, brandColorFor, countUnpriced, localProviders, OTHERS_KEY, LOCAL_KEY, HOME_TOP_N } from "./aggregate";
+import { sumByKey, rollupRows, mergeFamilies, chartCells, sortTotals, brandColorFor, countUnpriced, localProviders, localModels, OTHERS_KEY, LOCAL_KEY, HOME_TOP_N } from "./aggregate";
 import PlanCard from "./components/Plans";
 import Heatmap from "./components/Heatmap";
 import MeterBar from "./ui/MeterBar";
@@ -402,7 +402,7 @@ export default function App() {
       lastRangeFetch.current = stream.bump;
       loadRange(from, to, fq, tz);
     }
-  }, [stream.bump]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stream.bump]);
 
   // Reported usage limits (M9): display-only and INDEPENDENT — its own fetch
   // with its own error handling, deliberately NOT joined into loadRange's
@@ -502,15 +502,22 @@ export default function App() {
   // Which preset button is lit: the one whose span equals the current range
   // today in tz; a custom or stale range lights none (range.ts).
   const activeRangePreset = useMemo(() => activePreset(from, to, tz), [from, to, tz]);
-  // locals: the providers whose served events are ALL cost_basis "local"
-  // (from the /meta/models inventory — the same served data the basis facet
-  // reflects). Passed on the PROVIDER channel only.
+  // locals / modelLocals: the providers / models whose served events are ALL
+  // cost_basis "local" (from the /meta/models inventory — the same served data
+  // the basis facet reflects; one rule, localKeys). Each set is passed on its
+  // OWN channel only; harness has none.
   const locals = useMemo(() => localProviders(models), [models]);
+  const modelLocals = useMemo(() => localModels(models), [models]);
+  // localsFor: the set that applies to a dimension (undefined = no family).
+  const localsFor = (dim: FacetDim) => (dim === "provider" ? locals : dim === "model" ? modelLocals : undefined);
   const providerSeries = useMemo(() => mergeFamilies(byProvider, locals), [byProvider, locals]);
+  // The by-model view (detail table + the charts' by-model tooltip) folds the
+  // local models into one "local" row the same way — Σ members, conserved.
+  const modelSeries = useMemo(() => mergeFamilies(byModel, modelLocals), [byModel, modelLocals]);
   const equivChart = useMemo(
     () => dailyStackedChart(providerSeries, (r) => r.costAPIEquivMicro / 1e6, (v) => `$${v.toFixed(2)}`,
-      { rows: byModel, value: (r) => r.costAPIEquivMicro / 1e6 }, providerColor, openDay),
-    [providerSeries, byModel, openDay],
+      { rows: modelSeries, value: (r) => r.costAPIEquivMicro / 1e6 }, providerColor, openDay),
+    [providerSeries, modelSeries, openDay],
   );
   const actualChart = useMemo(
     () => dailyStackedChart(providerSeries, (r) => r.costUSDMicro / 1e6, (v) => `$${v.toFixed(2)}`, undefined, providerColor, openDay),
@@ -518,8 +525,8 @@ export default function App() {
   );
   const tokenChart = useMemo(
     () => dailyStackedChart(providerSeries, totalTokens, compactTokens,
-      { rows: byModel, value: totalTokens }, providerColor, openDay),
-    [providerSeries, byModel, openDay],
+      { rows: modelSeries, value: totalTokens }, providerColor, openDay),
+    [providerSeries, modelSeries, openDay],
   );
   // Click-to-filter on a chart series → filter that provider, but skip the
   // collapsed "local" series: it's a family aggregate, not one provider value
@@ -540,8 +547,16 @@ export default function App() {
       if (!cur.includes(info.costBasis)) cur.push(info.costBasis);
       m.set(info.model, cur);
     }
+    // The folded "local" row is all-local by construction → one local dot.
+    if (modelLocals.size > 0) m.set(LOCAL_KEY, ["local"]);
     return m;
-  }, [models]);
+  }, [models, modelLocals]);
+  // Click-to-filter on a by-model row, skipping the folded "local" row (an
+  // aggregate, not a model value — the rail's expanded group filters members).
+  const onModelSelect = (raw: string) => {
+    if (raw === LOCAL_KEY && modelLocals.size > 0) return;
+    toggle("model", raw);
+  };
 
   const rangeUnpriced = useMemo(
     () => daily.reduce((n, r) => n + r.unpricedEvents, 0),
@@ -585,14 +600,14 @@ export default function App() {
   // per-dimension panels, so groupBy drives home only. groupRows just selects
   // which already-fetched daily_by set the home chart/donut/table read.
   const groupRows = groupBy === "harness" ? byHarness : groupBy === "model" ? byModel : byProvider;
-  // Rollup (M8 1C): collapse the local family (provider channel only) and fold
-  // all but the top-N into an "others" bucket — a pure relabel of the same
-  // served rows (conserved).
+  // Rollup (M8 1C): collapse the local family (the channel's own set: provider
+  // or model; harness has none) and fold all but the top-N into an "others"
+  // bucket — a pure relabel of the same served rows (conserved).
   // Feeding the rolled rows to the same chart/donut/sumByKey yields a calm
   // top-N overview; the detail page keeps the full per-entity breakdown.
   const homeRollup = useMemo(
-    () => rollupRows(groupRows, HOME_TOP_N, groupBy === "provider" ? locals : undefined),
-    [groupRows, groupBy, locals],
+    () => rollupRows(groupRows, HOME_TOP_N, localsFor(groupBy)),
+    [groupRows, groupBy, locals, modelLocals],
   );
   // homeColor (M8 1F): the brand-aware resolver only when the home channel IS
   // provider; for model/harness it stays plain per-entity, so the brand colour
@@ -610,7 +625,7 @@ export default function App() {
   // collapsed families) are display aggregates, not single filter values, so a
   // click on one is ignored rather than applying a filter that matches nothing.
   const onGroupSelect = (raw: string) => {
-    if (groupBy === "provider" && raw === LOCAL_KEY && locals.size > 0) return;
+    if (raw === LOCAL_KEY && (localsFor(groupBy)?.size ?? 0) > 0) return;
     if (!(facets[groupBy] ?? []).some((fv) => fv.value === raw)) return;
     toggle(groupBy, raw);
   };
@@ -637,7 +652,7 @@ export default function App() {
       <Breakdown totals={sortTotals(sumByKey(byProvider), sort)} sort={sort} onSort={onSort} rowColor={providerColor} onSelect={(raw) => toggle("provider", raw)} active={filters.provider} />
     ),
     "break-model": (
-      <Breakdown totals={sortTotals(sumByKey(byModel), sort)} sort={sort} onSort={onSort} bases={modelBases} onSelect={(raw) => toggle("model", raw)} active={filters.model} />
+      <Breakdown totals={sortTotals(sumByKey(modelSeries), sort)} sort={sort} onSort={onSort} bases={modelBases} onSelect={onModelSelect} active={filters.model} />
     ),
   };
 
@@ -784,7 +799,7 @@ export default function App() {
       )}
 
       <div className="flex gap-4">
-        <FacetRail facets={facets} filters={filters} locals={locals} onToggle={toggle} />
+        <FacetRail facets={facets} filters={filters} localsFor={localsFor} onToggle={toggle} />
 
         <main className="min-w-0 flex-1">
           {view === "home" ? (
