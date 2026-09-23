@@ -70,10 +70,17 @@ reach the org list — open the extension's **options** (chrome://extensions →
 Details → Extension options) and set your Claude organization ID; clearing it
 re-enables auto-discovery.
 
+The same options page has a **tatitok hub URL** field, for when `tatitok serve`
+runs on a non-default `--addr`. It defaults to `http://127.0.0.1:8284` (blank
+restores it) and accepts loopback origins only: `http://127.0.0.1[:port]` or
+`http://localhost[:port]`, no path. Anything else is refused on save. Both the
+ingest POST and the "dashboard open" polling gate use it.
+
 ## Permissions
 
-`storage`, `alarms`, and host access to `claude.ai`, `chatgpt.com`, and
-`127.0.0.1:8284`. Nothing else.
+`storage`, `alarms`, and host access to `claude.ai`, `chatgpt.com`, and the
+loopback origins `http://127.0.0.1/*` and `http://localhost/*` (any port, for the
+hub URL option). Nothing else.
 
 ## Known TODOs (later chunks)
 
