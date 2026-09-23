@@ -479,6 +479,7 @@ func (h *Hub) apiPlans(w http.ResponseWriter, r *http.Request) {
 	}
 	type planPayload struct {
 		Name                string          `json:"name"`
+		Label               string          `json:"label"`
 		WindowSeconds       int64           `json:"window_seconds"`
 		WindowStart         string          `json:"window_start"`
 		WeeklyCapEquivMicro *int64          `json:"weekly_cap_equiv_micro"`
@@ -500,6 +501,7 @@ func (h *Hub) apiPlans(w http.ResponseWriter, r *http.Request) {
 		windows := pricing.PlanWindows(we, p.Window, p.WindowStart)
 		pp := planPayload{
 			Name:                p.Name,
+			Label:               p.Label,
 			WindowSeconds:       int64(p.Window.Seconds()),
 			WindowStart:         string(p.WindowStart),
 			WeeklyCapEquivMicro: p.WeeklyCapEquivMicro,

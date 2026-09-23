@@ -102,6 +102,10 @@ func TestMergeAddsPlansPreservingOverrides(t *testing.T) {
 	if !ok || cp.MonthlyPriceMicro == nil || *cp.MonthlyPriceMicro != 20_000_000 {
 		t.Fatalf("chatgpt-plus plan wrong: %+v (ok=%v)", cp, ok)
 	}
+	// The tier's label round-trips through the strict loader.
+	if cm.Label != "Claude Max 20x" || cp.Label != "ChatGPT Plus" {
+		t.Fatalf("labels after load: claude-max=%q chatgpt-plus=%q", cm.Label, cp.Label)
+	}
 	// Matchers + window reuse the live shape.
 	if len(cm.Matchers) != 1 || cm.Matchers[0].Harness != "claude-code" {
 		t.Fatalf("claude-max matcher wrong: %+v", cm.Matchers)
@@ -214,6 +218,9 @@ func TestResolveEntryProvenanceAndPrice(t *testing.T) {
 	if e.MonthlyPriceUSD != "20" {
 		t.Errorf("codex plus price = %q, want 20", e.MonthlyPriceUSD)
 	}
+	if e.Label != "ChatGPT Plus" {
+		t.Errorf("codex plus label = %q, want ChatGPT Plus", e.Label)
+	}
 	if !strings.Contains(e.Doc, "detected from codex") || !strings.Contains(e.Doc, "published list default") {
 		t.Errorf("codex provenance off: %q", e.Doc)
 	}
@@ -223,16 +230,39 @@ func TestResolveEntryProvenanceAndPrice(t *testing.T) {
 	if e.MonthlyPriceUSD != "200" || !strings.Contains(e.Doc, "user-declared") {
 		t.Errorf("claude max_20x off: price=%q doc=%q", e.MonthlyPriceUSD, e.Doc)
 	}
+	if e.Name != "claude-max" || e.Label != "Claude Max 20x" {
+		t.Errorf("claude max_20x name/label = %q/%q, want claude-max/Claude Max 20x", e.Name, e.Label)
+	}
 
 	// free tier → NO monthly_price_usd (loader rejects $0), doc says included.
 	e, _ = ResolveEntry(PlanChoice{ProviderArg: "claude", Tier: "free"}, snap, now)
 	if e.MonthlyPriceUSD != "" || !strings.Contains(e.Doc, "included") {
 		t.Errorf("claude free should omit price: price=%q doc=%q", e.MonthlyPriceUSD, e.Doc)
 	}
+	if e.Label != "Claude Free" {
+		t.Errorf("claude free label = %q, want Claude Free", e.Label)
+	}
 
 	// explicit price override → "user-edited".
 	e, _ = ResolveEntry(PlanChoice{ProviderArg: "claude", Tier: "max_20x", PriceUSD: "175"}, snap, now)
 	if e.MonthlyPriceUSD != "175" || !strings.Contains(e.Doc, "user-edited") {
 		t.Errorf("price override off: price=%q doc=%q", e.MonthlyPriceUSD, e.Doc)
+	}
+	// The label follows the tier, not the (edited) price.
+	if e.Label != "Claude Max 20x" {
+		t.Errorf("price override label = %q, want Claude Max 20x", e.Label)
+	}
+
+	// A tier the snapshot does not know (priced by override) writes no label.
+	e, err = ResolveEntry(PlanChoice{ProviderArg: "claude", Tier: "team", PriceUSD: "30"}, snap, now)
+	if err != nil || e == nil {
+		t.Fatalf("unknown tier with price: %v", err)
+	}
+	if e.Label != "" {
+		t.Errorf("unknown tier label = %q, want none", e.Label)
+	}
+	raw, _ := json.Marshal(e)
+	if strings.Contains(string(raw), `"label"`) {
+		t.Errorf("unlabeled entry still emits a label key: %s", raw)
 	}
 }

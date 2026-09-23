@@ -28,6 +28,7 @@ var tierSnapshotJSON []byte
 type tierSnapshotFile struct {
 	Version string                            `json:"version"`
 	Tiers   map[string]map[string]json.Number `json:"tiers"`
+	Labels  map[string]map[string]string      `json:"tier_labels"`
 }
 
 // TierPrices is the loaded tier→price snapshot. Lookups are keyed by the
@@ -35,6 +36,7 @@ type tierSnapshotFile struct {
 type TierPrices struct {
 	Version string
 	tiers   map[string]map[string]json.Number
+	labels  map[string]map[string]string
 }
 
 // LoadTierPrices parses the embedded snapshot.
@@ -49,7 +51,7 @@ func LoadTierPrices() (*TierPrices, error) {
 	if len(f.Tiers) == 0 {
 		return nil, fmt.Errorf("onboard: tier_prices_snapshot.json has no tiers")
 	}
-	return &TierPrices{Version: f.Version, tiers: f.Tiers}, nil
+	return &TierPrices{Version: f.Version, tiers: f.Tiers, labels: f.Labels}, nil
 }
 
 // Price returns the monthly list price (decimal USD, verbatim from the
@@ -61,6 +63,13 @@ func (t *TierPrices) Price(provider, tier string) (json.Number, bool) {
 	}
 	p, ok := m[tier]
 	return p, ok
+}
+
+// Label returns the display label for (provider, tier) — card text only,
+// never a price. ok is false for an unknown provider/tier or an empty label.
+func (t *TierPrices) Label(provider, tier string) (string, bool) {
+	l := t.labels[provider][tier]
+	return l, l != ""
 }
 
 // Tiers lists the known tier names for a provider snapshot key, sorted.

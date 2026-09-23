@@ -7,8 +7,8 @@ import (
 
 func TestSnapshotVersionBumped(t *testing.T) {
 	snap := loadSnap(t)
-	if snap.Version != "tier-prices-2026-09-03.1" {
-		t.Fatalf("version = %q, want tier-prices-2026-09-03.1 (Google AI Pro addition)", snap.Version)
+	if snap.Version != "tier-prices-2026-09-24.1" {
+		t.Fatalf("version = %q, want tier-prices-2026-09-24.1 (tier_labels addition)", snap.Version)
 	}
 	// The split: old openai "pro" is gone; pro_100/pro_200/go present.
 	if _, ok := snap.Price("openai", "pro"); ok {
@@ -87,6 +87,9 @@ func TestProSubTierEntryProvenance(t *testing.T) {
 	}
 	if e.MonthlyPriceUSD != "200" {
 		t.Errorf("pro_200 price = %q, want 200", e.MonthlyPriceUSD)
+	}
+	if e.Name != "chatgpt-plus" || e.Label != "ChatGPT Pro $200" {
+		t.Errorf("pro_200 name/label = %q/%q, want chatgpt-plus/ChatGPT Pro $200", e.Name, e.Label)
 	}
 	if !strings.Contains(e.Doc, "sub-tier chosen for ambiguous codex Pro") {
 		t.Errorf("entry _doc missing Pro-split provenance: %q", e.Doc)

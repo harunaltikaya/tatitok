@@ -597,6 +597,7 @@ func TestAPIPlans(t *testing.T) {
 	if err := os.WriteFile(ovPath, []byte(`{
 		"plans": [{
 			"name": "claude-max",
+			"label": "Claude Max 5x",
 			"matchers": [{"harness": "claude-code"}],
 			"window": "5h",
 			"weekly_cap_equiv_usd": "120.00",
@@ -623,6 +624,7 @@ func TestAPIPlans(t *testing.T) {
 		TZ    string `json:"tz"`
 		Plans []struct {
 			Name                string `json:"name"`
+			Label               string `json:"label"`
 			WindowSeconds       int64  `json:"window_seconds"`
 			WindowStart         string `json:"window_start"`
 			WeeklyCapEquivMicro *int64 `json:"weekly_cap_equiv_micro"`
@@ -646,7 +648,7 @@ func TestAPIPlans(t *testing.T) {
 		t.Fatalf("plans payload shape: %+v", got)
 	}
 	p := got.Plans[0]
-	if p.Name != "claude-max" || p.WindowSeconds != 5*3600 || p.WindowStart != "floored" ||
+	if p.Name != "claude-max" || p.Label != "Claude Max 5x" || p.WindowSeconds != 5*3600 || p.WindowStart != "floored" ||
 		p.WeeklyCapEquivMicro == nil || *p.WeeklyCapEquivMicro != 120_000_000 ||
 		p.MonthlyPriceMicro == nil || *p.MonthlyPriceMicro != 200_000_000 {
 		t.Fatalf("plan declaration not echoed: %+v", p)
@@ -718,6 +720,29 @@ func TestAPIPlans(t *testing.T) {
 	getOK(t, plain, "/api/v1/plans", &none)
 	if len(none.Plans) != 0 || none.UnmatchedPlanEvents != 0 {
 		t.Fatalf("plan-less hub: %+v", none)
+	}
+
+	// A plan without a label still carries the key, as "" (the card
+	// falls back to the name).
+	unlabeledPath := filepath.Join(t.TempDir(), "prices.json")
+	if err := os.WriteFile(unlabeledPath, []byte(`{
+		"plans": [{"name": "chatgpt-plus", "matchers": [{"harness": "codex"}], "window": "5h"}]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uov, err := pricing.LoadOverrides(unlabeledPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unlabeled struct {
+		Plans []map[string]json.RawMessage `json:"plans"`
+	}
+	getOK(t, seedHubWith(t, uov, nil), "/api/v1/plans", &unlabeled)
+	if len(unlabeled.Plans) != 1 {
+		t.Fatalf("unlabeled hub: %d plans, want 1", len(unlabeled.Plans))
+	}
+	if got := string(unlabeled.Plans[0]["label"]); got != `""` {
+		t.Fatalf("unlabeled plan: label = %s, want \"\"", got)
 	}
 }
 

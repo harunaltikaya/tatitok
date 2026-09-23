@@ -85,6 +85,7 @@ export interface PlanPeriod {
 
 export interface PlanStatus {
   name: string;
+  label: string; // owner-editable card title; "" → show name
   window_seconds: number;
   weekly_cap_equiv_micro: number | null;
   monthly_price_micro: number | null;

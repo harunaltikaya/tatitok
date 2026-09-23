@@ -52,7 +52,7 @@ export default function PlanCard({ plan, limits }: { plan: PlanStatus; limits?: 
     <Card
       title={
         <span>
-          {plan.name}
+          {plan.label || plan.name}
           <span className="ml-2" style={{ color: "var(--text-faint)" }}>
             · usage limits
           </span>

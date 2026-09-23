@@ -24,6 +24,7 @@ type PlanMatcherOut struct {
 type PlanEntryOut struct {
 	Doc             string           `json:"_doc,omitempty"`
 	Name            string           `json:"name"`
+	Label           string           `json:"label,omitempty"`
 	Matchers        []PlanMatcherOut `json:"matchers"`
 	Window          string           `json:"window"`
 	WindowStart     string           `json:"window_start,omitempty"`

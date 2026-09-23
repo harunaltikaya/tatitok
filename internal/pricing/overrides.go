@@ -66,7 +66,8 @@ package pricing
 // family), a rolling window duration, a window anchor (window_start:
 // floored|exact, floored default — provider-dependent, see window.go),
 // and optionally a weekly cap (in API-equivalent USD — tatitok's one
-// cross-model yardstick) and a monthly price. The window meter models
+// cross-model yardstick), a monthly price, and a display label (the
+// card title; "" or absent → the name). The window meter models
 // LOCAL usage only: a provider's limit is account-level (shared pools,
 // other devices, other accounts), so the meter is informational, never
 // the authoritative counter. tatitok NEVER guesses plan membership.
@@ -172,7 +173,10 @@ type Overrides struct {
 
 // Plan is one owner-declared subscription (M5 Task 2).
 type Plan struct {
-	Name     string
+	Name string
+	// Label is the owner-editable card title ("" = none; the card shows
+	// Name). Display only — never matched on, never priced.
+	Label    string
 	Matchers []PlanMatcher
 	// Window is the plan's rolling usage-window duration.
 	Window time.Duration
@@ -415,6 +419,7 @@ type planMatcherEntry struct {
 type planEntry struct {
 	Doc               json.RawMessage    `json:"_doc"`
 	Name              string             `json:"name"`
+	Label             string             `json:"label"`
 	Matchers          []planMatcherEntry `json:"matchers"`
 	Window            string             `json:"window"`
 	WindowStart       string             `json:"window_start"`
@@ -590,7 +595,7 @@ func LoadOverrides(path string) (*Overrides, error) {
 		if len(pe.Matchers) == 0 {
 			return nil, fmt.Errorf("price overrides %s: plan %q: at least one matcher is required — tatitok never guesses plan membership", path, name)
 		}
-		p := Plan{Name: name}
+		p := Plan{Name: name, Label: strings.TrimSpace(pe.Label)}
 		for j, me := range pe.Matchers {
 			m := PlanMatcher{
 				Harness:  strings.TrimSpace(me.Harness),

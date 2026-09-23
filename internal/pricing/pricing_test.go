@@ -1117,6 +1117,28 @@ func TestPlanParsing(t *testing.T) {
 	}
 }
 
+// A plan's optional "label" is the card title: carried verbatim through
+// the strict loader, and missing or "" both mean no label.
+func TestPlanLabel(t *testing.T) {
+	ov := loadOverridesJSON(t, `{
+		"plans": [
+			{"name": "claude-max", "label": "Claude Max 5x", "matchers": [{"harness": "claude-code"}], "window": "5h"},
+			{"name": "chatgpt-plus", "label": "", "matchers": [{"harness": "codex"}], "window": "5h"},
+			{"name": "google-ai-pro", "matchers": [{"harness": "agy"}], "window": "5h"}
+		]
+	}`)
+	got := map[string]string{}
+	for _, p := range ov.Plans() {
+		got[p.Name] = p.Label
+	}
+	want := map[string]string{"claude-max": "Claude Max 5x", "chatgpt-plus": "", "google-ai-pro": ""}
+	for name, w := range want {
+		if l, ok := got[name]; !ok || l != w {
+			t.Errorf("plan %q label = %q (present=%v), want %q", name, l, ok, w)
+		}
+	}
+}
+
 // Matcher semantics: AND within a matcher (every present field must
 // match), OR across the list; the model field matches raw model or
 // family; the first declared plan covering the event wins.

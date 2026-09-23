@@ -12,15 +12,16 @@ import (
 const MeteredTier = "metered"
 
 // ProviderTemplate is the FIXED per-provider plan shape onboarding reuses
-// verbatim — the live owner-declared matchers, window and card label
-// Only the TIER (hence the price) varies per user;
-// the plan Name stays the card label whatever the tier.
+// verbatim — the live owner-declared matchers, window and plan name.
+// Only the TIER (hence the price and the display label) varies per user;
+// the plan Name stays fixed whatever the tier.
 type ProviderTemplate struct {
 	// Arg is the CLI selector ("claude" / "codex").
 	Arg string
 	// SnapshotKey indexes the tier-price snapshot ("anthropic" / "openai").
 	SnapshotKey string
-	// PlanName is the card label, fixed regardless of tier.
+	// PlanName is the plan id, fixed regardless of tier (the card shows the
+	// tier's label when one was written).
 	PlanName string
 	Matcher  PlanMatcherOut
 	Window   string
@@ -127,6 +128,11 @@ func ResolveEntry(c PlanChoice, snap *TierPrices, now string) (*PlanEntryOut, er
 	// API-equivalent carried), which is exactly right for a free plan.
 	if micro > 0 {
 		e.MonthlyPriceUSD = price
+	}
+	// Display label for the card (the plan Name stays fixed per provider); a
+	// tier the snapshot does not label writes none.
+	if l, ok := snap.Label(tpl.SnapshotKey, tier); ok {
+		e.Label = l
 	}
 
 	// Tier provenance: an explicit TierNote wins (the ambiguous-Pro case);

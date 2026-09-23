@@ -199,7 +199,7 @@ func TestOnboardDetect(t *testing.T) {
 	var d detectResp
 	getOK(t, h, "/api/onboard/detect", &d)
 
-	if d.SnapshotVersion != "tier-prices-2026-09-03.1" {
+	if d.SnapshotVersion != "tier-prices-2026-09-24.1" {
 		t.Errorf("snapshot_version = %q", d.SnapshotVersion)
 	}
 	if !d.HasUsage || d.HasPlans {
@@ -271,6 +271,13 @@ func TestOnboardApplyAndReprice(t *testing.T) {
 	}
 	if len(ov.Plans()) != 2 {
 		t.Fatalf("prices.json has %d plans, want 2", len(ov.Plans()))
+	}
+	// The chosen tier's label rides the entry (the name stays fixed).
+	for _, p := range ov.Plans() {
+		want := map[string]string{"claude-max": "Claude Max 20x", "chatgpt-plus": "ChatGPT Plus"}[p.Name]
+		if p.Label != want {
+			t.Errorf("plan %q label = %q, want %q", p.Name, p.Label, want)
+		}
 	}
 
 	var d detectResp
