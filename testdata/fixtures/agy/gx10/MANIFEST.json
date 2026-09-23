@@ -1,5 +1,5 @@
 {
-  "harvest_date": "2026-09-03",
+  "harvest_date": "2026-09-23",
   "source": "agy",
   "machine_label": "gx10",
   "log_roots": [
@@ -7,28 +7,28 @@
   ],
   "hook": "extension/agy-statusline/ (tatitok-agy-statusline.py)",
   "agy_versions_seen": [
-    "1.1.25"
+    "1.1.25",
+    "1.1.27"
   ],
   "files": [
     {
       "source": "~/.local/share/tatitok/agy/statusline.jsonl",
+      "source_lines": 2226,
       "fixture": "statusline.jsonl",
-      "lines": 9,
+      "lines": 14,
+      "source_line_ranges": [
+        "1-9",
+        "1796-1800"
+      ],
       "malformed_lines": 0,
-      "expected_events": 6,
+      "expected_events": 11,
+      "decreases": 1,
       "models": [
         "Gemini 3.8 Flash (Low)"
       ],
-      "redaction": "cwd/workspace paths aliased to /home/user/project-<6hex>; transcript_path stripped to a placeholder; conversation_id/session_id pseudonymized (shape kept, stable per id); usage, totals, timestamps, quota, plan_tier, version untouched. Hand-built from the real log's first lines (indexes below are 0-based lines of the source at harvest time) — NOT a harvest_fixtures.py run.",
-      "derivations": [
-        "fixture line 1 = source 0 (conversation A, totals 0/0)",
-        "fixture line 2 = source 3 (conversation B; source line 2, B's 0/0 line, OMITTED so B's first fixture line carries a delta from 0)",
-        "fixture line 3 = source 1 (conversation A) MOVED after a B line to interleave the two conversations (the real log has A's two lines first)",
-        "fixture line 4 = source 4; fixture line 5 = source 4 REPEATED (same totals — the hook never writes this; tolerance case)",
-        "fixture line 6 = source 5 with context_window totals EDITED 25745/271 → 12000/100 (a decrease; the real log has no /compact yet) — the only line whose numbers are not real",
-        "fixture lines 7-9 = source 6, 7, 8",
-        "the short-written (malformed) line case is NOT in this file — committed fixtures must parse line by line (leak checker convention); agy_test.go builds it at run time from a byte prefix of fixture line 7"
-      ]
+      "redaction": "harvest_fixtures.py sanitize_record (shared rule-spec internal/core/sanitize_rules.json) with the gitignored agy PROJECT_MAP salt: conversation_id/session_id pseudonymized (shape kept, stable per id); cwd/workspace paths aliased to /home/user/project-<6hex>; transcript_path replaced by a placeholder. Usage, totals, timestamps, quota, plan_tier, version untouched.",
+      "selection": "Real records verbatim in original source order: nothing edited, repeated or reordered. Fixture lines 1-9 = source lines 1-9; fixture lines 10-14 = source lines 1796-1800, around the real decrease at source line 1798 (fixture line 12). Fixture line 10 starts that conversation's slice, so it reads as a delta from 0.",
+      "synthetic_cases": "Constructed cases (interleaving, a repeated same-totals line, a fabricated decrease, a short-written line, reset-separated repeated totals) are built at run time in agy_test.go and named synthetic; committed fixtures hold real lines only and must parse line by line."
     }
   ]
 }

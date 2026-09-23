@@ -1,9 +1,9 @@
 package agy
 
-// Tests run against the committed, redacted fixture (real hook lines,
-// cwd/ids aliased; see testdata/fixtures/agy/gx10/MANIFEST.json for the
-// lines that were reordered, repeated, truncated or number-edited to
-// cover the cases the young real log has not produced yet).
+// Fixture tests run against the committed, redacted fixture: real hook
+// lines verbatim in source order, cwd/ids aliased, one real decrease (see
+// testdata/fixtures/agy/gx10/MANIFEST.json). Cases the real log does not
+// show are SYNTHETIC: built at run time here, and named so.
 
 import (
 	"context"
@@ -22,8 +22,9 @@ import (
 const fixtureBase = "../../../testdata/fixtures/agy/gx10"
 
 const (
-	convA = "10385f9e-9a43-1516-4b28-f4c0817f30aa" // 2 lines: 0/0, then 19790/12
-	convB = "9080b85b-47fe-5bc8-0b4e-c789c449222a" // the rest
+	convA = "10385f9e-9a43-1516-4b28-f4c0817f30aa" // lines 1-2: 0/0, then 19790/12
+	convB = "9080b85b-47fe-5bc8-0b4e-c789c449222a" // lines 3-9: 0/0, then six increases
+	convC = "7893d48c-f6a9-855d-f1ef-14bc091e9ba7" // lines 10-14: a slice around a real decrease
 )
 
 func fixtureSource(t *testing.T) adapters.Source {
@@ -118,31 +119,41 @@ func TestBackfillFixture(t *testing.T) {
 	if err := (Adapter{}).Backfill(context.Background(), fixtureSource(t), sink); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
-	// 9 lines: A 0/0 (nothing), B first (event), A second (event), B
-	// increase (event), B repeated (nothing), B decrease (reset, nothing),
-	// then three B increases.
+	// 14 lines: A 0/0 (nothing), A increase (event), B 0/0 (nothing), six
+	// B increases (events), then C: two increases (events), a real
+	// decrease (reset, nothing), two increases (events).
 	if len(sink.results) != 1 {
 		t.Fatalf("results: %+v", sink.results)
 	}
 	res := sink.results[0]
-	if res.LineCount != 9 || res.ParseErrors != 0 || res.IncompleteTail || res.ReadError != "" || res.Events != 6 {
+	if res.LineCount != 14 || res.ParseErrors != 0 || res.IncompleteTail || res.ReadError != "" || res.Events != 11 {
 		t.Fatalf("file result: %+v", res)
 	}
-	if len(sink.events) != 6 {
+	if len(sink.events) != 11 {
 		t.Fatalf("emitted %d events", len(sink.events))
 	}
 	type want struct {
 		conv    string
 		in, out int64
 		reset   bool
+		id      string // "<resets>/<total_in>/<total_out>"
 	}
 	wants := []want{
-		{convB, 22840, 102, false}, // first line of B: a delta from 0
-		{convA, 19790, 12, false},  // A's baseline is independent of B's
-		{convB, 194, 73, false},    // 23034-22840 / 175-102
-		{convB, 16912, 261, true},  // after the 12000/100 reset: 28912-12000 / 361-100
-		{convB, 2825, 78, false},
-		{convB, 2748, 269, false},
+		{convA, 19790, 12, false, "0/19790/12"},
+		{convB, 22840, 102, false, "0/22840/102"}, // B's baseline is independent of A's
+		{convB, 194, 73, false, "0/23034/175"},    // 23034-22840 / 175-102
+		{convB, 2711, 96, false, "0/25745/271"},
+		{convB, 3167, 90, false, "0/28912/361"},
+		{convB, 2825, 78, false, "0/31737/439"},
+		{convB, 2748, 269, false, "0/34485/708"},
+		// C's slice starts mid-conversation, so its first line reads as a
+		// delta from 0.
+		{convC, 253660, 179718, false, "0/253660/179718"},
+		{convC, 1094, 1928, false, "0/254754/181646"},
+		// real decrease 254754/181646 -> 20804/183420 (input compacted):
+		// new baseline, nothing emitted, epoch 1 from here on
+		{convC, 1861, 132, true, "1/22665/183552"},
+		{convC, 850, 60, false, "1/23515/183612"},
 	}
 	for i, w := range wants {
 		e := sink.events[i]
@@ -152,13 +163,16 @@ func TestBackfillFixture(t *testing.T) {
 		if _, ok := e.Meta["baseline_reset"]; ok != w.reset {
 			t.Fatalf("event %d: baseline_reset=%v, want %v", i, ok, w.reset)
 		}
+		if e.ID != core.EventID(harnessName, w.conv, w.id) {
+			t.Fatalf("event %d: id %q, want EventID(%s)", i, e.ID, w.id)
+		}
 		if e.TokensCacheRead != 0 || e.TokensCacheWrite != 0 || e.TokensReasoning != nil {
 			t.Fatalf("event %d: cache/reasoning must be 0/nil: %+v", i, e)
 		}
 	}
 
-	// Identity + mapping, read from the first event.
-	e := sink.events[0]
+	// Identity + mapping, read from B's first event.
+	e := sink.events[1]
 	if e.Harness != harnessName || e.Provider != "google" || e.Model != "gemini-3.8-flash" || e.ModelFamily != e.Model {
 		t.Fatalf("identity: %+v", e)
 	}
@@ -174,12 +188,6 @@ func TestBackfillFixture(t *testing.T) {
 	}
 	if e.TS.Format("2006-01-02T15:04:05.000Z") != "2026-09-03T15:56:03.527Z" {
 		t.Fatalf("ts: %v", e.TS)
-	}
-	if e.ID != core.EventID(harnessName, convB, "0/22840/102") {
-		t.Fatalf("id: %q", e.ID)
-	}
-	if e := sink.events[3]; e.ID != core.EventID(harnessName, convB, "1/28912/361") {
-		t.Fatalf("post-reset id: %q", e.ID) // epoch 1 after the decrease
 	}
 	// Re-ingesting yields the same IDs (deterministic from epoch + totals).
 	again := &collectSink{t: t}
@@ -225,17 +233,10 @@ func TestBackfillFixture(t *testing.T) {
 // never an abort, events before and after it intact. Built at run time
 // from a byte prefix of a fixture line (committed fixtures must parse).
 func TestShortWrittenLine(t *testing.T) {
-	src := fixtureSource(t)
-	data, err := os.ReadFile(filepath.Join(src.Root, logFileName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-	if len(lines) != 9 {
-		t.Fatalf("fixture has %d lines", len(lines))
-	}
-	short := lines[6][:57] // a prefix of the 28912/361 line
-	withShort := append(append(append([]string{}, lines[:6]...), short), lines[6:]...)
+	lines := fixtureLines(t)
+	clean, _ := backfill(t, fixtureSource(t))
+	short := lines[12][:57] // a prefix of the first post-reset line (22665/183552)
+	withShort := append(append(append([]string{}, lines[:12]...), short), lines[12:]...)
 
 	root := t.TempDir()
 	path := filepath.Join(root, logFileName)
@@ -247,12 +248,16 @@ func TestShortWrittenLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := sink.results[0]
-	if res.LineCount != 10 || res.ParseErrors != 1 || res.IncompleteTail || res.Events != 6 || len(sink.events) != 6 {
+	if res.LineCount != 15 || res.ParseErrors != 1 || res.IncompleteTail || res.Events != 11 || len(sink.events) != 11 {
 		t.Fatalf("short line not contained: %+v (%d events)", res, len(sink.events))
 	}
-	// The event after the short line still reads the reset baseline.
-	if e := sink.events[3]; e.TokensInput != 16912 || e.TokensOutput != 261 || e.Meta["baseline_reset"] != true {
+	// The event after the short line still reads the reset baseline, and
+	// no ID moved.
+	if e := sink.events[9]; e.TokensInput != 1861 || e.TokensOutput != 132 || e.Meta["baseline_reset"] != true {
 		t.Fatalf("event after short line: %+v", e)
+	}
+	if strings.Join(ids(sink.events), ",") != strings.Join(ids(clean), ",") {
+		t.Fatal("short line shifted event ids")
 	}
 
 	// The same prefix as an UNTERMINATED final line is a write in
@@ -264,8 +269,71 @@ func TestShortWrittenLine(t *testing.T) {
 	if err := (Adapter{}).Backfill(context.Background(), adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}, sink); err != nil {
 		t.Fatal(err)
 	}
-	if res := sink.results[0]; res.LineCount != 10 || res.ParseErrors != 0 || !res.IncompleteTail || res.Events != 6 {
+	if res := sink.results[0]; res.LineCount != 15 || res.ParseErrors != 0 || !res.IncompleteTail || res.Events != 11 {
 		t.Fatalf("tail: %+v", res)
+	}
+}
+
+// fixtureLines returns the committed fixture's lines.
+func fixtureLines(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(fixtureSource(t).Root, logFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if len(lines) != 14 {
+		t.Fatalf("fixture has %d lines", len(lines))
+	}
+	return lines
+}
+
+// SYNTHETIC: constructed mutations of real fixture lines, for cases the
+// fixture keeps faithful and so cannot show — conversations interleaved,
+// a same-totals line repeated (the hook dedupes, so this is tolerance),
+// and a fabricated decrease inside B (the real one is in C). Built at run
+// time; never committed.
+func TestSyntheticMutations(t *testing.T) {
+	f := fixtureLines(t)
+	// SYNTHETIC totals edit: the real 25745/271 line becomes 12000/100.
+	const orig, edited = `"total_input_tokens":25745,"total_output_tokens":271`, `"total_input_tokens":12000,"total_output_tokens":100`
+	if strings.Count(f[5], orig) != 1 {
+		t.Fatal("fixture line 6 lost its totals")
+	}
+	decrease := strings.Replace(f[5], orig, edited, 1)
+	// A 0/0; B's first increase moved BEFORE A's increase (interleaving;
+	// B's 0/0 line left out); B increase; that line REPEATED; the
+	// fabricated decrease; three B increases.
+	lines := []string{f[0], f[3], f[1], f[4], f[4], decrease, f[6], f[7], f[8]}
+	events, res := backfill(t, writeLog(t, lines))
+	if res.LineCount != 9 || res.ParseErrors != 0 || res.Events != 6 || len(events) != 6 {
+		t.Fatalf("file result: %+v", res)
+	}
+	type want struct {
+		conv    string
+		in, out int64
+		reset   bool
+		id      string
+	}
+	wants := []want{
+		{convB, 22840, 102, false, "0/22840/102"}, // first line of B: a delta from 0
+		{convA, 19790, 12, false, "0/19790/12"},   // A's baseline is independent of B's
+		{convB, 194, 73, false, "0/23034/175"},    // the repeat emits nothing
+		{convB, 16912, 261, true, "1/28912/361"},  // after the 12000/100 reset: 28912-12000 / 361-100
+		{convB, 2825, 78, false, "1/31737/439"},
+		{convB, 2748, 269, false, "1/34485/708"},
+	}
+	for i, w := range wants {
+		e := events[i]
+		if e.SessionID != w.conv || e.TokensInput != w.in || e.TokensOutput != w.out {
+			t.Fatalf("event %d: got %s %d/%d, want %s %d/%d", i, e.SessionID, e.TokensInput, e.TokensOutput, w.conv, w.in, w.out)
+		}
+		if _, ok := e.Meta["baseline_reset"]; ok != w.reset {
+			t.Fatalf("event %d: baseline_reset=%v, want %v", i, ok, w.reset)
+		}
+		if e.ID != core.EventID(harnessName, w.conv, w.id) {
+			t.Fatalf("event %d: id %q, want EventID(%s)", i, e.ID, w.id)
+		}
 	}
 }
 
