@@ -11,13 +11,16 @@ pricing layer — only models the vendored snapshot lacks are priced from it.
 Default (no flag): one refresh.
   - GET the source (30 s timeout); the body must be a JSON object with at
     least 1000 keys, else it is discarded;
-  - a body whose sha256 equals the one recorded in litellm-live.meta.json
-    (and on disk) exits 0 and touches nothing;
-  - otherwise litellm-live.json is replaced atomically, then
-    litellm-live.meta.json (fetched_at, sha256, bytes, source_url).
-    Files 0600, directory 0700.
-Any failure prints one line to stderr and exits 1: existing files stay
-untouched and no temporary file is left behind. Content is never printed.
+  - a body whose sha256 equals the one recorded in the existing
+    litellm-live.json (and that file parses) exits 0 and writes nothing;
+  - otherwise litellm-live.json is replaced by ONE atomic rename. It holds
+    {"fetched_at", "source_url", "sha256", "bytes", "prices"}, where
+    prices is the upstream body byte for byte. File 0600, directory 0700.
+  - a leftover litellm-live.meta.json (the earlier two-file format) is
+    removed after a successful run.
+Any failure prints one line to stderr and exits 1. A failure before or
+during the rename leaves the existing file byte-identical and no
+temporary file behind. Content is never printed.
 
   --install    write the systemd user service + daily timer (both carry a
                marker line), daemon-reload, enable --now the timer; refuses
@@ -47,7 +50,8 @@ MIN_KEYS = 1000
 MAX_BYTES = 64 * 1024 * 1024
 
 LIVE_FILE = "litellm-live.json"
-META_FILE = "litellm-live.meta.json"
+# The earlier two-file format's sidecar; removed when found.
+STALE_META_FILE = "litellm-live.meta.json"
 
 UNIT_NAME = "tatitok-litellm-refresh"
 UNIT_DIR = os.path.expanduser("~/.config/systemd/user")
@@ -112,17 +116,17 @@ def sha256_hex(data):
 
 
 def recorded_sha(cdir):
-    """The sha256 in the meta file, but only when litellm-live.json on disk
-    still hashes to it — a missing or damaged copy is refreshed, not kept."""
+    """The sha256 recorded in litellm-live.json, but only when the file
+    parses (a JSON object whose prices is an object) — a missing, damaged
+    or old-format copy is refreshed, not kept."""
     try:
-        with open(os.path.join(cdir, META_FILE), encoding="utf-8") as fh:
-            meta = json.load(fh)
-        sha = meta.get("sha256") if isinstance(meta, dict) else None
         with open(os.path.join(cdir, LIVE_FILE), "rb") as fh:
-            on_disk = sha256_hex(fh.read())
-    except (OSError, ValueError):
+            doc = json.loads(fh.read().decode("utf-8"), parse_constant=_reject_constant)
+    except (OSError, ValueError):  # UnicodeDecodeError is a ValueError
         return None
-    return sha if sha == on_disk else None
+    if not isinstance(doc, dict) or not isinstance(doc.get("prices"), dict):
+        return None
+    return doc.get("sha256")
 
 
 def _write_tmp(cdir, data):
@@ -151,41 +155,46 @@ def rfc3339_utc(t):
     return t.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def refresh(cdir=None, url=SOURCE_URL, urlopen=None, now=None):
-    """One refresh. Returns (changed, keys, sha256); raises RefreshError.
+def wrap(body, sha, url, fetched_at):
+    """The live file: provenance fields, then the upstream body spliced in
+    verbatim as prices (no re-encoding, so every rate keeps its decimal
+    text)."""
+    fields = (("fetched_at", fetched_at), ("source_url", url),
+              ("sha256", sha), ("bytes", len(body)))
+    head = "{" + ", ".join("%s: %s" % (json.dumps(k), json.dumps(v)) for k, v in fields)
+    return (head + ', "prices": ').encode() + body + b"}\n"
 
-    Both files are written to temp files first and only then renamed into
-    place (live file, then meta), so a failure before the renames leaves the
-    existing pair untouched and removes the temp files."""
+
+def publish(cdir, data):
+    """Write data to one 0600 temp file (fsynced), then os.replace it onto
+    litellm-live.json. Any failure before or during the rename leaves the
+    existing file byte-identical and removes the temp file."""
+    tmp = None
+    try:
+        os.makedirs(cdir, mode=stat.S_IRWXU, exist_ok=True)
+        os.chmod(cdir, stat.S_IRWXU)
+        tmp = _write_tmp(cdir, data)
+        os.replace(tmp, os.path.join(cdir, LIVE_FILE))
+        tmp = None  # renamed: nothing left to remove
+    except OSError as exc:
+        raise RefreshError("write %s: %s" % (cdir, exc)) from None
+    finally:
+        if tmp is not None:
+            _unlink_quiet(tmp)
+
+
+def refresh(cdir=None, url=SOURCE_URL, urlopen=None, now=None):
+    """One refresh. Returns (changed, keys, sha256); raises RefreshError."""
     cdir = cdir or config_dir()
     body = fetch(url, urlopen=urlopen)
     keys = validate(body)
     sha = sha256_hex(body)
-    if recorded_sha(cdir) == sha:
-        return False, keys, sha
-
-    now = now or _dt.datetime.now(_dt.timezone.utc)
-    meta = {
-        "fetched_at": rfc3339_utc(now),
-        "sha256": sha,
-        "bytes": len(body),
-        "source_url": url,
-    }
-    meta_bytes = (json.dumps(meta, indent=2) + "\n").encode()
-    tmps = []
-    try:
-        os.makedirs(cdir, mode=stat.S_IRWXU, exist_ok=True)
-        os.chmod(cdir, stat.S_IRWXU)
-        tmps.append(_write_tmp(cdir, body))
-        tmps.append(_write_tmp(cdir, meta_bytes))
-        os.replace(tmps[0], os.path.join(cdir, LIVE_FILE))
-        os.replace(tmps[1], os.path.join(cdir, META_FILE))
-    except OSError as exc:
-        raise RefreshError("write %s: %s" % (cdir, exc)) from None
-    finally:
-        for t in tmps:
-            _unlink_quiet(t)  # already renamed → nothing left to remove
-    return True, keys, sha
+    changed = recorded_sha(cdir) != sha
+    if changed:
+        now = now or _dt.datetime.now(_dt.timezone.utc)
+        publish(cdir, wrap(body, sha, url, rfc3339_utc(now)))
+    _unlink_quiet(os.path.join(cdir, STALE_META_FILE))
+    return changed, keys, sha
 
 
 def run_refresh(**kw):

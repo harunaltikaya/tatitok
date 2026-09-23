@@ -5,10 +5,7 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -154,15 +151,10 @@ func TestRecomputePricingLiveLayer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body := []byte(`{"nonsuch-v0": {"input_cost_per_token": 2e-06, "output_cost_per_token": 8e-06}}`)
-	sum := sha256.Sum256(body)
+	body := []byte(`{"fetched_at": "2026-09-24T03:04:05Z", "prices":
+		{"nonsuch-v0": {"input_cost_per_token": 2e-06, "output_cost_per_token": 8e-06}}}`)
 	dir := t.TempDir()
-	meta := fmt.Sprintf(`{"fetched_at": "2026-09-24T03:04:05Z", "sha256": %q, "bytes": %d}`,
-		hex.EncodeToString(sum[:]), len(body))
 	if err := os.WriteFile(filepath.Join(dir, pricing.LiveFile), body, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, pricing.LiveMetaFile), []byte(meta), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	pricing.UseLive(filepath.Join(dir, pricing.LiveFile))

@@ -10,6 +10,7 @@ import os
 import stat
 import tempfile
 import unittest
+import unittest.mock
 import urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +36,25 @@ class FakeResponse(io.BytesIO):
         self.status = status
 
 
+class EndlessResponse:
+    """A body with no end: read(n) returns n bytes and records n."""
+
+    status = 200
+
+    def __init__(self):
+        self.reads = []
+
+    def read(self, n):
+        self.reads.append(n)
+        return b" " * n
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 class FakeURLOpen:
     """Stands in for urllib.request.urlopen: returns the body, or raises."""
 
@@ -46,6 +66,8 @@ class FakeURLOpen:
         self.calls.append((req.full_url, timeout))
         if self.exc is not None:
             raise self.exc
+        if isinstance(self.body, EndlessResponse):
+            return self.body
         return FakeResponse(self.body, self.status)
 
 
@@ -75,41 +97,48 @@ class RefreshTests(QuietTest):
         return lr.run_refresh(cdir=self.cdir, urlopen=fake, now=NOW)
 
     def snapshot(self):
-        """(name → (bytes, mtime_ns)) for every file in the config dir."""
+        """(name → (sha256, mtime_ns)) for every file in the config dir;
+        hashes keep a failing comparison's diff small."""
         out = {}
         for name in sorted(os.listdir(self.cdir)):
             p = self.path(name)
             with open(p, "rb") as fh:
-                out[name] = (fh.read(), os.stat(p).st_mtime_ns)
+                out[name] = (hashlib.sha256(fh.read()).hexdigest(), os.stat(p).st_mtime_ns)
         return out
 
     def seed(self):
-        """A good first refresh, with mtimes pushed into the past so a
+        """A good first refresh, with the mtime pushed into the past so a
         rewrite would be visible."""
         self.assertEqual(self.run_refresh(FakeURLOpen(price_body(rate=1e-06))), 0)
-        for name in (lr.LIVE_FILE, lr.META_FILE):
-            os.utime(self.path(name), ns=(1_000_000_000, 1_000_000_000))
+        os.utime(self.path(lr.LIVE_FILE), ns=(1_000_000_000, 1_000_000_000))
         return self.snapshot()
 
-    def test_success_writes_both_files(self):
+    def read_live(self):
+        with open(self.path(lr.LIVE_FILE), "rb") as fh:
+            return fh.read()
+
+    def test_success_writes_one_wrapped_file(self):
         body = price_body()
         fake = FakeURLOpen(body)
         self.assertEqual(self.run_refresh(fake), 0)
         self.assertEqual(fake.calls, [(lr.SOURCE_URL, lr.FETCH_TIMEOUT_S)])
-        with open(self.path(lr.LIVE_FILE), "rb") as fh:
-            self.assertEqual(fh.read(), body)
-        with open(self.path(lr.META_FILE), encoding="utf-8") as fh:
-            meta = json.load(fh)
-        self.assertEqual(meta, {
-            "fetched_at": "2026-09-24T03:04:05Z",
-            "sha256": hashlib.sha256(body).hexdigest(),
-            "bytes": len(body),
-            "source_url": lr.SOURCE_URL,
-        })
-        for name in (lr.LIVE_FILE, lr.META_FILE):
-            self.assertEqual(stat.S_IMODE(os.stat(self.path(name)).st_mode), 0o600, name)
+        data = self.read_live()
+        doc = json.loads(data)
+        self.assertEqual(list(doc), ["fetched_at", "source_url", "sha256", "bytes", "prices"])
+        self.assertEqual(doc["fetched_at"], "2026-09-24T03:04:05Z")
+        self.assertEqual(doc["source_url"], lr.SOURCE_URL)
+        self.assertEqual(doc["sha256"], hashlib.sha256(body).hexdigest())
+        self.assertEqual(doc["bytes"], len(body))
+        self.assertEqual(doc["prices"], json.loads(body))
+        self.assertIn(b'"prices": ' + body + b"}", data)  # spliced verbatim
+        self.assertEqual(stat.S_IMODE(os.stat(self.path(lr.LIVE_FILE)).st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(os.stat(self.cdir).st_mode), 0o700)
-        self.assertEqual(sorted(os.listdir(self.cdir)), [lr.LIVE_FILE, lr.META_FILE])
+        self.assertEqual(os.listdir(self.cdir), [lr.LIVE_FILE])
+
+    def test_prices_keep_their_decimal_text(self):
+        body = price_body().replace(b"3e-06", b"0.0000030000000000000001", 1)
+        self.assertEqual(self.run_refresh(FakeURLOpen(body)), 0)
+        self.assertIn(b"0.0000030000000000000001", self.read_live())
 
     def test_source_url_is_the_snapshot_source(self):
         meta_path = os.path.join(HERE, "..", "..", "internal", "pricing", "snapshot_meta.json")
@@ -125,33 +154,64 @@ class RefreshTests(QuietTest):
     def test_unchanged_sha_writes_nothing(self):
         before = self.seed()
         self.assertEqual(self.run_refresh(FakeURLOpen(price_body(rate=1e-06))), 0)
-        self.assertEqual(self.snapshot(), before)  # bytes AND mtimes unchanged
+        self.assertEqual(self.snapshot(), before)  # content AND mtime unchanged
 
-    def test_changed_body_replaces_both(self):
+    def test_changed_body_replaces_the_file(self):
         before = self.seed()
         body = price_body(rate=2e-06)
         self.assertEqual(self.run_refresh(FakeURLOpen(body)), 0)
-        after = self.snapshot()
-        self.assertEqual(after[lr.LIVE_FILE][0], body)
-        self.assertNotEqual(after[lr.LIVE_FILE][1], before[lr.LIVE_FILE][1])
-        meta = json.loads(after[lr.META_FILE][0])
-        self.assertEqual(meta["sha256"], hashlib.sha256(body).hexdigest())
+        self.assertNotEqual(self.snapshot(), before)
+        doc = json.loads(self.read_live())
+        self.assertEqual(doc["sha256"], hashlib.sha256(body).hexdigest())
+        self.assertEqual(doc["prices"], json.loads(body))
 
-    def test_damaged_copy_with_matching_meta_is_refreshed(self):
-        self.seed()
-        with open(self.path(lr.LIVE_FILE), "wb") as fh:
-            fh.write(b"{}")
+    def test_matching_sha_in_a_file_that_does_not_parse_is_refreshed(self):
         body = price_body(rate=1e-06)
-        self.assertEqual(self.run_refresh(FakeURLOpen(body)), 0)
-        with open(self.path(lr.LIVE_FILE), "rb") as fh:
-            self.assertEqual(fh.read(), body)
+        sha = hashlib.sha256(body).hexdigest()
+        for name, damaged in (
+            ("truncated", None),
+            ("no prices", json.dumps({"sha256": sha}).encode()),
+            ("prices not an object", json.dumps({"sha256": sha, "prices": [1]}).encode()),
+            ("old format", body),
+        ):
+            with self.subTest(name):
+                self.seed()
+                if damaged is None:
+                    damaged = self.read_live()[:-100]
+                    self.assertIn(sha.encode(), damaged)
+                with open(self.path(lr.LIVE_FILE), "wb") as fh:
+                    fh.write(damaged)
+                self.assertEqual(self.run_refresh(FakeURLOpen(body)), 0)
+                doc = json.loads(self.read_live())
+                self.assertEqual((doc["sha256"], doc["prices"]), (sha, json.loads(body)))
 
-    def assert_failure_leaves_files(self, fake, want_stderr):
+    def test_stale_meta_file_is_removed(self):
+        for name, seed_first in (("on a refresh", False), ("when unchanged", True)):
+            with self.subTest(name):
+                if seed_first:
+                    self.seed()
+                os.makedirs(self.cdir, exist_ok=True)
+                with open(self.path(lr.STALE_META_FILE), "w", encoding="utf-8") as fh:
+                    fh.write('{"sha256": "00"}\n')
+                self.assertEqual(self.run_refresh(FakeURLOpen(price_body(rate=1e-06))), 0)
+                self.assertEqual(os.listdir(self.cdir), [lr.LIVE_FILE])
+
+    def test_stale_meta_file_is_kept_on_failure(self):
+        self.seed()
+        with open(self.path(lr.STALE_META_FILE), "w", encoding="utf-8") as fh:
+            fh.write("{}\n")
+        self.assertEqual(self.run_refresh(FakeURLOpen(b"nope")), 1)
+        self.assertTrue(os.path.exists(self.path(lr.STALE_META_FILE)))
+
+    def assert_failure_leaves_files(self, fake, want_stderr, during=None):
+        """Seed a good file, run a failing refresh (inside the `during`
+        context, if any), and require the config dir to be unchanged."""
         before = self.seed()
         err = io.StringIO()
         orig, lr.sys.stderr = lr.sys.stderr, err
         try:
-            self.assertEqual(self.run_refresh(fake), 1)
+            with during or contextlib.nullcontext():
+                self.assertEqual(self.run_refresh(fake), 1)
         finally:
             lr.sys.stderr = orig
         self.assertEqual(self.snapshot(), before)  # untouched, no tmp file
@@ -182,27 +242,33 @@ class RefreshTests(QuietTest):
     def test_http_status_leaves_files(self):
         self.assert_failure_leaves_files(FakeURLOpen(price_body(), status=203), "HTTP 203")
 
+    def test_non_utf8_body_leaves_files(self):
+        body = price_body().replace(b"model-0001", b"model-\xff001", 1)
+        self.assert_failure_leaves_files(FakeURLOpen(body), "UnicodeDecodeError")
+
+    def test_oversized_body_leaves_files(self):
+        endless = EndlessResponse()
+        self.assert_failure_leaves_files(FakeURLOpen(endless), "exceeds %d bytes" % lr.MAX_BYTES)
+        self.assertEqual(lr.MAX_BYTES, 64 * 1024 * 1024)
+        self.assertEqual(endless.reads, [lr.MAX_BYTES + 1])  # one sentinel byte past the bound
+
     def test_first_run_failure_creates_nothing(self):
         self.assertEqual(lr.run_refresh(cdir=self.cdir, urlopen=FakeURLOpen(b"nope"), now=NOW), 1)
         self.assertFalse(os.path.exists(self.cdir))
 
-    def test_write_failure_removes_tmp(self):
-        before = self.seed()
-        real_replace = lr.os.replace
-
-        def failing_replace(src, dst):
+    def assert_write_failure_leaves_files(self, target):
+        def fail(*args, **kw):
             raise OSError(28, "No space left on device")
 
-        lr.os.replace = failing_replace
-        err = io.StringIO()
-        orig, lr.sys.stderr = lr.sys.stderr, err
-        try:
-            self.assertEqual(self.run_refresh(FakeURLOpen(price_body(rate=2e-06))), 1)
-        finally:
-            lr.os.replace = real_replace
-            lr.sys.stderr = orig
-        self.assertEqual(self.snapshot(), before)  # no tmp file left behind
-        self.assertIn("No space left", err.getvalue())
+        self.assert_failure_leaves_files(FakeURLOpen(price_body(rate=2e-06)), "No space left",
+                                         during=unittest.mock.patch.object(lr.os, target, fail))
+        self.assertEqual(os.listdir(self.cdir), [lr.LIVE_FILE])  # no temp file
+
+    def test_failing_rename_leaves_the_old_file(self):
+        self.assert_write_failure_leaves_files("replace")
+
+    def test_failing_temp_write_leaves_the_old_file(self):
+        self.assert_write_failure_leaves_files("fsync")
 
 
 class InstallTests(QuietTest):
@@ -242,6 +308,21 @@ class InstallTests(QuietTest):
             self.assertIn(line + "\n", tmr)
         self.assertEqual(self.calls, [("daemon-reload",),
                                       ("enable", "--now", "tatitok-litellm-refresh.timer")])
+
+    def test_install_pins_xdg_config_home_only_when_set(self):
+        with unittest.mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "/srv/cfg"}):
+            self.assertEqual(self.install(), 0)
+        self.assertIn("Environment=XDG_CONFIG_HOME=/srv/cfg\n", self.read(self.units()[0]))
+        with unittest.mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "/srv/my cfg"}):
+            self.assertEqual(self.install(), 0)
+        self.assertIn('Environment="XDG_CONFIG_HOME=/srv/my cfg"\n', self.read(self.units()[0]))
+        with unittest.mock.patch.dict(os.environ):
+            os.environ.pop("XDG_CONFIG_HOME", None)
+            self.assertEqual(self.install(), 0)
+        self.assertNotIn("Environment=", self.read(self.units()[0]))
+        with unittest.mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": ""}):
+            self.assertEqual(self.install(), 0)
+        self.assertNotIn("Environment=", self.read(self.units()[0]))
 
     def test_install_is_repeatable_over_its_own_units(self):
         self.assertEqual(self.install(), 0)

@@ -1,12 +1,12 @@
 package pricing
 
-// Live-layer tests: synthetic litellm-live.json + meta pairs in a temp
-// dir. The layer is process-wide, so every test turns it off again.
+// Live-layer tests: synthetic litellm-live.json files in a temp dir.
+// The layer is process-wide, so every test turns it off again.
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,36 +21,62 @@ const liveOnly = "tatitok-live-test-model"
 
 type liveEntry map[string]any
 
-// writeLive writes a file + matching meta pair into dir and returns
-// the live file's path.
+// writeLive writes a litellm-live.json holding entries as its prices
+// into dir and returns its path.
 func writeLive(t *testing.T, dir string, entries map[string]liveEntry, fetchedAt string) string {
 	t.Helper()
-	body, err := json.Marshal(entries)
+	prices, err := json.Marshal(entries)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return writeLiveBody(t, dir, body, fetchedAt)
+	return writeLivePrices(t, dir, prices, fetchedAt)
 }
 
-// writeLiveBody writes body verbatim plus a meta that matches it.
-func writeLiveBody(t *testing.T, dir string, body []byte, fetchedAt string) string {
+// writeLivePrices wraps prices verbatim the way the companion does.
+func writeLivePrices(t *testing.T, dir string, prices []byte, fetchedAt string) string {
 	t.Helper()
-	sum := sha256.Sum256(body)
-	meta, err := json.Marshal(map[string]any{
-		"fetched_at": fetchedAt, "sha256": hex.EncodeToString(sum[:]),
-		"bytes": len(body), "source_url": "https://example.invalid/prices.json",
+	head, err := json.Marshal(map[string]any{
+		"fetched_at": fetchedAt, "source_url": "https://example.invalid/prices.json",
+		"sha256": "not-checked-by-the-hub", "bytes": len(prices),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	doc := append(append(head[:len(head)-1], `, "prices": `...), prices...)
+	return writeLiveFile(t, dir, append(doc, "}\n"...))
+}
+
+// writeLiveFile writes content verbatim as dir's litellm-live.json.
+func writeLiveFile(t *testing.T, dir string, content []byte) string {
+	t.Helper()
 	path := filepath.Join(dir, LiveFile)
-	if err := os.WriteFile(path, body, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, LiveMetaFile), meta, 0o600); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// warnCounter is a slog handler that counts WARN records.
+type warnCounter struct{ n int }
+
+func (w *warnCounter) Enabled(context.Context, slog.Level) bool { return true }
+func (w *warnCounter) WithAttrs([]slog.Attr) slog.Handler       { return w }
+func (w *warnCounter) WithGroup(string) slog.Handler            { return w }
+func (w *warnCounter) Handle(_ context.Context, r slog.Record) error {
+	if r.Level == slog.LevelWarn {
+		w.n++
+	}
+	return nil
+}
+
+// countWarns routes the default logger to a warnCounter until cleanup.
+func countWarns(t *testing.T) *warnCounter {
+	t.Helper()
+	prev := slog.Default()
+	w := &warnCounter{}
+	slog.SetDefault(slog.New(w))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return w
 }
 
 // useLiveForTest turns the layer on for path with a steppable clock and
@@ -155,26 +181,35 @@ func TestLiveNeverTouchesSnapshotKeys(t *testing.T) {
 
 func TestLiveMalformedIsIgnored(t *testing.T) {
 	assertSnapshotLacks(t, liveOnly)
+	good := `{"` + liveOnly + `": {"input_cost_per_token": 2e-06}}`
 	cases := map[string]func(dir string){
 		"not json": func(dir string) {
-			writeLiveBody(t, dir, []byte(`{"`+liveOnly+`": {oops`), "2026-09-24T03:04:05Z")
+			writeLiveFile(t, dir, []byte(`{"fetched_at": "2026-09-24T03:04:05Z", "prices": {oops`))
 		},
 		"not an object": func(dir string) {
-			writeLiveBody(t, dir, []byte(`["`+liveOnly+`"]`), "2026-09-24T03:04:05Z")
+			writeLiveFile(t, dir, []byte(`["`+liveOnly+`"]`))
 		},
-		"meta missing": func(dir string) {
-			_ = os.Remove(filepath.Join(dir, LiveMetaFile))
+		"null": func(dir string) {
+			writeLiveFile(t, dir, []byte(`null`))
 		},
-		"meta sha mismatch": func(dir string) {
-			_ = os.WriteFile(filepath.Join(dir, LiveMetaFile),
-				[]byte(`{"fetched_at":"2026-09-24T03:04:05Z","sha256":"00","bytes":1}`), 0o600)
+		"no prices": func(dir string) {
+			writeLiveFile(t, dir, []byte(`{"fetched_at": "2026-09-24T03:04:05Z"}`))
 		},
-		"meta bad date": func(dir string) {
-			body, _ := os.ReadFile(filepath.Join(dir, LiveFile))
-			sum := sha256.Sum256(body)
-			meta, _ := json.Marshal(map[string]any{"fetched_at": "yesterday",
-				"sha256": hex.EncodeToString(sum[:]), "bytes": len(body)})
-			_ = os.WriteFile(filepath.Join(dir, LiveMetaFile), meta, 0o600)
+		"prices null": func(dir string) {
+			writeLivePrices(t, dir, []byte(`null`), "2026-09-24T03:04:05Z")
+		},
+		"prices an array": func(dir string) {
+			writeLivePrices(t, dir, []byte(`[`+good+`]`), "2026-09-24T03:04:05Z")
+		},
+		"prices a string": func(dir string) {
+			writeLivePrices(t, dir, []byte(`"`+liveOnly+`"`), "2026-09-24T03:04:05Z")
+		},
+		"bad fetched_at": func(dir string) {
+			writeLivePrices(t, dir, []byte(good), "yesterday")
+		},
+		// The earlier two-file format: the bare upstream object.
+		"old format": func(dir string) {
+			writeLiveFile(t, dir, []byte(good))
 		},
 	}
 	for name, spoil := range cases {
@@ -182,18 +217,25 @@ func TestLiveMalformedIsIgnored(t *testing.T) {
 			dir := t.TempDir()
 			path := writeLive(t, dir, map[string]liveEntry{liveOnly: newModelRates}, "2026-09-24T03:04:05Z")
 			spoil(dir)
-			useLiveForTest(t, path)
+			warns := countWarns(t)
+			clock := useLiveForTest(t, path)
 			if q := resolve(t, "acme", liveOnly, liveOnly, nil); q.Basis != BasisUnknown {
 				t.Fatalf("%s: %+v, want unknown (layer empty)", name, q)
 			}
 			if q := resolve(t, "anthropic", "claude-sonnet-4-6", "claude-sonnet-4-6", nil); q.Basis != BasisAPIPrice {
 				t.Fatalf("%s: snapshot pricing broke: %+v", name, q)
 			}
+			// The unchanged bad file is not re-read, so it warns once.
+			*clock = clock.Add(2 * liveCheckEvery)
+			resolve(t, "acme", liveOnly, liveOnly, nil)
+			if warns.n != 1 {
+				t.Fatalf("%s: %d WARNs, want 1", name, warns.n)
+			}
 		})
 	}
 	// One unusable entry skips that entry, not the layer.
 	path := writeLive(t, t.TempDir(), map[string]liveEntry{
-		liveOnly:                    newModelRates,
+		liveOnly:                     newModelRates,
 		"tatitok-live-test-negative": {"input_cost_per_token": -1e-06},
 	}, "2026-09-24T03:04:05Z")
 	useLiveForTest(t, path)
@@ -215,10 +257,8 @@ func TestLiveReloadsOnChange(t *testing.T) {
 		"input_cost_per_token": 3e-06, "output_cost_per_token": 9e-06,
 	}}, "2026-09-25T03:04:05Z")
 	later := time.Now().Add(time.Hour)
-	for _, p := range []string{path, filepath.Join(dir, LiveMetaFile)} {
-		if err := os.Chtimes(p, later, later); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
 	}
 
 	// Within the minute: no stat, the old layer answers.
@@ -239,6 +279,22 @@ func TestLiveReloadsOnChange(t *testing.T) {
 	*clock = clock.Add(time.Minute)
 	if q := resolve(t, "acme", liveOnly, liveOnly, nil); q.Basis != BasisUnknown {
 		t.Fatalf("after removal: %+v, want unknown", q)
+	}
+}
+
+// The earlier format's meta file is no longer read: a mismatched one
+// beside a good file changes nothing.
+func TestLiveIgnoresStaleMetaFile(t *testing.T) {
+	assertSnapshotLacks(t, liveOnly)
+	dir := t.TempDir()
+	path := writeLive(t, dir, map[string]liveEntry{liveOnly: newModelRates}, "2026-09-24T03:04:05Z")
+	stale := []byte(`{"fetched_at":"2020-01-01T00:00:00Z","sha256":"00","bytes":1}`)
+	if err := os.WriteFile(filepath.Join(dir, "litellm-live.meta.json"), stale, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	useLiveForTest(t, path)
+	if q := resolve(t, "acme", liveOnly, liveOnly, nil); q.Basis != BasisAPIPrice || q.Snapshot != "litellm-live-2026-09-24" {
+		t.Fatalf("beside a stale meta file: %+v", q)
 	}
 }
 

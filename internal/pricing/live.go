@@ -2,9 +2,12 @@ package pricing
 
 // The live layer: an ADD-ONLY price source BELOW the vendored snapshot.
 // The companion script (extension/litellm-refresh) downloads LiteLLM's
-// price file daily to $XDG_CONFIG_HOME/tatitok/litellm-live.json (+
-// litellm-live.meta.json); the binary itself still makes no network
-// calls — it only reads that file.
+// price file daily to $XDG_CONFIG_HOME/tatitok/litellm-live.json; the
+// binary itself still makes no network calls — it only reads that file.
+// The file is one JSON object, {"fetched_at", "source_url", "sha256",
+// "bytes", "prices"}, where prices is the upstream object unchanged; the
+// companion replaces it with a single atomic rename, so a reader sees
+// either the old file or the new one, never half of either.
 //
 // Add-only, two ways: a key the vendored file carries (priced or not)
 // is ignored whatever the live rate, and the layer is consulted only
@@ -12,21 +15,19 @@ package pricing
 // provider/family) misses — so an event the snapshot prices is never
 // touched. Owner overrides and the local-provider rule keep their
 // precedence over both. Events it prices carry price_snapshot
-// "litellm-live-<date>", the UTC date of the meta's fetched_at; the
+// "litellm-live-<date>", the UTC date of the file's fetched_at; the
 // rates land in price_rates as usual. Only billing resolution consults
 // it: free-basis equivalents and reference targets stay snapshot +
 // overrides (reference targets are validated at load, which must not
 // depend on a file that changes daily).
 //
-// A missing or malformed file or meta (including a meta whose sha256 or
-// bytes do not match the file) leaves the layer empty with one WARN —
-// never a startup failure. A running process picks up a new file
-// without restart: resolution stats both files at most once a minute
-// and reloads when the mtime or size of either changed.
+// A missing or unusable file (not JSON, no "prices" object, a bad
+// fetched_at) leaves the layer empty with one WARN — never a startup
+// failure. A running process picks up a new file without restart:
+// resolution stats it at most once a minute and reloads when its mtime
+// or size changed.
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -36,12 +37,8 @@ import (
 	"time"
 )
 
-// LiveFile and LiveMetaFile are the companion's outputs, next to
-// prices.json.
-const (
-	LiveFile     = "litellm-live.json"
-	LiveMetaFile = "litellm-live.meta.json"
-)
+// LiveFile is the companion's output, next to prices.json.
+const LiveFile = "litellm-live.json"
 
 // liveCheckEvery throttles the reload stat.
 const liveCheckEvery = time.Minute
@@ -55,11 +52,11 @@ func LivePath(getenv func(string) string, home string) string {
 	return filepath.Join(filepath.Dir(OverridesPath(getenv, home)), LiveFile)
 }
 
-type liveMeta struct {
-	FetchedAt string `json:"fetched_at"`
-	SHA256    string `json:"sha256"`
-	Bytes     int64  `json:"bytes"`
-	SourceURL string `json:"source_url"`
+// liveDoc is the part of the file the hub reads; source_url, sha256 and
+// bytes serve the companion's unchanged check and whoever reads the file.
+type liveDoc struct {
+	FetchedAt string          `json:"fetched_at"`
+	Prices    json.RawMessage `json:"prices"`
 }
 
 // fileStamp is what the reload check compares: existence, size, mtime.
@@ -80,48 +77,46 @@ func stampOf(path string) fileStamp {
 // liveLayer is the process-wide layer; mu guards every field (lookups
 // run only on snapshot misses, so the lock is off the hot path).
 type liveLayer struct {
-	mu       sync.Mutex
-	path     string // "" = layer off
-	metaPath string
-	stamps   [2]fileStamp
-	checked  time.Time
-	rates    map[string]Rates // only keys the vendored snapshot lacks
-	version  string           // "litellm-live-<date>"
+	mu      sync.Mutex
+	path    string // "" = layer off
+	stamp   fileStamp
+	checked time.Time
+	rates   map[string]Rates // only keys the vendored snapshot lacks
+	version string           // "litellm-live-<date>"
 }
 
 var live liveLayer
 
-// UseLive turns the live layer on for path (litellm-live.json; its meta
-// sits beside it) and loads it now; "" turns it off. It never fails:
-// an unusable file leaves the layer empty with one WARN.
+// UseLive turns the live layer on for path (litellm-live.json) and
+// loads it now; "" turns it off. It never fails: an unusable file
+// leaves the layer empty with one WARN.
 func UseLive(path string) {
 	loadOnce.Do(load)
 	live.mu.Lock()
 	defer live.mu.Unlock()
-	live.path, live.metaPath = path, ""
+	live.path = path
 	live.rates, live.version = nil, ""
-	live.stamps = [2]fileStamp{}
+	live.stamp = fileStamp{}
 	if path == "" {
 		return
 	}
-	live.metaPath = filepath.Join(filepath.Dir(path), LiveMetaFile)
 	live.reload(true)
 }
 
-// reload re-reads the pair when forced, or — checked at most once per
-// liveCheckEvery — when either file's stamp changed. Caller holds mu.
+// reload re-reads the file when forced, or — checked at most once per
+// liveCheckEvery — when its stamp changed. Caller holds mu.
 func (l *liveLayer) reload(force bool) {
 	now := liveNow()
 	if !force && now.Sub(l.checked) < liveCheckEvery {
 		return
 	}
 	l.checked = now
-	stamps := [2]fileStamp{stampOf(l.path), stampOf(l.metaPath)}
-	if !force && stamps == l.stamps {
+	stamp := stampOf(l.path)
+	if !force && stamp == l.stamp {
 		return
 	}
-	l.stamps = stamps
-	rates, version, skipped, err := readLive(l.path, l.metaPath)
+	l.stamp = stamp
+	rates, version, skipped, err := readLive(l.path)
 	if err != nil {
 		l.rates, l.version = nil, ""
 		slog.Warn("pricing: live price layer empty — snapshot only", "path", l.path, "err", err)
@@ -149,35 +144,29 @@ func (l *liveLayer) lookup(provider, model, family string) (r Rates, version str
 	return Rates{}, "", false
 }
 
-// readLive loads the file + meta pair. The meta must match the file
-// (sha256 and bytes) so the provenance date belongs to exactly these
-// rates. Keys the vendored snapshot carries are dropped; so are entries
-// with an unusable price (counted in skipped — one bad upstream entry
-// never empties the layer).
-func readLive(path, metaPath string) (rates map[string]Rates, version string, skipped int, err error) {
+// readLive loads the file: fetched_at dates the provenance, prices holds
+// the upstream entries. Keys the vendored snapshot carries are dropped;
+// so are entries with an unusable price (counted in skipped — one bad
+// upstream entry never empties the layer).
+func readLive(path string) (rates map[string]Rates, version string, skipped int, err error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", 0, err
 	}
-	metaBody, err := os.ReadFile(metaPath)
-	if err != nil {
-		return nil, "", 0, err
+	var doc liveDoc
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return nil, "", 0, fmt.Errorf("%s: %w", LiveFile, err)
 	}
-	var meta liveMeta
-	if err := json.Unmarshal(metaBody, &meta); err != nil {
-		return nil, "", 0, fmt.Errorf("%s: %w", LiveMetaFile, err)
-	}
-	fetched, err := time.Parse(time.RFC3339, meta.FetchedAt)
-	if err != nil {
-		return nil, "", 0, fmt.Errorf("%s: fetched_at: %w", LiveMetaFile, err)
-	}
-	sum := sha256.Sum256(body)
-	if got := hex.EncodeToString(sum[:]); got != meta.SHA256 || int64(len(body)) != meta.Bytes {
-		return nil, "", 0, fmt.Errorf("%s does not match %s (sha256/bytes differ)", LiveMetaFile, LiveFile)
+	if len(doc.Prices) == 0 {
+		return nil, "", 0, fmt.Errorf("%s: no \"prices\" object", LiveFile)
 	}
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, "", 0, fmt.Errorf("%s: %w", LiveFile, err)
+	if err := json.Unmarshal(doc.Prices, &raw); err != nil || raw == nil {
+		return nil, "", 0, fmt.Errorf("%s: \"prices\" is not an object", LiveFile)
+	}
+	fetched, err := time.Parse(time.RFC3339, doc.FetchedAt)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("%s: fetched_at: %w", LiveFile, err)
 	}
 	rates = make(map[string]Rates)
 	for key, entry := range raw {
