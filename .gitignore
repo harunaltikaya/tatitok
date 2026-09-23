@@ -41,6 +41,7 @@ Thumbs.db
 # map lives inside testdata/fixtures/.
 *.local.json
 *.local.md
+docs/private/
 
 # Full-history ccusage expectations keep REAL session/message ids — owner
 # ruling: zero real identifiers anywhere in the committed tree, no
