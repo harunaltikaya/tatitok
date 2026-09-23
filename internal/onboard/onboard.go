@@ -45,8 +45,8 @@ var Templates = map[string]ProviderTemplate{
 		Window:  "5h", WindowStart: "exact", Detectable: true,
 	},
 	// Google AI Pro (agy / Antigravity CLI): 5h + weekly windows like
-	// claude-max; the tier is user-declared (agy's status line names the
-	// plan_tier but tatitok has no agy adapter yet, so nothing is read).
+	// claude-max; the tier is user-declared (agy's status line names a
+	// plan_tier, but onboarding detection does not read it).
 	// WindowStart "floored" is the default, unverified for Google.
 	"google": {
 		Arg: "google", SnapshotKey: "google", PlanName: "google-ai-pro",

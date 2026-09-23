@@ -76,13 +76,14 @@ func Detect(probe adapters.Probe) Detection {
 		d.Claude.SubscriptionSignal = "no claude-code logs found"
 	}
 
-	// Google / agy — not derivable either: tatitok reads no agy log yet
-	// (the adapter is a later round), so the tier is always the user's
-	// declaration.
+	// Google / agy — the tier is always the user's declaration. The agy
+	// adapter ingests usage from the statusLine hook's log; agy's status
+	// object also names a plan_tier (a display label), but detection does
+	// not read it, so nothing here is inferred.
 	d.Google = ProviderDetection{
 		Provider:           "google",
 		DetectedTier:       "",
-		Source:             "not derivable — no agy adapter yet; declare your Google AI tier",
+		Source:             "not auto-detected — the agy adapter reads usage, not your plan; declare your Google AI tier",
 		SubscriptionSignal: "unknown (nothing read)",
 	}
 	return d

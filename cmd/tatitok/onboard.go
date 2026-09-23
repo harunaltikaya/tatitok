@@ -34,7 +34,8 @@ Detection (read-only):
   (payload.rate_limits.plan_type) and pre-fills --codex.
   Claude tier is NOT detectable (service_tier is the API serving class, not
   your subscription) — you must choose it; tatitok never guesses it.
-  Google AI tier is NOT detectable either (no agy adapter yet) — choose it.
+  Google AI tier is NOT auto-detected (the agy adapter reads usage, not your
+  plan) — choose it.
 
 Prices default to the published consumer list price for the tier (tatitok's
 embedded tier-prices snapshot) and are overridable with --claude-price /
