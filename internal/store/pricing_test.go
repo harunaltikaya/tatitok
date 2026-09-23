@@ -5,7 +5,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -129,6 +132,63 @@ func TestRecomputePricing(t *testing.T) {
 	}
 	if res.Repriced != 0 {
 		t.Fatalf("second run repriced %d, want 0", res.Repriced)
+	}
+}
+
+// recompute --pricing resolves through the add-only live layer: an
+// event the snapshot cannot price is priced from litellm-live.json with
+// live provenance; a snapshot-priced event is not rewritten.
+func TestRecomputePricingLiveLayer(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	priced := eventH("claude-code", "m1", "r1", "claude-fable-5", "s1", ts,
+		TokenSums{Input: 1000, Output: 100})
+	unknown := eventH("opencode", "m2", "r2", "nonsuch-v0", "s1",
+		ts.Add(time.Minute), TokenSums{Input: 1000, Output: 100})
+	unknown.Provider = "nonsuch"
+	if _, err := s.InsertBatch(ctx, []core.Event{priced, unknown}, testSource(2)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecomputePricing(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"nonsuch-v0": {"input_cost_per_token": 2e-06, "output_cost_per_token": 8e-06}}`)
+	sum := sha256.Sum256(body)
+	dir := t.TempDir()
+	meta := fmt.Sprintf(`{"fetched_at": "2026-09-24T03:04:05Z", "sha256": %q, "bytes": %d}`,
+		hex.EncodeToString(sum[:]), len(body))
+	if err := os.WriteFile(filepath.Join(dir, pricing.LiveFile), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, pricing.LiveMetaFile), []byte(meta), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pricing.UseLive(filepath.Join(dir, pricing.LiveFile))
+	t.Cleanup(func() { pricing.UseLive("") })
+
+	res, err := s.RecomputePricing(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Repriced != 1 {
+		t.Fatalf("repriced %d, want 1 (only the snapshot miss)", res.Repriced)
+	}
+	var cost int64
+	var basis, snap string
+	if err := s.db.QueryRowContext(ctx, `SELECT cost_usd_micro, cost_basis, price_snapshot
+		FROM usage_events WHERE id = ?`, unknown.ID).Scan(&cost, &basis, &snap); err != nil {
+		t.Fatal(err)
+	}
+	// 1000×$2 + 100×$8 per Mtok = 2000 + 800 micro
+	if cost != 2_800 || basis != "api_price" || snap != "litellm-live-2026-09-24" {
+		t.Fatalf("live-priced row: cost=%d basis=%s snapshot=%s", cost, basis, snap)
+	}
+	version, _ := pricing.SnapshotVersion()
+	if err := s.db.QueryRowContext(ctx, `SELECT price_snapshot FROM usage_events WHERE id = ?`,
+		priced.ID).Scan(&snap); err != nil || snap != version {
+		t.Fatalf("snapshot-priced row: %q (err %v), want %q", snap, err, version)
 	}
 }
 

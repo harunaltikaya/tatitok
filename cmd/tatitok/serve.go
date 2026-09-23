@@ -35,6 +35,9 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The live layer re-reads litellm-live.json on change (stat at most
+	// once a minute), so a running hub prices new models without restart.
+	useLivePrices(probe)
 	// Detect watch targets up front; the startup line reports the roots.
 	// No roots is not an error for a server — sessions may appear after
 	// it starts (and a later serve restart picks the harness up).

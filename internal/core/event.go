@@ -80,8 +80,9 @@ type Event struct {
 	CostUSDMicro *int64 `json:"cost_usd_micro,omitempty"`
 	// CostBasis: api_price | plan_included | local | free | unknown.
 	CostBasis string `json:"cost_basis,omitempty"`
-	// PriceSnapshot is the price-snapshot version (or "override") that
-	// priced this event (FR-9.5).
+	// PriceSnapshot is the price-snapshot version (or "override", or
+	// "litellm-live-<date>" for the add-only live layer) that priced this
+	// event (FR-9.5).
 	PriceSnapshot string `json:"price_snapshot,omitempty"`
 	// PriceRates is the JSON-encoded unit rates used, integer micro-USD
 	// per million tokens per component (FR-9.5); for free-basis events it

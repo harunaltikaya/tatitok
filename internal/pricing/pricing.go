@@ -4,7 +4,9 @@
 // arithmetic: snapshot prices (USD per token, decimal) are converted
 // EXACTLY to integer micro-USD per million tokens at load via big.Rat;
 // no network calls at runtime or in tests (the snapshot refresh is an
-// owner ceremony — see snapshot_meta.json).
+// owner ceremony — see snapshot_meta.json). Below the snapshot sits the
+// add-only live layer (live.go): a local copy of the same upstream file,
+// downloaded by a companion script, pricing only keys the snapshot lacks.
 //
 // Costs are class `derived` (deterministic interpretation of exact
 // token counts); the event's token accuracy class is untouched.
@@ -90,8 +92,9 @@ type Quote struct {
 	Basis Basis
 	// Rates is nil exactly when Basis is unknown.
 	Rates *Rates
-	// Snapshot records what priced the event: the snapshot_version, or
-	// "override" when the user override file supplied the rates.
+	// Snapshot records what priced the event: the snapshot_version,
+	// "override" when the user override file supplied the rates, or
+	// "litellm-live-<date>" when the live layer did.
 	Snapshot string
 }
 
@@ -116,6 +119,9 @@ var (
 	loadErr     error
 	snapVersion string
 	snapRates   map[string]Rates
+	// snapKeys holds EVERY key of the vendored file, priced or not: the
+	// live layer ignores any key the snapshot carries (add-only).
+	snapKeys map[string]bool
 )
 
 // ratMicroHalfUp rounds a non-negative rational micro-USD amount half up
@@ -170,42 +176,47 @@ func load() {
 		loadErr = fmt.Errorf("pricing: prices_snapshot.json: %w", loadErr)
 		return
 	}
+	snapKeys = make(map[string]bool, len(raw))
 	snapRates = make(map[string]Rates, len(raw))
 	for key, body := range raw {
-		if key == "sample_spec" { // LiteLLM's schema-documentation entry
-			continue
-		}
-		var e snapshotEntry
-		if err := json.Unmarshal(body, &e); err != nil {
-			continue // entries with non-numeric price fields are not chat prices
-		}
-		var r Rates
-		var err error
-		if r.Input, err = usdPerTokenToMicroPerMtok(e.Input); err != nil {
+		snapKeys[key] = true
+		r, ok, err := parseEntry(key, body)
+		if err != nil {
 			loadErr = fmt.Errorf("pricing: %s: %w", key, err)
 			return
 		}
-		if r.Output, err = usdPerTokenToMicroPerMtok(e.Output); err != nil {
-			loadErr = fmt.Errorf("pricing: %s: %w", key, err)
-			return
+		if ok {
+			snapRates[key] = r
 		}
-		if r.CacheWrite, err = usdPerTokenToMicroPerMtok(e.CacheWrite); err != nil {
-			loadErr = fmt.Errorf("pricing: %s: %w", key, err)
-			return
-		}
-		if r.CacheWrite1h, err = usdPerTokenToMicroPerMtok(e.CacheWrite1h); err != nil {
-			loadErr = fmt.Errorf("pricing: %s: %w", key, err)
-			return
-		}
-		if r.CacheRead, err = usdPerTokenToMicroPerMtok(e.CacheRead); err != nil {
-			loadErr = fmt.Errorf("pricing: %s: %w", key, err)
-			return
-		}
-		if r.IsZero() {
-			continue // no usable token prices (embedding/audio-only, etc.)
-		}
-		snapRates[key] = r
 	}
+}
+
+// parseEntry reads one LiteLLM price entry (shared by the snapshot and
+// the live layer). ok is false for entries that carry no usable token
+// prices: the schema-documentation key, entries whose price fields are
+// not numbers (not chat prices), and all-zero rates (embedding/audio-
+// only, etc.). err reports a price that is present but unusable
+// (unparseable, negative, out of range).
+func parseEntry(key string, body json.RawMessage) (r Rates, ok bool, err error) {
+	if key == "sample_spec" { // LiteLLM's schema-documentation entry
+		return Rates{}, false, nil
+	}
+	var e snapshotEntry
+	if json.Unmarshal(body, &e) != nil {
+		return Rates{}, false, nil
+	}
+	for _, c := range []struct {
+		n   json.Number
+		dst *int64
+	}{
+		{e.Input, &r.Input}, {e.Output, &r.Output}, {e.CacheWrite, &r.CacheWrite},
+		{e.CacheWrite1h, &r.CacheWrite1h}, {e.CacheRead, &r.CacheRead},
+	} {
+		if *c.dst, err = usdPerTokenToMicroPerMtok(c.n); err != nil {
+			return Rates{}, false, err
+		}
+	}
+	return r, !r.IsZero(), nil
 }
 
 // SnapshotVersion returns the embedded snapshot's version string.
@@ -274,7 +285,10 @@ func snapshotLookup(provider, model, family string) (Rates, bool) {
 //     "override+regime:<from>" vs plain "override".
 //  2. local provider (vllm*) → basis local, cost 0
 //  3. snapshot — model, provider/model, family, provider/family
-//  4. unknown (cost stays NULL; never guessed)
+//  4. live layer (live.go) — same key chain, only keys the snapshot
+//     lacks, only when step 3 missed entirely; provenance
+//     "litellm-live-<date>"
+//  5. unknown (cost stays NULL; never guessed)
 //
 // Basis `free` is NOT resolved here: per the owner's ruling it requires
 // a source-reported cost of exactly $0, which only Apply can see (it
@@ -308,6 +322,9 @@ func Resolve(provider, model, family string, ts time.Time, ov *Overrides) (Quote
 	}
 	if r, ok := snapshotLookup(provider, model, family); ok {
 		return Quote{Basis: BasisAPIPrice, Rates: &r, Snapshot: snapVersion}, nil
+	}
+	if r, version, ok := live.lookup(provider, model, family); ok {
+		return Quote{Basis: BasisAPIPrice, Rates: &r, Snapshot: version}, nil
 	}
 	return Quote{Basis: BasisUnknown, Snapshot: snapVersion}, nil
 }

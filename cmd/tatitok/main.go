@@ -207,6 +207,15 @@ func loadPriceOverrides(probe adapters.Probe) (*pricing.Overrides, error) {
 	return ov, nil
 }
 
+// useLivePrices turns on the add-only live price layer
+// (litellm-live.json beside prices.json, written by the
+// extension/litellm-refresh companion) for commands that price events.
+// A missing or malformed file only WARNs — pricing falls back to the
+// snapshot alone.
+func useLivePrices(probe adapters.Probe) {
+	pricing.UseLive(pricing.LivePath(probe.Getenv, probe.HomeDir))
+}
+
 func cmdIngest(args []string) error {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	backfill := fs.Bool("backfill", false, "ingest full history from detected log roots")
@@ -239,6 +248,7 @@ func cmdIngest(args []string) error {
 	if err != nil {
 		return err
 	}
+	useLivePrices(probe)
 	ctx := context.Background()
 	ingested, skippedTotal := 0, 0
 	for _, a := range selected {
@@ -531,10 +541,12 @@ func cmdRecomputeModelMap(dbPath string, dryRun bool) error {
 		return nil
 	}
 
-	overrides, err := loadPriceOverrides(realProbe())
+	probe := realProbe()
+	overrides, err := loadPriceOverrides(probe)
 	if err != nil {
 		return err
 	}
+	useLivePrices(probe)
 	slog.Info("recompute --model-map starting", "db", dbPath,
 		"map_version", plan.CurrentVersion, "stale_events", plan.Stale,
 		"family_changes", plan.FamilyChanges)
@@ -552,7 +564,8 @@ func cmdRecomputeModelMap(dbPath string, dryRun bool) error {
 }
 
 // cmdRecomputePricing re-derives the cost columns for the whole history
-// under the current snapshot + overrides (FR-9.5 explicit recompute).
+// under the current snapshot + overrides + live layer (FR-9.5 explicit
+// recompute).
 func cmdRecomputePricing(dbPath string, dryRun bool) error {
 	st, err := openStore(dbPath)
 	if err != nil {
@@ -578,10 +591,12 @@ func cmdRecomputePricing(dbPath string, dryRun bool) error {
 		return nil
 	}
 
-	overrides, err := loadPriceOverrides(realProbe())
+	probe := realProbe()
+	overrides, err := loadPriceOverrides(probe)
 	if err != nil {
 		return err
 	}
+	useLivePrices(probe)
 	slog.Info("recompute --pricing starting", "db", dbPath,
 		"snapshot", version, "overrides", overrides.Len())
 	res, err := st.RecomputePricing(ctx, overrides)
