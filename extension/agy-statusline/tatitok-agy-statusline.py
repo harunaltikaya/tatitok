@@ -58,7 +58,9 @@ STDIN_LIMIT = 256 * 1024
 # hook wherever it is — it prints "tatitok" and exits 0 regardless. The log
 # line is appended in ONE os.write so an interrupt cannot land inside it; a
 # short write (the kernel's call) is terminated with "\n" so at most one
-# malformed line results, which the readers count as a parse error.
+# malformed line results, which the readers count as a parse error. The alarm
+# is held (blocked) for the append itself, so it lands only after the line is
+# complete or terminated.
 STDIN_DEADLINE_S = 0.100
 HOOK_DEADLINE_S = 0.190
 
@@ -323,18 +325,27 @@ def append_line(path, data):
     a budget interrupt can only fall before or after the line, never inside
     it. A short write leaves a partial line: terminate it with one "\n"
     (best effort) so the damage is one malformed line the readers skip as a
-    parse error, then treat the append as a failure."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, stat.S_IRUSR | stat.S_IWUSR)
+    parse error, then treat the append as a failure.
+
+    SIGALRM is blocked for the whole body: an alarm landing with a short
+    write would otherwise raise Budget before the "\n" and glue the partial
+    line to the next record. A pending alarm is delivered when the previous
+    mask is restored, after the line is complete or terminated."""
+    prev_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
     try:
-        n = os.write(fd, data)
-        if n != len(data):
-            try:
-                os.write(fd, b"\n")
-            except OSError:
-                pass
-            raise OSError("short write to %s (%d of %d bytes)" % (path, n, len(data)))
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, stat.S_IRUSR | stat.S_IWUSR)
+        try:
+            n = os.write(fd, data)
+            if n != len(data):
+                try:
+                    os.write(fd, b"\n")
+                except OSError:
+                    pass
+                raise OSError("short write to %s (%d of %d bytes)" % (path, n, len(data)))
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        signal.pthread_sigmask(signal.SIG_SETMASK, prev_mask)
 
 
 def totals_of(obj):

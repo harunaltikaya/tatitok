@@ -6,6 +6,7 @@ import io
 import json
 import multiprocessing
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -441,6 +442,42 @@ class HookTests(unittest.TestCase):
         self.assertEqual(calls, [b'{"x":1}\n', b"\n"])
         self.assertEqual(read_text(p), '{"x\n')
         # and the file is still one-line-per-record: the next append is clean
+        sl.append_line(p, b'{"y":2}\n')
+        self.assertEqual(read_text(p).split("\n"), ['{"x', '{"y":2}', ""])
+
+    def test_append_line_short_write_with_alarm_pending_terminates_line(self):
+        # Live log line 1339: a partial record glued to the next one, written
+        # after the terminator landed. The budget alarm arriving with the short
+        # write raised Budget before the "\n". The fake write lands 3 of 8 bytes
+        # and raises SIGALRM (with run_hook's Budget handler installed) before
+        # it returns; the line must still end in "\n".
+        os.makedirs(self.ddir, mode=0o700)
+        p = os.path.join(self.ddir, "statusline.jsonl")
+        calls = []
+        real_write = os.write
+
+        def short_with_alarm(fd, data):
+            calls.append(bytes(data))
+            if len(data) > 1:
+                n = real_write(fd, data[:3])
+                signal.raise_signal(signal.SIGALRM)
+                return n
+            return real_write(fd, data)
+
+        prev = signal.signal(signal.SIGALRM, sl._budget_alarm)
+        sl.os.write = short_with_alarm
+        try:
+            # the held alarm still ends the hook: Budget, once the line is safe
+            with self.assertRaises(sl.Budget):
+                sl.append_line(p, b'{"x":1}\n')
+        finally:
+            sl.os.write = real_write
+            signal.signal(signal.SIGALRM, prev)
+        self.assertEqual(calls, [b'{"x":1}\n', b"\n"])
+        self.assertEqual(read_text(p), '{"x\n')
+        # the pending alarm was delivered after the append, not swallowed
+        self.assertFalse(signal.SIGALRM in signal.sigpending())
+        self.assertFalse(signal.SIGALRM in signal.pthread_sigmask(signal.SIG_BLOCK, []))
         sl.append_line(p, b'{"y":2}\n')
         self.assertEqual(read_text(p).split("\n"), ['{"x', '{"y":2}', ""])
 
