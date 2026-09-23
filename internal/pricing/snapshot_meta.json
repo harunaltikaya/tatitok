@@ -11,7 +11,8 @@
     "     deliberate follow-up (AS-4: historical costs never change",
     "     silently; per-event snapshots keep old rows honest)",
     "No network calls happen at runtime or in tests; this file is the",
-    "record of the one fetch that produced the committed snapshot."
+    "record of the one fetch that produced the committed snapshot.",
+    "Keys absent here may be priced add-only from litellm-live.json (live.go)."
   ],
   "snapshot_version": "litellm-2026-09-03-723753fa",
   "source_url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",

@@ -96,6 +96,20 @@ That adds a `statusLine` entry to `~/.gemini/antigravity-cli/settings.json`, bac
 
 To remove it, run the same script with `--uninstall`. It deletes the `statusLine` entry only if it's still the tatitok hook, and it keeps the backup.
 
+## New-model prices (optional)
+
+The pinned price snapshot only knows the models that existed when it was taken, so a model released since then shows up as unpriced. The companion in `extension/litellm-refresh/` fills that gap without a rebuild. It's plain Python with the standard library only. Install it with:
+
+```sh
+python3 extension/litellm-refresh/tatitok-litellm-refresh.py --install
+```
+
+That writes a systemd user service and a daily timer to `~/.config/systemd/user/` and enables the timer. Once a day it downloads LiteLLM's price file (the same upstream file the snapshot comes from) to `~/.config/tatitok/litellm-live.json`, under `$XDG_CONFIG_HOME` if you set it, with a small `litellm-live.meta.json` beside it. Run the script with no flags to refresh right away.
+
+It's add-only: tatitok prices an event from that file only when the pinned snapshot has no entry for its model, so no rate the snapshot knows ever changes. The download is the companion's job. The tatitok binary still makes no network calls; it only reads the file, and a running hub picks up a new one without a restart. New events are priced as they arrive, but events already stored as unpriced stay that way until you run `tatitok recompute --pricing`.
+
+To remove it, run the same script with `--uninstall`. It removes the two units only if they're still the ones it wrote.
+
 ## How it works / what's tracked
 
 tatitok reads five coding-agent harnesses from the standard locations they already write to:
@@ -106,7 +120,7 @@ tatitok reads five coding-agent harnesses from the standard locations they alrea
 - **pi** — session logs under `~/.pi/agent/sessions`
 - **Antigravity CLI (agy)** — the log written by tatitok's [agy hook](#the-agy-hook-antigravity-cli), under `~/.local/share/tatitok/agy`
 
-It takes the provider-reported token counts verbatim (no tokenizers, no estimating), stores them in a local SQLite file, and prices them against a pinned snapshot of published rates. For agy, the counts are the differences between agy's own running totals. The rates come from LiteLLM's price list; the current snapshot is from 2026-09-03. Refreshing it is a deliberate maintainer step, never a runtime fetch.
+It takes the provider-reported token counts verbatim (no tokenizers, no estimating), stores them in a local SQLite file, and prices them against a pinned snapshot of published rates. For agy, the counts are the differences between agy's own running totals. The rates come from LiteLLM's price list; the current snapshot is from 2026-09-03. Refreshing it is a deliberate maintainer step, never a runtime fetch. Models newer than the snapshot can also be priced from the optional [daily price file](#new-model-prices-optional), which only adds models the snapshot lacks.
 
 Click into a harness — or any chart — for the detail view: totals for the range you're looking at, then the day-by-day API-equivalent and actual-cost charts.
 
