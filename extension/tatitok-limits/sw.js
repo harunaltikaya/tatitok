@@ -251,6 +251,8 @@ async function pollClaude() {
 // Read EVERY non-null bucket shaped { utilization, resets_at } — five_hour,
 // seven_day, seven_day_sonnet, and whatever else the account exposes. Don't
 // hardcode the set: iterate over present, non-null buckets and label by key.
+// Then read only the "weekly_scoped" entries of the response's limits[] array
+// (e.g. "Fable 7d"), the one thing it carries that the buckets don't.
 const CLAUDE_LABELS = {
   five_hour: "5h",
   seven_day: "7d",
@@ -272,6 +274,28 @@ function normalizeClaude(data) {
           label: CLAUDE_LABELS[key] ?? key,
           usedPercent: Number(bucket.utilization),
           resetAt: Date.parse(bucket.resets_at), // ISO 8601 → epoch ms
+        });
+      }
+    }
+    if (Array.isArray(data.limits)) {
+      for (const entry of data.limits) {
+        if (!entry || entry.kind !== "weekly_scoped") continue;
+        const name = entry.scope?.model?.display_name;
+        const resetAt = Date.parse(entry.resets_at);
+        if (
+          !Number.isFinite(entry.percent) ||
+          !Number.isFinite(resetAt) ||
+          typeof name !== "string" ||
+          name === ""
+        ) {
+          continue;
+        }
+        const label = entry.group === "weekly" ? `${name} 7d` : `${name} ${entry.group}`;
+        if (windows.some((w) => w.label === label)) continue;
+        windows.push({
+          label,
+          usedPercent: Number(entry.percent),
+          resetAt, // ISO 8601 → epoch ms
         });
       }
     }
