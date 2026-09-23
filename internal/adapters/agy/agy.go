@@ -15,6 +15,11 @@
 //     baseline to that line's totals and emits nothing; the next event of
 //     the conversation carries meta.baseline_reset=true;
 //   - a same-totals line (the hook dedupes, but tolerate it) emits nothing;
+//   - event ID = EventID(agy, conversation_id, "<resets>/<total_in>/
+//     <total_out>"), where resets counts the conversation's decreases so
+//     far (its reset epoch): totals reached again after a reset get a new
+//     ID, while appends and malformed lines (which never advance resets)
+//     leave every earlier ID unchanged;
 //   - cache write/read are 0 — the status object's current_usage is the
 //     LAST call of a possibly multi-call turn and cannot be summed
 //     honestly, so it rides along verbatim in meta instead;
@@ -50,7 +55,8 @@ import (
 )
 
 // AdapterVersion is bumped whenever format handling changes.
-const AdapterVersion = 1
+// v2: reset epoch in the event ID (all event IDs changed).
+const AdapterVersion = 2
 
 const (
 	harnessName  = "agy"
@@ -150,6 +156,7 @@ type record struct {
 type baseline struct {
 	in, out int64
 	reset   bool // a decrease was seen since the last emitted event
+	resets  int  // decreases seen so far: the reset epoch in the event ID
 }
 
 // readLine reads one full line of any length.
@@ -265,6 +272,7 @@ func parseLine(line []byte, src adapters.Source, state map[string]*baseline) (co
 	if in < b.in || out < b.out {
 		// /compact or reset: new baseline, nothing billable on this line.
 		b.in, b.out, b.reset = in, out, true
+		b.resets++
 		return core.Event{}, false, nil
 	}
 	if in == b.in && out == b.out {
@@ -311,7 +319,7 @@ func parseLine(line []byte, src adapters.Source, state map[string]*baseline) (co
 
 	return core.Event{
 		ID: core.EventID(harnessName, rec.ConversationID,
-			strconv.FormatInt(in, 10)+"/"+strconv.FormatInt(out, 10)),
+			strconv.Itoa(b.resets)+"/"+strconv.FormatInt(in, 10)+"/"+strconv.FormatInt(out, 10)),
 		TS:          ts.UTC(),
 		Machine:     src.Machine,
 		SourceKind:  core.SourceKindHarnessLog,

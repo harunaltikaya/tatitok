@@ -8,6 +8,7 @@ package agy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/harunaltikaya/tatitok/internal/adapters"
 	"github.com/harunaltikaya/tatitok/internal/core"
+	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
 const fixtureBase = "../../../testdata/fixtures/agy/gx10"
@@ -173,10 +175,13 @@ func TestBackfillFixture(t *testing.T) {
 	if e.TS.Format("2006-01-02T15:04:05.000Z") != "2026-09-03T15:56:03.527Z" {
 		t.Fatalf("ts: %v", e.TS)
 	}
-	if e.ID != core.EventID(harnessName, convB, "22840/102") {
+	if e.ID != core.EventID(harnessName, convB, "0/22840/102") {
 		t.Fatalf("id: %q", e.ID)
 	}
-	// Re-ingesting yields the same IDs (deterministic from the totals).
+	if e := sink.events[3]; e.ID != core.EventID(harnessName, convB, "1/28912/361") {
+		t.Fatalf("post-reset id: %q", e.ID) // epoch 1 after the decrease
+	}
+	// Re-ingesting yields the same IDs (deterministic from epoch + totals).
 	again := &collectSink{t: t}
 	if err := (Adapter{}).BackfillFile(context.Background(), fixtureSource(t), filepath.Join(fixtureSource(t).Root, logFileName), again); err != nil {
 		t.Fatal(err)
@@ -262,6 +267,152 @@ func TestShortWrittenLine(t *testing.T) {
 	if res := sink.results[0]; res.LineCount != 10 || res.ParseErrors != 0 || !res.IncompleteTail || res.Events != 6 {
 		t.Fatalf("tail: %+v", res)
 	}
+}
+
+// synthLine is a SYNTHETIC status line (constructed, no real record
+// behind it) carrying only the fields parseLine reads.
+func synthLine(conv, ts string, in, out int64) string {
+	return fmt.Sprintf(`{"conversation_id":%q,"logged_at":%q,"cwd":"/p",`+
+		`"model":{"display_name":"Gemini 3.8 Flash (Low)"},`+
+		`"context_window":{"total_input_tokens":%d,"total_output_tokens":%d}}`,
+		conv, ts, in, out)
+}
+
+// writeLog writes lines as a hook log in a fresh root.
+func writeLog(t *testing.T, lines []string) adapters.Source {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, logFileName), []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}
+}
+
+func backfill(t *testing.T, src adapters.Source) ([]core.Event, adapters.FileResult) {
+	t.Helper()
+	sink := &collectSink{t: t}
+	if err := (Adapter{}).Backfill(context.Background(), src, sink); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.results) != 1 {
+		t.Fatalf("results: %+v", sink.results)
+	}
+	return sink.events, sink.results[0]
+}
+
+func ids(events []core.Event) []string {
+	out := make([]string, len(events))
+	for i, e := range events {
+		out[i] = e.ID
+	}
+	return out
+}
+
+// Review 0923 HIGH: after a reset, reaching the same totals again used to
+// reuse the earlier event ID (conversation + totals only), so InsertEvents
+// replaced the first row and its usage was lost. The reset epoch keeps the
+// two legitimate increases apart. Synthetic 100/10 -> 0/0 -> 100/10.
+func TestResetEpochIdentity(t *testing.T) {
+	src := writeLog(t, []string{
+		synthLine("c1", "2026-09-03T10:00:00.000Z", 100, 10),
+		synthLine("c1", "2026-09-03T10:01:00.000Z", 0, 0),
+		synthLine("c1", "2026-09-03T10:02:00.000Z", 100, 10),
+	})
+	events, res := backfill(t, src)
+	if res.Events != 2 || len(events) != 2 {
+		t.Fatalf("got %d events: %+v", len(events), res)
+	}
+	if events[0].ID != core.EventID(harnessName, "c1", "0/100/10") ||
+		events[1].ID != core.EventID(harnessName, "c1", "1/100/10") {
+		t.Fatalf("ids: %v", ids(events))
+	}
+	if events[0].ID == events[1].ID {
+		t.Fatal("reset-separated repeated totals share an id")
+	}
+	if events[1].Meta["baseline_reset"] != true || events[1].TokensInput != 100 || events[1].TokensOutput != 10 {
+		t.Fatalf("post-reset event: %+v", events[1])
+	}
+
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+	stored := func() (n, in, out int64) {
+		t.Helper()
+		if err := s.DB().QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(tokens_input),0),
+			COALESCE(SUM(tokens_output),0) FROM usage_events WHERE id IN (?, ?)`,
+			events[0].ID, events[1].ID).Scan(&n, &in, &out); err != nil {
+			t.Fatal(err)
+		}
+		return n, in, out
+	}
+	for pass, wantInserted := range []int{2, 0} { // ingest, then re-ingest
+		sum, err := adapters.IngestBackfill(ctx, s, Adapter{}, []adapters.Source{src}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sum.Emitted != 2 || sum.Inserted != wantInserted || sum.Replaced != 0 {
+			t.Fatalf("pass %d: %+v", pass, sum)
+		}
+		total, err := s.CountEvents(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, in, out := stored(); total != 2 || n != 2 || in != 200 || out != 20 {
+			t.Fatalf("pass %d: %d rows (%d of ours) carrying %d/%d, want 2 rows 200/20", pass, total, n, in, out)
+		}
+	}
+}
+
+// IDs are append-stable: growing the log never changes an earlier event's
+// ID, and a malformed line anywhere (here one shaped like a decrease but
+// with an unparseable timestamp) neither shifts IDs nor advances the reset
+// epoch. Synthetic log: two interleaved conversations, one reset.
+func TestIDStability(t *testing.T) {
+	full := []string{
+		synthLine("c1", "2026-09-03T10:00:00.000Z", 100, 10),
+		synthLine("c2", "2026-09-03T10:00:30.000Z", 5, 1),
+		synthLine("c1", "2026-09-03T10:01:00.000Z", 150, 20),
+		synthLine("c1", "2026-09-03T10:02:00.000Z", 0, 0), // reset
+		synthLine("c2", "2026-09-03T10:02:30.000Z", 9, 2),
+		synthLine("c1", "2026-09-03T10:03:00.000Z", 100, 10),
+		synthLine("c1", "2026-09-03T10:04:00.000Z", 150, 20),
+	}
+	want, _ := backfill(t, writeLog(t, full))
+	if len(want) != 6 {
+		t.Fatalf("full log: %d events", len(want))
+	}
+	seen := map[string]bool{}
+	for _, id := range ids(want) {
+		if seen[id] {
+			t.Fatalf("duplicate id in %v", ids(want))
+		}
+		seen[id] = true
+	}
+
+	t.Run("prefix growth", func(t *testing.T) {
+		for k := 1; k <= len(full); k++ {
+			got, _ := backfill(t, writeLog(t, full[:k]))
+			for i, id := range ids(got) {
+				if id != want[i].ID {
+					t.Fatalf("prefix %d: id %d drifted", k, i)
+				}
+			}
+		}
+	})
+
+	t.Run("malformed middle line", func(t *testing.T) {
+		bad := `{"conversation_id":"c1","logged_at":"not-a-time","context_window":{"total_input_tokens":0,"total_output_tokens":0}}`
+		for at := 0; at <= len(full); at++ {
+			lines := append(append(append([]string{}, full[:at]...), bad), full[at:]...)
+			got, res := backfill(t, writeLog(t, lines))
+			if res.ParseErrors != 1 || strings.Join(ids(got), ",") != strings.Join(ids(want), ",") {
+				t.Fatalf("malformed line at %d: %+v, ids %v", at, res, ids(got))
+			}
+		}
+	})
 }
 
 func mustJSON(t *testing.T, v any) []byte {
