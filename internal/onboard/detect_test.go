@@ -91,3 +91,22 @@ func TestDetectReportsClaudeUnknown(t *testing.T) {
 		t.Fatalf("Claude detection missing source/signal: %+v", det.Claude)
 	}
 }
+
+// TestProliteAlias: Codex logs plan_type "prolite" for the $100 Pro. It
+// resolves to pro_100 with no choice owed; plain "pro" stays ambiguous.
+func TestProliteAlias(t *testing.T) {
+	snap := loadSnap(t)
+	pt, ok := planTypeFromLine([]byte(`{"payload":{"type":"token_count","rate_limits":{"plan_type":"prolite"}}}`))
+	if !ok || pt != "prolite" {
+		t.Fatalf("planTypeFromLine = (%q,%v), want (\"prolite\",true)", pt, ok)
+	}
+	if r := ResolveCodexPlanType(pt, snap); r.Tier != "pro_100" || r.Ambiguous || r.Raw != "prolite" {
+		t.Fatalf("prolite: %+v, want Tier=pro_100 unambiguous", r)
+	}
+	if c := ResolveCodexChoice("", pt, snap); c.NeedChoice || c.Tier != "pro_100" {
+		t.Fatalf("detected prolite w/o flag: %+v, want Tier=pro_100 NeedChoice=false", c)
+	}
+	if r := ResolveCodexPlanType("pro", snap); !r.Ambiguous || r.Tier != "" {
+		t.Fatalf("pro: %+v, want still ambiguous", r)
+	}
+}

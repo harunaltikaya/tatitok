@@ -199,7 +199,7 @@ func TestOnboardDetect(t *testing.T) {
 	var d detectResp
 	getOK(t, h, "/api/onboard/detect", &d)
 
-	if d.SnapshotVersion != "tier-prices-2026-09-24.1" {
+	if d.SnapshotVersion != "tier-prices-2026-09-24.2" {
 		t.Errorf("snapshot_version = %q", d.SnapshotVersion)
 	}
 	if !d.HasUsage || d.HasPlans {

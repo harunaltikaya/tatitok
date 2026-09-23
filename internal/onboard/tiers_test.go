@@ -22,8 +22,8 @@ func TestLoadTierPrices(t *testing.T) {
 		{"openai", "free", "0", "ChatGPT Free"},
 		{"openai", "go", "8", "ChatGPT Go"},
 		{"openai", "plus", "20", "ChatGPT Plus"},
-		{"openai", "pro_100", "100", "ChatGPT Pro $100"},
-		{"openai", "pro_200", "200", "ChatGPT Pro $200"},
+		{"openai", "pro_100", "100", "ChatGPT Pro"},
+		{"openai", "pro_200", "200", "ChatGPT Pro"},
 		{"google", "ai_pro", "20", "Google AI Pro"},
 	}
 	for _, c := range cases {

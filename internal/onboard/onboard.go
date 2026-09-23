@@ -186,6 +186,11 @@ type CodexResolution struct {
 	Note      string   `json:"note"`
 }
 
+// codexPlanTypeAliases maps a logged plan_type that is not a snapshot key to
+// the one tier it names. "prolite" is the $100 Pro (first seen in Codex logs
+// 2026-09-22); "pro" stays ambiguous (see below).
+var codexPlanTypeAliases = map[string]string{"prolite": "pro_100"}
+
 // ResolveCodexPlanType maps a raw plan_type to onboarding guidance.
 func ResolveCodexPlanType(raw string, snap *TierPrices) CodexResolution {
 	raw = strings.TrimSpace(raw)
@@ -200,6 +205,12 @@ func ResolveCodexPlanType(raw string, snap *TierPrices) CodexResolution {
 			Ambiguous: true,
 			Options:   []string{"pro_100", "pro_200"},
 			Note:      "ChatGPT Pro is two price points ($100 and $200), indistinguishable in the Codex log — choose yours",
+		}
+	}
+	// A logged alias that names one priced tier pre-fills that tier.
+	if tier, ok := codexPlanTypeAliases[raw]; ok {
+		if _, ok := snap.Price("openai", tier); ok {
+			return CodexResolution{Raw: raw, Tier: tier, Note: fmt.Sprintf("detected from codex rate_limits.plan_type (%q = %s)", raw, tier)}
 		}
 	}
 	// Exact snapshot key (plus, go, free, or any future addition) pre-fills.
