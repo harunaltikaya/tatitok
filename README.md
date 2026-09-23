@@ -106,7 +106,7 @@ python3 extension/litellm-refresh/tatitok-litellm-refresh.py --install
 
 That writes a systemd user service and a daily timer to `~/.config/systemd/user/` and enables the timer. Once a day it downloads LiteLLM's price file (the same upstream file the snapshot comes from) and saves it, together with the fetch time and source, as a single file: `~/.config/tatitok/litellm-live.json`, under `$XDG_CONFIG_HOME` if you set it. Each refresh replaces that file in one atomic rename, so a failed refresh leaves the previous copy exactly as it was. Run the script with no flags to refresh right away.
 
-It's add-only: tatitok prices an event from that file only when the pinned snapshot has no entry for its model, so no rate the snapshot knows ever changes. The download is the companion's job. The tatitok binary still makes no network calls; it only reads the file, and a running hub picks up a new one without a restart. New events are priced as they arrive, but events already stored as unpriced stay that way until you run `tatitok recompute --pricing`.
+It's add-only: tatitok prices an event from that file only when the pinned snapshot has no entry for its model, so no rate the snapshot knows ever changes. The download is the companion's job. The tatitok binary still makes no network calls; it only reads the file, and a running hub picks up a new one without a restart. The live layer prices new events as they arrive and does not bulk-reprice stored history. `tatitok recompute --pricing` is the explicit way to apply it throughout; re-ingested rows and `tatitok recompute --model-map` pick it up as they run.
 
 To remove it, run the same script with `--uninstall`. It removes the two units only if they're still the ones it wrote.
 
