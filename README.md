@@ -1,6 +1,6 @@
 # tatitok
 
-A local-first dashboard that shows the API-equivalent value of your Claude Code, Codex, and OpenCode usage versus what you actually pay — all on your own machine.
+A local-first dashboard that shows the API-equivalent value of your Claude Code, Codex, OpenCode, pi, and Antigravity CLI usage versus what you actually pay — all on your own machine.
 
 ![tatitok dashboard home — a large green "value extracted" headline reading $1103.62 API-equivalent next to $0.08 actually paid, two usage-limit cards, a daily API-equivalent bar chart, and a value-by-harness donut](docs/images/dashboard.png)
 
@@ -45,7 +45,7 @@ There's one card per provider. The flow:
 
 1. **It pre-fills what it can detect.** Your ChatGPT/Codex tier (Plus, Pro, …) is read straight from your Codex logs and shown already selected, marked with a `✓`.
 
-2. **It asks for what it can't.** Your Claude tier — Free, Pro, Max 5×, or Max 20× — isn't recorded in any log, so the Claude card reads *"choose your plan — not auto-detectable"* and waits for you to pick. Same story for ChatGPT **Pro $100 vs $200**: both look identical in the logs (*"Codex Pro detected — pick $100 or $200"*), so you choose.
+2. **It asks for what it can't.** Your Claude tier — Free, Pro, Max 5×, or Max 20× — isn't recorded in any log, so the Claude card reads *"choose your plan — not auto-detectable"* and waits for you to pick. Same story for ChatGPT **Pro $100 vs $200**: both look identical in the logs (*"Codex Pro detected — pick $100 or $200"*), so you choose. The third card, **Google AI Pro** (for Antigravity CLI), is always your call too: pick AI Pro or metered.
 
 3. **Prices are pre-filled at published list rates.** Each paid tier shows its monthly price in an editable box. If your real bill differs — tax, annual billing, a promo — just edit it.
 
@@ -54,6 +54,8 @@ There's one card per provider. The flow:
 5. **Hit "apply."** tatitok reprices your stored usage under the plans you declared. Plan-covered usage now reads $0 out of pocket with its API-equivalent value next to it, and the dashboard refreshes.
 
 You can dismiss the panel with **"skip for now"** and reopen it anytime from the **plans** button in the header.
+
+Each declared plan gets a card on the dashboard with its live usage-limit windows. The Claude and ChatGPT windows come from the [browser extension](#the-browser-extension-optional). The Google AI Pro card shows Antigravity's four windows, fed by the [agy hook](#the-agy-hook-antigravity-cli): Gemini 5h and weekly, and Claude+GPT 5h and weekly (the non-Gemini models inside agy).
 
 ### Why it asks instead of guessing
 
@@ -76,17 +78,35 @@ Setup is manual for now — it isn't in the Chrome Web Store yet:
 3. Click **Load unpacked** and select the `extension/tatitok-limits/` folder.
 4. The first time it reaches the hub, Chrome shows a **Local Network Access** prompt — allow it, so the extension can talk to `127.0.0.1`.
 
-There's no build step; it's plain unpacked files. See [`extension/tatitok-limits/README.md`](extension/tatitok-limits/README.md) for details and options.
+There's no build step; it's plain unpacked files. If your hub isn't on the default `http://127.0.0.1:8284` (say, `serve --addr 127.0.0.1:9000`), set the **hub URL** in the extension's options (chrome://extensions → Details → Extension options). It accepts only `http://127.0.0.1[:port]` or `http://localhost[:port]`, so the limit numbers never leave your machine. See [`extension/tatitok-limits/README.md`](extension/tatitok-limits/README.md) for details and options.
+
+## The agy hook (Antigravity CLI)
+
+Antigravity CLI (`agy`) keeps no per-call usage on disk, so tatitok ships a small status-line hook for it in `extension/agy-statusline/`. It's plain Python with the standard library only. Install it with:
+
+```sh
+python3 extension/agy-statusline/tatitok-agy-statusline.py --install
+```
+
+That adds a `statusLine` entry to `~/.gemini/antigravity-cli/settings.json`, backing the file up to `settings.json.pre-tatitok` first. It refuses if you already have a status line configured. agy runs the hook on every status refresh, and your agy status line then reads `tatitok`.
+
+**What it logs.** Whenever a conversation's token totals change, it appends agy's status object to `~/.local/share/tatitok/agy/statusline.jsonl` (under `$XDG_DATA_HOME` if you set it). The object carries metadata such as the model, the session ids, the working directory and the running token totals, with your email removed. No prompts or responses are logged. tatitok turns each increase in those running totals into one usage event. Every 90 seconds the hook also posts agy's four quota windows to your local hub, so the Google AI Pro card's windows only refresh while an agy session is open.
+
+**It stays out of agy's way.** The hook is budgeted to finish within 200 ms, and the post runs in a detached background process. It only talks to a loopback hub: `TATITOK_HUB_URL` can point it at `http://127.0.0.1:<port>` or `http://localhost:<port>`, and any other value is ignored.
+
+To remove it, run the same script with `--uninstall`. It deletes the `statusLine` entry only if it's still the tatitok hook, and it keeps the backup.
 
 ## How it works / what's tracked
 
-tatitok reads three coding-agent harnesses from the standard locations they already write to:
+tatitok reads five coding-agent harnesses from the standard locations they already write to:
 
 - **Claude Code** — session logs under `~/.claude`
 - **Codex** — session logs under `~/.codex`
 - **OpenCode** — its local database under `~/.local/share/opencode`
+- **pi** — session logs under `~/.pi/agent/sessions`
+- **Antigravity CLI (agy)** — the log written by tatitok's [agy hook](#the-agy-hook-antigravity-cli), under `~/.local/share/tatitok/agy`
 
-It takes the provider-reported token counts verbatim (no tokenizers, no estimating), stores them in a local SQLite file, and prices them against a pinned snapshot of published rates.
+It takes the provider-reported token counts verbatim (no tokenizers, no estimating), stores them in a local SQLite file, and prices them against a pinned snapshot of published rates. For agy, the counts are the differences between agy's own running totals. The rates come from LiteLLM's price list; the current snapshot is from 2026-09-03. Refreshing it is a deliberate maintainer step, never a runtime fetch.
 
 Click into a harness — or any chart — for the detail view: totals for the range you're looking at, then the day-by-day API-equivalent and actual-cost charts.
 
