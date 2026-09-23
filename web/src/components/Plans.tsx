@@ -87,7 +87,11 @@ export default function PlanCard({ plan, limits }: { plan: PlanStatus; limits?: 
           </div>
         </div>
       ) : (
-        <div className="text-sm text-tertiary">usage limits — waiting for companion extension</div>
+        <div className="text-sm text-tertiary">
+          {provider === "agy"
+            ? "usage limits — waiting for the agy hook (fills while an agy session runs)"
+            : "usage limits — waiting for companion extension"}
+        </div>
       )}
 
       {weekPct !== null && (
