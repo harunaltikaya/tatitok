@@ -25,7 +25,7 @@ export const DEFAULT_PRESET: PresetLabel = "7d";
 // calendar days (Date.UTC over the parts — a DST-free proleptic calendar), so
 // the answer is always exactly n local calendar days back. Subtracting n UTC
 // days before zoning (the old way) is n×24 h, which across a spring-forward
-// in a negative-offset zone lands one local day short (a six-day "7d").
+// in a negative-offset zone lands one local day early (an eight-day "7d").
 export function daysAgo(tz: string, n: number, now: Date = new Date()): string {
   return shiftDay(dayInTZ(now, tz), -n);
 }

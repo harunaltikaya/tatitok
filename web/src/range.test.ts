@@ -47,7 +47,8 @@ test("daysAgo: a 7d preset spans exactly 7 calendar days across the 2026 US spri
   const calendarDays = (from: string, to: string) =>
     (Date.UTC(+to.slice(0, 4), +to.slice(5, 7) - 1, +to.slice(8)) - Date.UTC(+from.slice(0, 4), +from.slice(5, 7) - 1, +from.slice(8))) / 864e5 + 1;
   // 00:30 PDT on Monday 2026-03-09 = 07:30Z; the old math gave from=03-02
-  // (six days) because 07:30Z − 6×24 h = 03-03T07:30Z = 23:30 PST on 03-02.
+  // (eight days, starting one day early) because 07:30Z − 6×24 h =
+  // 03-03T07:30Z = 23:30 PST on 03-02.
   const now = new Date("2026-03-09T07:30:00Z");
   assert.equal(daysAgo(tz, 0, now), "2026-03-09");
   const r = presetRange("7d", tz, now);
