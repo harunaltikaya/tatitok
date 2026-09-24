@@ -175,7 +175,7 @@ Click into a harness — or any chart — for the detail view: totals for the ra
 
 *The detail view: totals for the selected range, with daily API-equivalent and daily actual-cost charts underneath.*
 
-Scroll down and the same range breaks out by harness, provider, and model, one row at a time.
+Scroll down and the same range breaks out by harness, provider, model, and [project](#projects), one row at a time.
 
 ![Detail view, lower area — a daily-tokens chart above breakdown tables by harness, provider and model, each row pairing tokens with $0.00 actual and the API-equivalent value](docs/images/detail-breakdown.png)
 
@@ -188,6 +188,43 @@ The charts aren't static — any panel expands to fullscreen, and hovering a day
 *A panel expanded to fullscreen; hovering a day splits it by provider and model.*
 
 Privacy, restated plainly: it binds to loopback only (a non-loopback bind is refused), makes no network calls of its own, and sends no telemetry — ever. Your prompts and responses are never stored, only token counts and metadata.
+
+### Projects
+
+The detail page's **by project** panel breaks the range out by the directory the work ran in. Where that directory comes from depends on the harness:
+
+- **Claude Code**: the session's launch directory, which is the first `cwd` recorded in its transcript. It applies to every turn in that transcript, so a `cd` mid-session doesn't split one repo into its subfolders. A transcript that records no `cwd` falls back to the name of its folder under `~/.claude/projects`.
+- **Codex, OpenCode, pi and agy**: the working directory the harness records.
+
+A project is shown by its last folder name, so `/path/to/tatitok` reads `tatitok`, in the panel, the facet rail and the filter chips. Hover the name to see the full path. Clicking a project in the panel or the rail filters on the full path, so two directories that share a last folder name stay separate rows. Usage with no project reads "(none)".
+
+### Ingest health
+
+The detail page also has an **ingest health** panel, so a broken log format doesn't pass for a quiet day. It shows one row per watched source:
+
+- **harness** and **root**: the directory tatitok watches, with your home shown as `~`.
+- **watch**: `fsnotify`, or `polling`. OpenCode's database is always polled, and a source whose file watching fails falls back to polling.
+- **last event**: the time of the newest stored event from that harness.
+- **last ingest**: when the watcher last finished a successful pass over that source's changed files. It's kept in the running `serve` process, not the database, so after a restart a source whose files haven't changed yet reads "none since start".
+- **errors (last pass)**: how many records failed to parse in that pass, in the warning color when it isn't zero. A pass re-reads each changed file whole, so this is the latest pass's count, not a running total that would count one bad line again on every pass.
+
+The panel refreshes on every live update, whatever range you've picked. It reads `GET /api/v1/sources` from your hub, which returns the same fields with times in UTC; `last_ingest_at` is `null` until the first pass:
+
+```json
+{
+  "now": "2026-09-24T03:17:46Z",
+  "sources": [
+    {
+      "harness": "codex",
+      "root": "~/.codex/sessions",
+      "watch": "fsnotify",
+      "last_ingest_at": "2026-09-24T03:04:28Z",
+      "parse_errors_last_pass": 0,
+      "last_event_at": "2026-09-24T03:03:36Z"
+    }
+  ]
+}
+```
 
 ## Honest scope (this is a v1)
 
