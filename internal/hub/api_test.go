@@ -419,6 +419,141 @@ func TestAPIFilters(t *testing.T) {
 	assertErrEnvelope(t, h, "/api/v1/totals?basis_=x", http.StatusBadRequest)
 }
 
+// TestAPIStatsSessions: the sessions payload equals the direct store
+// query for its params; a session filter forces the events path on the
+// daily endpoint and its totals equal the session's row; bad params 400.
+func TestAPIStatsSessions(t *testing.T) {
+	h := seedHub(t)
+	ctx := context.Background()
+
+	type sessionsPayload struct {
+		TZ       string                 `json:"tz"`
+		Source   string                 `json:"source"`
+		Total    int                    `json:"total"`
+		Limit    int                    `json:"limit"`
+		Filters  *store.Filters         `json:"filters"`
+		Sessions []store.SessionSummary `json:"sessions"`
+	}
+	check := func(query string, tz *time.Location, from, to string, f store.Filters) sessionsPayload {
+		t.Helper()
+		var got sessionsPayload
+		getOK(t, h, "/api/v1/stats/sessions"+query, &got)
+		if got.Source != "events" || got.Limit != 200 || got.TZ != tz.String() {
+			t.Errorf("%s: source=%q limit=%d tz=%q", query, got.Source, got.Limit, got.TZ)
+		}
+		want, total, err := h.st.SessionsInRange(ctx, tz, from, to, f, 200)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gj, _ := json.Marshal(got.Sessions)
+		wj, _ := json.Marshal(want)
+		if string(gj) != string(wj) || got.Total != total {
+			t.Errorf("%s: payload != SessionsInRange\ngot  %s (total %d)\nwant %s (total %d)",
+				query, gj, got.Total, wj, total)
+		}
+		return got
+	}
+
+	all := check("", time.UTC, "", "", store.Filters{})
+	if len(all.Sessions) < 2 || all.Filters != nil {
+		t.Fatalf("fixture corpus gave %d sessions (filters %+v)", len(all.Sessions), all.Filters)
+	}
+	for _, key := range []string{`"session"`, `"harness"`, `"project"`, `"firstTs"`, `"lastTs"`,
+		`"events"`, `"inputTokens"`, `"outputTokens"`, `"cacheCreationTokens"`,
+		`"cacheReadTokens"`, `"costAPIEquivMicro"`} {
+		if _, b := get(t, h, "/api/v1/stats/sessions"); !strings.Contains(string(b), key) {
+			t.Errorf("sessions payload lacks %s", key)
+		}
+	}
+
+	// Range, zone and a filter reach the store call.
+	top := all.Sessions[0]
+	day := top.FirstTS[:10]
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("?from="+day+"&to="+day+"&timezone=Asia/Tokyo", tokyo, day, day, store.Filters{})
+	got := check("?harness="+top.Harness, time.UTC, "", "", store.Filters{Harness: []string{top.Harness}})
+	if got.Filters == nil || len(got.Filters.Harness) != 1 {
+		t.Errorf("filters not echoed: %+v", got.Filters)
+	}
+	for _, s := range got.Sessions {
+		if s.Harness != top.Harness {
+			t.Errorf("harness filter let %q through", s.Harness)
+		}
+	}
+
+	// The session filter on the sessions endpoint itself.
+	got = check("?session="+top.Session, time.UTC, "", "", store.Filters{Session: []string{top.Session}})
+	if got.Total != 1 || got.Sessions[0].Session != top.Session {
+		t.Errorf("session filter: %+v", got.Sessions)
+	}
+
+	// The session filter forces "events" on the daily endpoint (UTC, where
+	// plain daily is rollup-served) and its totals equal the session's row.
+	var daily struct {
+		Source  string           `json:"source"`
+		Filters *store.Filters   `json:"filters"`
+		Daily   []store.DailyRow `json:"daily"`
+	}
+	getOK(t, h, "/api/v1/stats/daily?session="+top.Session, &daily)
+	if daily.Source != "events" || daily.Filters == nil || len(daily.Filters.Session) != 1 {
+		t.Fatalf("daily with session: source=%q filters=%+v", daily.Source, daily.Filters)
+	}
+	var sum store.TokenSums
+	var equiv int64
+	for _, r := range daily.Daily {
+		sum.Input += r.Input
+		sum.Output += r.Output
+		sum.CacheWrite += r.CacheWrite
+		sum.CacheRead += r.CacheRead
+		equiv += r.CostAPIEquivMicro
+	}
+	if sum != top.TokenSums || equiv != top.CostAPIEquivMicro {
+		t.Errorf("daily under session %s = %+v / %d, want the row's %+v / %d",
+			top.Session, sum, equiv, top.TokenSums, top.CostAPIEquivMicro)
+	}
+	var by struct {
+		Source string `json:"source"`
+	}
+	getOK(t, h, "/api/v1/stats/daily?by=harness&session="+top.Session, &by)
+	if by.Source != "events" {
+		t.Errorf("daily_by with session: source=%q", by.Source)
+	}
+	var totals struct {
+		Source string `json:"source"`
+	}
+	getOK(t, h, "/api/v1/totals?session="+top.Session, &totals)
+	if totals.Source != "events" {
+		t.Errorf("totals with session: source=%q", totals.Source)
+	}
+
+	// 400 bad_param, like the daily endpoint.
+	long := strings.Repeat("a", 65)
+	for _, p := range []string{
+		"/api/v1/stats/sessions?from=2026-02-02&to=2026-01-01",
+		"/api/v1/stats/sessions?from=01-01-2026",
+		"/api/v1/stats/sessions?timezone=Not/AZone",
+		"/api/v1/stats/sessions?by=harness",
+		"/api/v1/stats/sessions?limit=5",
+		"/api/v1/stats/sessions?session=" + long,
+		"/api/v1/stats/sessions?session=a%01b",
+		"/api/v1/stats/daily?session=" + long,
+		"/api/v1/stats/daily?session=a%0Ab",
+		"/api/v1/stats/activity?session=" + long,
+		"/api/v1/totals?session=a%7Fb",
+	} {
+		assertErrEnvelope(t, h, p, http.StatusBadRequest)
+	}
+	// 64 characters and "" are fine.
+	getOK(t, h, "/api/v1/stats/sessions?session="+strings.Repeat("a", 64), &got)
+	getOK(t, h, "/api/v1/stats/daily?session=", &daily)
+	if daily.Source != "events" {
+		t.Errorf(`daily with session="": source=%q`, daily.Source)
+	}
+}
+
 // TestAPIMetaFacets (M5 Task 3): the facet rail's source — every
 // filterable dimension enumerated with event counts, equal to the
 // direct store query.
@@ -529,7 +664,7 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 	paths := []string{
 		"/api/v1/health", "/api/v1/stats/daily", "/api/v1/totals",
 		"/api/v1/meta/models", "/api/v1/meta/facets", "/api/v1/plans",
-		"/api/v1/sources", "/api/v1/stream",
+		"/api/v1/sources", "/api/v1/stats/sessions", "/api/v1/stream",
 	}
 	for _, p := range paths {
 		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {

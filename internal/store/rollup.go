@@ -13,12 +13,12 @@ import (
 // Daily(ctx, UTC, f) by construction — same grouping, same assembly —
 // but reading the pre-aggregated table. UTC ONLY: rollup days are UTC
 // buckets and cannot serve other timezones exactly (the recorded M3
-// decision; hourly grain is deferred). A basis filter is a loud error:
-// the rollup grain lacks basis — callers check f.RollupServable() and
-// fall back to the exact event path (M5 Task 3).
+// decision; hourly grain is deferred). A basis or session filter is a
+// loud error: the rollup grain lacks both — callers check
+// f.RollupServable() and fall back to the exact event path (M5 Task 3).
 func (s *Store) DailyFromRollups(ctx context.Context, f Filters) ([]DailyRow, error) {
 	if !f.RollupServable() {
-		return nil, fmt.Errorf("rollups cannot serve a basis filter — aggregate events (Daily) instead")
+		return nil, fmt.Errorf("rollups cannot serve a basis or session filter — aggregate events (Daily) instead")
 	}
 	pred, args := f.rollupPredicate()
 	rows, err := s.db.QueryContext(ctx, `SELECT day_utc AS day,

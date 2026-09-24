@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/harunaltikaya/tatitok/internal/pricing"
 	"github.com/harunaltikaya/tatitok/internal/store"
@@ -102,6 +104,7 @@ func (h *Hub) registerAPI(mux *http.ServeMux) {
 	get("/api/v1/health", h.apiHealth)
 	get("/api/v1/stats/daily", h.apiStatsDaily)
 	get("/api/v1/stats/activity", h.apiActivity)
+	get("/api/v1/stats/sessions", h.apiStatsSessions)
 	get("/api/v1/totals", h.apiTotals)
 	get("/api/v1/meta/models", h.apiMetaModels)
 	get("/api/v1/meta/facets", h.apiMetaFacets)
@@ -271,22 +274,41 @@ func parseTimezone(r *http.Request) (*time.Location, error) {
 // the dashboard semantics exactly. Unknown VALUES are not errors (an
 // empty result, declared via the echoed filters); unknown parameter
 // NAMES stay rejected (the M4 rule, enforced by checkParams).
-var filterParamNames = []string{"harness", "provider", "model", "project", "basis"}
+var filterParamNames = []string{"harness", "provider", "model", "project", "basis", "session"}
 
-func parseFilters(r *http.Request) store.Filters {
+// maxSessionParam bounds a session filter value in characters (runes),
+// the same cap as the limits text (internal/limits maxText). Stored ids
+// are 30 to 36 characters.
+const maxSessionParam = 64
+
+// parseFilters reads the filter params. A session value must be at most
+// maxSessionParam characters and printable (unicode.IsPrint); "" is
+// allowed (sessions stored without an id).
+func parseFilters(r *http.Request) (store.Filters, error) {
 	q := r.URL.Query()
+	for _, v := range q["session"] {
+		if n := utf8.RuneCountInString(v); n > maxSessionParam {
+			return store.Filters{}, fmt.Errorf("session: %d characters (max %d)", n, maxSessionParam)
+		}
+		for _, c := range v {
+			if !unicode.IsPrint(c) {
+				return store.Filters{}, fmt.Errorf("session: non-printable character %U", c)
+			}
+		}
+	}
 	return store.Filters{
 		Harness:  q["harness"],
 		Provider: q["provider"],
 		Model:    q["model"],
 		Project:  q["project"],
 		Basis:    q["basis"],
-	}
+		Session:  q["session"],
+	}, nil
 }
 
 // apiStatsDaily mirrors the CLI exactly: plain daily is rollup-backed
 // (UTC rollup grain, M3) unless a filter the rollup grain cannot serve
-// (basis) forces exact event aggregation; ?by= always aggregates
+// (basis, session) forces exact event aggregation; ?by= always aggregates
 // events. The serving path is declared in the payload ("source":
 // "rollup"|"events") — honesty about the path survives into the
 // response.
@@ -306,7 +328,11 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	f := parseFilters(r)
+	f, err := parseFilters(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
 	base := map[string]any{"grain": "day", "tz": tz.String()}
 	if !f.IsZero() {
 		base["filters"] = f
@@ -372,7 +398,11 @@ func (h *Hub) apiActivity(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
 		return
 	}
-	f := parseFilters(r)
+	f, err := parseFilters(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
 	buckets, err := h.st.Activity(r.Context(), tz, from, to, f)
 	if err != nil {
 		storeError(w, r, err)
@@ -387,6 +417,48 @@ func (h *Hub) apiActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	if to != "" {
 		payload["to"] = to
+	}
+	if !f.IsZero() {
+		payload["filters"] = f
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
+// sessionsLimit caps the sessions payload; "total" says how many there
+// were before the cap.
+const sessionsLimit = 200
+
+// apiStatsSessions: one row per session with at least one event in the
+// range (local days in tz, like apiActivity), under the active filters,
+// sorted by API-equivalent descending. Always the events path.
+func (h *Hub) apiStatsSessions(w http.ResponseWriter, r *http.Request) {
+	if err := checkParams(r, append([]string{"from", "to", "timezone"}, filterParamNames...)...); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
+	from, to, err := parseDayRange(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
+	tz, err := parseTimezone(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
+	f, err := parseFilters(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
+	rows, total, err := h.st.SessionsInRange(r.Context(), tz, from, to, f, sessionsLimit)
+	if err != nil {
+		storeError(w, r, err)
+		return
+	}
+	payload := map[string]any{
+		"tz": tz.String(), "source": "events",
+		"total": total, "limit": sessionsLimit, "sessions": rows,
 	}
 	if !f.IsZero() {
 		payload["filters"] = f
@@ -438,7 +510,11 @@ func (h *Hub) apiTotals(w http.ResponseWriter, r *http.Request) {
 		from = time.Now().In(tz).AddDate(0, 0, -(n - 1)).Format(dayFormat)
 	}
 
-	f := parseFilters(r)
+	f, err := parseFilters(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
 	rows, source, err := h.st.DailyServed(r.Context(), tz, f)
 	if err != nil {
 		storeError(w, r, err)

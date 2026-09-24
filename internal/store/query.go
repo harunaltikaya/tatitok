@@ -202,7 +202,8 @@ type SessionRow struct {
 // API and CLI so dashboard claims stay CLI-verifiable. Empty slices
 // constrain nothing. Model matches the RAW model column (consistent
 // with every stats surface); Basis matches stored cost_basis with NULL
-// reading as 'unknown'. Unknown values are not errors — they match
+// reading as 'unknown'; Session matches the raw session_id with NULL
+// reading as the empty id. Unknown values are not errors — they match
 // nothing; declaring the empty result is the caller's job.
 type Filters struct {
 	Harness  []string `json:"harness,omitempty"`
@@ -210,24 +211,25 @@ type Filters struct {
 	Model    []string `json:"model,omitempty"`
 	Project  []string `json:"project,omitempty"`
 	Basis    []string `json:"basis,omitempty"`
+	Session  []string `json:"session,omitempty"`
 }
 
 // IsZero reports an unconstrained filter set.
 func (f Filters) IsZero() bool {
 	return len(f.Harness) == 0 && len(f.Provider) == 0 && len(f.Model) == 0 &&
-		len(f.Project) == 0 && len(f.Basis) == 0
+		len(f.Project) == 0 && len(f.Basis) == 0 && len(f.Session) == 0
 }
 
 // RollupServable reports whether the UTC rollup grain carries every
-// constrained dimension. Basis is the one it lacks — basis-filtered
-// queries fall back to exact event aggregation (declared in the API
-// payload as "source": "events").
-func (f Filters) RollupServable() bool { return len(f.Basis) == 0 }
+// constrained dimension. Basis and session are the ones it lacks —
+// such queries fall back to exact event aggregation (declared in the
+// API payload as "source": "events").
+func (f Filters) RollupServable() bool { return len(f.Basis) == 0 && len(f.Session) == 0 }
 
 // predicate renders the filter as an "AND col IN (…)" SQL fragment
 // (empty when unconstrained) with its args, over the given per-dimension
 // column expressions.
-func (f Filters) predicate(harness, provider, model, project, basis string) (string, []any) {
+func (f Filters) predicate(harness, provider, model, project, basis, session string) (string, []any) {
 	var sb strings.Builder
 	var args []any
 	for _, d := range []struct {
@@ -235,7 +237,7 @@ func (f Filters) predicate(harness, provider, model, project, basis string) (str
 		vals []string
 	}{
 		{harness, f.Harness}, {provider, f.Provider}, {model, f.Model},
-		{project, f.Project}, {basis, f.Basis},
+		{project, f.Project}, {basis, f.Basis}, {session, f.Session},
 	} {
 		if len(d.vals) == 0 {
 			continue
@@ -256,14 +258,20 @@ func (f Filters) predicate(harness, provider, model, project, basis string) (str
 // eventsPredicate filters the usage_events table (NULL-safe exprs).
 func (f Filters) eventsPredicate() (string, []any) {
 	return f.predicate("COALESCE(harness, '')", "provider", "model",
-		"COALESCE(project, '')", "COALESCE(cost_basis, 'unknown')")
+		"COALESCE(project, '')", "COALESCE(cost_basis, 'unknown')",
+		"COALESCE(session_id, '')")
 }
 
 // rollupPredicate filters rollup_daily (columns are NOT NULL there);
 // only valid when RollupServable.
 func (f Filters) rollupPredicate() (string, []any) {
-	return f.predicate("harness", "provider", "model", "project", "")
+	return f.predicate("harness", "provider", "model", "project", "", "")
 }
+
+// sumAPIEquiv is the events path's API-equivalent sum. Daily and
+// SessionsInRange both use it, so a session's value is summed exactly
+// like a day's.
+const sumAPIEquiv = "SUM(COALESCE(cost_api_equiv_micro, 0))"
 
 // Daily returns per-day token sums bucketed in tz, oldest day first,
 // with per-model and per-harness breakdowns, restricted by f (M5
@@ -280,7 +288,7 @@ func (s *Store) Daily(ctx context.Context, tz *time.Location, f Filters) ([]Dail
 			SUM(tokens_cache_write), SUM(tokens_cache_read),
 			SUM(COALESCE(tokens_reasoning, 0)),
 			SUM(COALESCE(cost_usd_micro, 0)),
-			SUM(COALESCE(cost_api_equiv_micro, 0)),
+			`+sumAPIEquiv+`,
 			SUM(cost_usd_micro IS NULL)
 		FROM usage_events
 		WHERE 1=1`+pred+`
@@ -558,6 +566,133 @@ func (s *Store) Activity(ctx context.Context, tz *time.Location, from, to string
 		out = append(out, b)
 	}
 	return out, rows.Err()
+}
+
+// SessionSummary is one session's events inside a day range (the
+// dashboard's sessions panel). Session and Project are raw ("" when the
+// harness left them empty); FirstTS/LastTS are the first and last event
+// in the range, UTC RFC3339. Only in-range events count, so a session
+// that spans a range boundary shows its in-range part.
+type SessionSummary struct {
+	Session string `json:"session"`
+	Harness string `json:"harness"`
+	Project string `json:"project"`
+	FirstTS string `json:"firstTs"`
+	LastTS  string `json:"lastTs"`
+	Events  int64  `json:"events"`
+	TokenSums
+	CostAPIEquivMicro int64 `json:"costAPIEquivMicro"`
+}
+
+// SessionsInRange returns the sessions with at least one event whose
+// local day in tz lies in [from, to] (either bound may be ""), restricted
+// by f, sorted by API-equivalent descending, then first event, and cut to
+// limit rows. total is the session count before the cut. A session is
+// the composite (machine, harness, session_id), as in Sessions. Its
+// project is the one of its first in-range event. The range uses
+// tatitok_day, like Activity; the value sums with sumAPIEquiv, like Daily.
+func (s *Store) SessionsInRange(ctx context.Context, tz *time.Location, from, to string, f Filters, limit int) ([]SessionSummary, int, error) {
+	tzName := tz.String()
+	var args []any
+	where := ""
+	if from != "" {
+		where += " AND tatitok_day(ts, ?) >= ?"
+		args = append(args, tzName, from)
+	}
+	if to != "" {
+		where += " AND tatitok_day(ts, ?) <= ?"
+		args = append(args, tzName, to)
+	}
+	pred, fargs := f.eventsPredicate()
+	where += pred
+	args = append(args, fargs...)
+	// One group per (session, project): MIN(ts) per project picks the
+	// session's first project below, without SQLite's bare-column rule
+	// (ambiguous when MIN and MAX share a query).
+	rows, err := s.db.QueryContext(ctx, `SELECT machine,
+			COALESCE(harness, '') AS h,
+			COALESCE(session_id, '') AS sid,
+			COALESCE(project, '') AS p,
+			MIN(ts), MAX(ts), COUNT(*),
+			SUM(tokens_input), SUM(tokens_output),
+			SUM(tokens_cache_write), SUM(tokens_cache_read),
+			`+sumAPIEquiv+`
+		FROM usage_events
+		WHERE 1=1`+where+`
+		GROUP BY machine, h, sid, p
+		ORDER BY machine, h, sid, p`, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = rows.Close() }()
+	type acc struct {
+		SessionSummary
+		first, last time.Time
+	}
+	byKey := map[sessionKey]*acc{}
+	var all []*acc
+	for rows.Next() {
+		var m, h, sid, p, lo, hi string
+		var events, equiv int64
+		var sums TokenSums
+		if err := rows.Scan(&m, &h, &sid, &p, &lo, &hi, &events,
+			&sums.Input, &sums.Output, &sums.CacheWrite, &sums.CacheRead, &equiv); err != nil {
+			return nil, 0, err
+		}
+		loT, err := time.Parse(time.RFC3339Nano, lo)
+		if err != nil {
+			return nil, 0, err
+		}
+		hiT, err := time.Parse(time.RFC3339Nano, hi)
+		if err != nil {
+			return nil, 0, err
+		}
+		k := sessionKey{m, h, sid}
+		a := byKey[k]
+		if a == nil {
+			a = &acc{SessionSummary: SessionSummary{Session: sid, Harness: h, Project: p}, first: loT, last: hiT}
+			byKey[k] = a
+			all = append(all, a)
+		} else {
+			if loT.Before(a.first) || (loT.Equal(a.first) && p < a.Project) {
+				a.first, a.Project = loT, p
+			}
+			if hiT.After(a.last) {
+				a.last = hiT
+			}
+		}
+		a.Events += events
+		a.add(sums)
+		a.CostAPIEquivMicro += equiv
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// Stable over the ORDER BY above, so a full tie keeps machine order.
+	sort.SliceStable(all, func(i, j int) bool {
+		a, b := all[i], all[j]
+		if a.CostAPIEquivMicro != b.CostAPIEquivMicro {
+			return a.CostAPIEquivMicro > b.CostAPIEquivMicro
+		}
+		if !a.first.Equal(b.first) {
+			return a.first.Before(b.first)
+		}
+		if a.Session != b.Session {
+			return a.Session < b.Session
+		}
+		return a.Harness < b.Harness
+	})
+	total := len(all)
+	if total > limit {
+		all = all[:limit]
+	}
+	out := make([]SessionSummary, len(all))
+	for i, a := range all {
+		a.FirstTS = a.first.UTC().Format(time.RFC3339)
+		a.LastTS = a.last.UTC().Format(time.RFC3339)
+		out[i] = a.SessionSummary
+	}
+	return out, total, nil
 }
 
 type sessionKey struct{ machine, harness, sid string }

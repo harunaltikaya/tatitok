@@ -18,7 +18,7 @@ import (
 // DailyServed returns per-local-day rows in tz on the fastest correct
 // serving path, and the path taken ("rollup" | "events"):
 //
-//   - a basis filter → events (the rollup grain lacks basis; M5 Task 3)
+//   - a basis or session filter → events (the rollup grain lacks both)
 //   - tz == UTC → rollup_daily (the established UTC server; M3)
 //   - a whole-hour-offset zone over the stored span → rollup_hourly
 //     (DST-aware; M6 Task 1's grain)
