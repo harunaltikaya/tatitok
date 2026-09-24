@@ -34,7 +34,8 @@ cards show) and alerts once per window per crossing:
 
 `hub_url` (default `http://127.0.0.1:8284`) must be `http://127.0.0.1[:port]`
 or `http://localhost[:port]`. `thresholds` is optional and keyed by provider
-(`claude`, `codex`, `agy`) and then by window label as the cards show it. A
+(`claude`, `codex`, `agy`) and then by the window label the hub serves (e.g.
+`gemini-5h`), which for agy differs from the card's display text (`Gemini 5h`). A
 missing or invalid config makes the run exit 1 with one line on stderr.
 
 ## Install
