@@ -529,7 +529,7 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 	paths := []string{
 		"/api/v1/health", "/api/v1/stats/daily", "/api/v1/totals",
 		"/api/v1/meta/models", "/api/v1/meta/facets", "/api/v1/plans",
-		"/api/v1/stream",
+		"/api/v1/sources", "/api/v1/stream",
 	}
 	for _, p := range paths {
 		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
@@ -764,5 +764,108 @@ func TestAPIErrors(t *testing.T) {
 	}
 	for _, c := range cases {
 		assertErrEnvelope(t, h, c.path, c.status)
+	}
+}
+
+// TestAPISources: the ingest-health payload — exact keys, "~" for the
+// home directory, null times for targets never ingested, and
+// last_event_at per harness on every target of that harness.
+func TestAPISources(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	whole := fixtureSessionFiles(t)[0]
+	fed := filepath.Join(home, "fed")
+	if err := os.MkdirAll(filepath.Join(fed, whole.project), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fed, whole.project, whole.name), whole.content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idle := filepath.Join(home, "idle")
+	codexRoot := filepath.Join(home, "codex")
+	for _, d := range []string{idle, codexRoot} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := startWatchHub(t, []WatchTarget{
+		{Adapter: claudecode.Adapter{}, Source: adapters.Source{Harness: "claude-code", Root: fed, Machine: "gx10"}},
+		{Adapter: pollOnlyAdapter{}, Source: adapters.Source{Harness: "claude-code", Root: idle, Machine: "gx10"}},
+		{Adapter: codex.Adapter{}, Source: adapters.Source{Harness: "codex", Root: codexRoot, Machine: "gx10"}},
+	}, 100*time.Millisecond, time.Hour)
+	waitFor(t, "catch-up pass over the fed root", func() bool { return h.w.passes.Load() >= 1 })
+
+	var got struct {
+		Now     string           `json:"now"`
+		Sources []map[string]any `json:"sources"`
+	}
+	getOK(t, h, "/api/v1/sources", &got)
+	if _, err := time.Parse(time.RFC3339, got.Now); err != nil {
+		t.Errorf("now %q: %v", got.Now, err)
+	}
+	if len(got.Sources) != 3 {
+		t.Fatalf("%d sources, want 3 in registration order: %v", len(got.Sources), got.Sources)
+	}
+	keys := []string{"harness", "root", "watch", "last_ingest_at", "parse_errors_24h", "last_event_at"}
+	for i, s := range got.Sources {
+		if len(s) != len(keys) {
+			t.Errorf("source %d has keys %v, want exactly %v", i, s, keys)
+		}
+		for _, k := range keys {
+			if _, ok := s[k]; !ok {
+				t.Errorf("source %d missing %q", i, k)
+			}
+		}
+	}
+	last, err := h.st.LastEventByHarness(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLast := last["claude-code"].UTC().Format(time.RFC3339)
+
+	fedRow, idleRow, cxRow := got.Sources[0], got.Sources[1], got.Sources[2]
+	if fedRow["root"] != "~/fed" || fedRow["watch"] != "fsnotify" || fedRow["parse_errors_24h"] != float64(0) {
+		t.Errorf("fed row = %v", fedRow)
+	}
+	if s, ok := fedRow["last_ingest_at"].(string); !ok {
+		t.Errorf("fed last_ingest_at = %v, want a time", fedRow["last_ingest_at"])
+	} else if _, err := time.Parse(time.RFC3339, s); err != nil {
+		t.Errorf("fed last_ingest_at %q: %v", s, err)
+	}
+	if fedRow["last_event_at"] != wantLast {
+		t.Errorf("fed last_event_at = %v, want %s", fedRow["last_event_at"], wantLast)
+	}
+	if idleRow["root"] != "~/idle" || idleRow["watch"] != "polling" || idleRow["last_ingest_at"] != nil {
+		t.Errorf("idle row = %v, want ~/idle, polling, last_ingest_at null", idleRow)
+	}
+	if idleRow["last_event_at"] != wantLast {
+		t.Errorf("idle last_event_at = %v, want the harness's %s", idleRow["last_event_at"], wantLast)
+	}
+	if cxRow["harness"] != "codex" || cxRow["last_ingest_at"] != nil || cxRow["last_event_at"] != nil {
+		t.Errorf("codex row = %v, want both times null", cxRow)
+	}
+}
+
+// TestAPISourcesNoWatcher: a hub without watch targets serves [].
+func TestAPISourcesNoWatcher(t *testing.T) {
+	h := seedHub(t)
+	status, b := get(t, h, "/api/v1/sources")
+	if status != http.StatusOK || !strings.Contains(string(b), `"sources":[]`) {
+		t.Errorf("GET /api/v1/sources = %d %s, want 200 with \"sources\":[]", status, b)
+	}
+	assertErrEnvelope(t, h, "/api/v1/sources?x=1", http.StatusBadRequest)
+}
+
+func TestTildeHome(t *testing.T) {
+	for _, c := range []struct{ path, home, want string }{
+		{"/home/user", "/home/user", "~"},
+		{"/home/user/.claude/projects", "/home/user", "~/.claude/projects"},
+		{"/srv/userx/logs", "/srv/user", "/srv/userx/logs"}, // sibling, not a child
+		{"/srv/logs", "/home/user", "/srv/logs"},
+		{"/home/user/logs", "", "/home/user/logs"},
+	} {
+		if got := tildeHome(c.path, c.home); got != c.want {
+			t.Errorf("tildeHome(%q, %q) = %q, want %q", c.path, c.home, got, c.want)
+		}
 	}
 }

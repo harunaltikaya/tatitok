@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -105,6 +106,7 @@ func (h *Hub) registerAPI(mux *http.ServeMux) {
 	get("/api/v1/meta/models", h.apiMetaModels)
 	get("/api/v1/meta/facets", h.apiMetaFacets)
 	get("/api/v1/plans", h.apiPlans)
+	get("/api/v1/sources", h.apiSources)
 	get("/api/v1/stream", h.apiStream)
 	// Onboarding (Stage 2): detection is GET, apply is POST (it writes
 	// prices.json + reprices). Loopback-only like the whole hub.
@@ -150,6 +152,66 @@ func dbPathHash(path string) string {
 	}
 	sum := sha256.Sum256([]byte(abs))
 	return hex.EncodeToString(sum[:8])
+}
+
+// apiSources: ingest health per watch target, so a broken log format
+// does not look like a quiet day. last_event_at is the newest stored
+// event of the target's harness (events carry no source root, so every
+// target of one harness shows the same value). No watcher → [].
+func (h *Hub) apiSources(w http.ResponseWriter, r *http.Request) {
+	if err := checkParams(r); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
+		return
+	}
+	type sourceRow struct {
+		Harness        string  `json:"harness"`
+		Root           string  `json:"root"`
+		Watch          string  `json:"watch"`
+		LastIngestAt   *string `json:"last_ingest_at"`
+		ParseErrors24h int     `json:"parse_errors_24h"`
+		LastEventAt    *string `json:"last_event_at"`
+	}
+	stamp := func(t time.Time) *string {
+		if t.IsZero() {
+			return nil
+		}
+		s := t.UTC().Format(time.RFC3339)
+		return &s
+	}
+	now := time.Now().UTC()
+	rows := []sourceRow{}
+	if h.w != nil {
+		last, err := h.st.LastEventByHarness(r.Context())
+		if err != nil {
+			storeError(w, r, err)
+			return
+		}
+		home, _ := os.UserHomeDir()
+		for _, s := range h.w.health(now) {
+			rows = append(rows, sourceRow{
+				Harness: s.Harness, Root: tildeHome(s.Root, home), Watch: s.Watch,
+				LastIngestAt: stamp(s.LastIngestAt), ParseErrors24h: s.ParseErrors24h,
+				LastEventAt: stamp(last[s.Harness]),
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"now": now.Format(time.RFC3339), "sources": rows,
+	})
+}
+
+// tildeHome shows path with the home directory replaced by "~".
+func tildeHome(path, home string) string {
+	if home == "" {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	if rest, ok := strings.CutPrefix(path, home+string(filepath.Separator)); ok {
+		return "~" + string(filepath.Separator) + rest
+	}
+	return path
 }
 
 // parseDayRange validates optional from/to (YYYY-MM-DD, inclusive).

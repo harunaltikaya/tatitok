@@ -743,6 +743,31 @@ func (s *Store) SourceStates(ctx context.Context) (map[string]SourceState, error
 	return out, rows.Err()
 }
 
+// LastEventByHarness returns the newest stored event time per harness
+// (one grouped query on idx_events_harness_ts; events without a harness
+// are left out).
+func (s *Store) LastEventByHarness(ctx context.Context) (map[string]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT harness, MAX(ts) FROM usage_events
+		WHERE harness IS NOT NULL GROUP BY harness`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]time.Time{}
+	for rows.Next() {
+		var harness, ts string
+		if err := rows.Scan(&harness, &ts); err != nil {
+			return nil, err
+		}
+		t, err := time.Parse(time.RFC3339Nano, ts)
+		if err != nil {
+			return nil, err
+		}
+		out[harness] = t
+	}
+	return out, rows.Err()
+}
+
 // CountEvents returns the total number of stored events (test/diagnostic
 // helper).
 func (s *Store) CountEvents(ctx context.Context) (int64, error) {

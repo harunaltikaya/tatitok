@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/harunaltikaya/tatitok/internal/adapters"
 	"github.com/harunaltikaya/tatitok/internal/adapters/claudecode"
 	"github.com/harunaltikaya/tatitok/internal/adapters/opencode"
+	"github.com/harunaltikaya/tatitok/internal/pricing"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
@@ -543,4 +545,87 @@ func TestWatchDebounceCoalescing(t *testing.T) {
 		t.Errorf("burst of %d appends ran %d ingest passes, want exactly 1 (debounce)", len(lines), got)
 	}
 	assertConverged(t, h.st, claudecode.Adapter{}, src)
+}
+
+// TestWatchHealthStamps: parse-error stamps older than 24 h drop on
+// write and on read, the sum covers what is left, and the last
+// successful pass time is kept.
+func TestWatchHealthStamps(t *testing.T) {
+	tg := &watchTarget{src: adapters.Source{Harness: "claude-code", Root: "/r"}}
+	w := &watcher{targets: []*watchTarget{tg}}
+	t0 := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+
+	tg.recordPass(t0.Add(-25*time.Hour), 5)
+	tg.recordPass(t0.Add(-23*time.Hour), 2)
+	tg.recordPass(t0.Add(-time.Hour), 0) // clean pass: no stamp
+	tg.recordPass(t0, 3)
+	if n := len(tg.errStamps); n != 2 {
+		t.Errorf("after write: %d stamps, want 2 (25 h old dropped, clean pass not kept)", n)
+	}
+	got := w.health(t0)
+	if len(got) != 1 || got[0].ParseErrors24h != 5 || !got[0].LastIngestAt.Equal(t0) {
+		t.Fatalf("health at t0 = %+v, want 5 errors, last ingest %s", got, t0)
+	}
+	if got := w.health(t0.Add(2 * time.Hour)); got[0].ParseErrors24h != 3 {
+		t.Errorf("2 h later: %d errors, want 3 (the 23 h stamp aged out)", got[0].ParseErrors24h)
+	}
+	if n := len(tg.errStamps); n != 1 {
+		t.Errorf("after read: %d stamps, want 1 (dropped on read)", n)
+	}
+	if got := w.health(t0.Add(25 * time.Hour)); got[0].ParseErrors24h != 0 || !got[0].LastIngestAt.Equal(t0) {
+		t.Errorf("25 h later = %+v, want 0 errors and last ingest unchanged", got[0])
+	}
+}
+
+// failAdapter fails every file: its pass returns an error.
+type failAdapter struct{ claudecode.Adapter }
+
+func (failAdapter) BackfillFile(context.Context, adapters.Source, string, adapters.Sink) error {
+	return errors.New("simulated ingest failure")
+}
+
+// TestWatchHealthRunPass: runPass stamps a successful target with its
+// parse errors, a failed pass records nothing, and a polled target
+// reports "polling".
+func TestWatchHealthRunPass(t *testing.T) {
+	whole := fixtureSessionFiles(t)[0]
+	root := t.TempDir()
+	dir := filepath.Join(root, whole.project)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, whole.name)
+	content := append([]byte{}, whole.content...)
+	if !bytes.HasSuffix(content, []byte("\n")) {
+		content = append(content, '\n')
+	}
+	content = append(content, "not json\n"...) // one malformed line
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "health.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	good := &watchTarget{adapter: claudecode.Adapter{}, src: adapters.Source{Harness: "claude-code", Root: root, Machine: "gx10"}}
+	bad := &watchTarget{adapter: failAdapter{}, src: adapters.Source{Harness: "claude-code", Root: root, Machine: "gx10"}}
+	bad.polled.Store(true)
+	w := &watcher{st: st, overrides: func() *pricing.Overrides { return nil }, targets: []*watchTarget{good, bad}}
+	before := time.Now().UTC()
+	w.runPass(context.Background(), map[*watchTarget]map[string]struct{}{
+		good: {path: {}}, bad: {path: {}},
+	})
+
+	got := w.health(time.Now().UTC())
+	if len(got) != 2 {
+		t.Fatalf("health has %d rows, want 2", len(got))
+	}
+	if g := got[0]; g.Watch != "fsnotify" || g.LastIngestAt.Before(before) || g.ParseErrors24h != 1 {
+		t.Errorf("good target = %+v, want fsnotify, stamped, 1 parse error", g)
+	}
+	if b := got[1]; b.Watch != "polling" || !b.LastIngestAt.IsZero() || b.ParseErrors24h != 0 {
+		t.Errorf("failed target = %+v, want polling, never ingested, 0 errors", b)
+	}
 }

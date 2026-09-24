@@ -63,6 +63,80 @@ type watchTarget struct {
 	// polled: this target is on the polling path — either by spec
 	// (PollOnly) or because fsnotify setup failed (automatic fallback).
 	polled atomic.Bool
+
+	// Ingest health for /api/v1/sources: when the last successful pass
+	// ran, and the parse errors passes saw inside healthWindow. A failed
+	// pass records nothing.
+	healthMu   sync.Mutex
+	lastIngest time.Time
+	errStamps  []errStamp
+}
+
+// healthWindow is how far back parse_errors_24h reaches (fixed).
+const healthWindow = 24 * time.Hour
+
+// errStamp is one successful pass's parse-error count.
+type errStamp struct {
+	at     time.Time
+	errors int
+}
+
+// recordPass stamps a successful ingest pass. Only passes that saw
+// parse errors are kept (a zero stamp adds nothing to the sum);
+// stamps older than healthWindow are dropped.
+func (t *watchTarget) recordPass(at time.Time, parseErrors int) {
+	t.healthMu.Lock()
+	defer t.healthMu.Unlock()
+	t.lastIngest = at
+	if parseErrors > 0 {
+		t.errStamps = append(t.errStamps, errStamp{at: at, errors: parseErrors})
+	}
+	t.pruneLocked(at)
+}
+
+// pruneLocked drops stamps older than healthWindow before now.
+func (t *watchTarget) pruneLocked(now time.Time) {
+	cutoff := now.Add(-healthWindow)
+	keep := t.errStamps[:0]
+	for _, s := range t.errStamps {
+		if !s.at.Before(cutoff) {
+			keep = append(keep, s)
+		}
+	}
+	t.errStamps = keep
+}
+
+// sourceHealth is one watch target's ingest health at a point in time.
+type sourceHealth struct {
+	Harness        string
+	Root           string
+	Watch          string    // "fsnotify" or "polling"
+	LastIngestAt   time.Time // zero: no successful pass yet
+	ParseErrors24h int
+}
+
+// health reports every target's ingest health in registration order.
+func (w *watcher) health(now time.Time) []sourceHealth {
+	out := make([]sourceHealth, 0, len(w.targets))
+	for _, t := range w.targets {
+		mode := "fsnotify"
+		if t.polled.Load() {
+			mode = "polling"
+		}
+		t.healthMu.Lock()
+		t.pruneLocked(now)
+		sum := 0
+		for _, s := range t.errStamps {
+			sum += s.errors
+		}
+		last := t.lastIngest
+		t.healthMu.Unlock()
+		out = append(out, sourceHealth{
+			Harness: t.src.Harness, Root: t.src.Root, Watch: mode,
+			LastIngestAt: last, ParseErrors24h: sum,
+		})
+	}
+	return out
 }
 
 type watcher struct {
@@ -452,6 +526,7 @@ func (w *watcher) runPass(ctx context.Context, batch map[*watchTarget]map[string
 				"harness", t.src.Harness, "files", len(paths), "error", err)
 			continue
 		}
+		t.recordPass(time.Now().UTC(), sum.ParseErrors)
 		slog.Info("watch ingest pass",
 			"harness", t.src.Harness, "files", sum.Files,
 			"lines", sum.Lines, "events", sum.Emitted,
