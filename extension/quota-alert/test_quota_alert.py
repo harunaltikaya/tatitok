@@ -7,6 +7,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -126,6 +127,25 @@ class RunTests(QuietTest):
         hhmm = _dt.datetime.fromtimestamp(RESET_A / 1000).strftime("%H:%M")
         self.assertEqual(self.sent, ["agy gemini-5h 100%% — resets %s" % hhmm])
 
+    def test_label_controls_are_dropped_from_the_body(self):
+        raw = "Fable\x1b[2J\r\n7d"
+        self.write_cfg({"default_threshold": 80, "thresholds": {"claude": {raw: 50}}})
+        self.snap = providers(claude=[(raw, 60, RESET_A)])
+        self.run_once()
+        self.assertEqual(len(self.sent), 1)
+        body = self.sent[0]
+        self.assertEqual(len(body.splitlines()), 1)
+        for c in ("\x1b", "\r", "\n"):
+            self.assertNotIn(c, body)
+        self.assertTrue(body.startswith("claude Fable[2J7d 60% — resets "), body)
+        # the threshold (50, keyed by the raw label) applied; state keeps it raw
+        self.assertEqual(self.state(), {"claude|" + raw: RESET_A})
+
+    def test_long_provider_and_label_are_capped(self):
+        body = qa.alert_body("p" * 200, "x" * 200, 90, 0)
+        self.assertEqual(body, "p" * 24 + " " + "x" * 48 + " 90% — resets unknown")
+        self.assertEqual(qa.display_safe("\x9bFable\u2028 7d\x00", 48), "Fable 7d")
+
     def test_null_windows_and_bad_windows_are_skipped(self):
         self.snap = {"codex": {"fetchedAt": 1, "windows": None},
                      "claude": {"fetchedAt": 1, "windows": [{"label": "5h"}, "x",
@@ -188,9 +208,14 @@ class NotifyTests(QuietTest):
         def run(argv, **kw):
             calls.append((argv, kw))
         self.assertTrue(qa.notify("claude 5h 90% — resets 12:00", run=run))
-        self.assertEqual(calls[0][0], ["notify-send", "tatitok", "claude 5h 90% — resets 12:00"])
+        self.assertEqual(calls[0][0], ["notify-send", "--", "tatitok", "claude 5h 90% — resets 12:00"])
         self.assertTrue(calls[0][1]["check"])
         self.assertEqual(self.err.getvalue(), "")
+
+    def test_option_terminator_before_summary(self):
+        calls = []
+        qa.notify("--app-name=spoof 5h 90% — resets unknown", run=lambda argv, **kw: calls.append(argv))
+        self.assertEqual(calls, [["notify-send", "--", "tatitok", "--app-name=spoof 5h 90% — resets unknown"]])
 
     def test_notify_send_missing_or_failing_goes_to_stderr(self):
         def missing(argv, **kw):
@@ -217,6 +242,25 @@ class NotifyTests(QuietTest):
                          send=lambda body: qa.notify(body, run=missing))
         self.assertEqual(rc, 0)
         self.assertIn("claude 5h 95%", self.err.getvalue())
+
+    def test_stderr_fallback_is_one_clean_line(self):
+        cfg = os.path.join(self.tmp.name, "alerts.json")
+        st = os.path.join(self.tmp.name, "state.json")
+        with open(cfg, "w", encoding="utf-8") as fh:
+            json.dump({"default_threshold": 80}, fh)
+
+        def missing(argv, **kw):
+            raise FileNotFoundError(2, "No such file or directory", "notify-send")
+        rc = qa.run_once(cfg_path=cfg, st_path=st,
+                         fetch=lambda url: providers(**{"clau\x1bde": [("5h\x1b[2J\r\nfake", 95, RESET_A)]}),
+                         send=lambda body: qa.notify(body, run=missing))
+        self.assertEqual(rc, 0)
+        err = self.err.getvalue()
+        self.assertEqual(len(err.splitlines()), 1)
+        self.assertTrue(err.endswith("\n"))
+        self.assertNotIn("\x1b", err)
+        self.assertNotIn("\r", err)
+        self.assertIn(": claude 5h[2Jfake 95% — resets ", err)
 
 
 class InstallTests(QuietTest):
@@ -264,6 +308,39 @@ class InstallTests(QuietTest):
             self.install()
         self.assertEqual(self.read(service), "[Unit]\n")
         self.assertEqual(self.calls, [])
+
+    def test_install_refuses_cr_or_lf_in_a_unit_value(self):
+        cases = (("XDG_CONFIG_HOME", "/srv/cfg\nExecStart=/bin/evil", self.script),
+                 ("XDG_DATA_HOME", "/srv/data\r", self.script),
+                 (None, None, os.path.join(self.tmp.name, "quota\nalert.py")))
+        for var, val, script in cases:
+            with self.subTest(var=var, script=script), unittest.mock.patch.dict(os.environ):
+                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_DATA_HOME", None)
+                if var:
+                    os.environ[var] = val
+                with self.assertRaises(SystemExit) as cm:
+                    qa.install(unit_dir=self.unit_dir, script=script, systemctl=self.systemctl)
+                msg = cm.exception.code
+                self.assertIsInstance(msg, str)  # exit status 1, msg on stderr
+                self.assertTrue(msg.startswith("refusing: "), msg)
+                self.assertNotIn("\n", msg)
+                self.assertNotIn("\r", msg)
+        self.assertFalse(os.path.exists(self.unit_dir))
+        self.assertEqual(self.calls, [])
+
+    def test_install_cli_refuses_newline_path_exit_1_one_line(self):
+        # HOME points into the temp dir and PATH is empty, so even a broken
+        # guard could not reach the real user units or systemctl.
+        env = {"HOME": self.tmp.name, "PATH": "",
+               "XDG_CONFIG_HOME": os.path.join(self.tmp.name, "a\nb")}
+        proc = subprocess.run([sys.executable, SCRIPT, "--install"], env=env,
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(len(proc.stderr.splitlines()), 1, proc.stderr)
+        self.assertIn("XDG_CONFIG_HOME", proc.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, ".config")))
 
     def test_uninstall_removes_only_marked_units(self):
         self.assertEqual(self.install(), 0)

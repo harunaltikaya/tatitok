@@ -13,7 +13,10 @@ cards show) and alerts once per window per crossing:
   set) remembers the `resetAt` it alerted for, so the same window stays quiet
   until the provider reports a new `resetAt`. Values within 60 s count as the
   same (claude.ai's `resetAt` moves by milliseconds between polls). Nothing is
-  sent on the way down.
+  sent on the way down. Limitation: two successive windows of one provider and
+  label whose `resetAt` values lie under 60 s apart count as one window, so the
+  second does not alert; the 5h and 7d windows reset hours apart, and the hub
+  does not enforce a minimum.
 - The reset time is shown in this machine's local zone.
 - Hub down, or `notify-send` missing or failing, prints one line to stderr
   (the journal) and exits 0. There are no network calls: the hub URL must be

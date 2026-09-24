@@ -13,9 +13,12 @@ A systemd user timer runs this every 5 minutes. One run:
     polls). The state maps "provider|label" -> the resetAt last alerted,
     so a window alerts once per crossing and re-arms when its resetAt
     changes. Nothing is sent on the way down.
-  - an alert is `notify-send tatitok "<provider> <label> <pct>% — resets
+  - an alert is `notify-send -- tatitok "<provider> <label> <pct>% — resets
     <local HH:MM>"`. notify-send missing or failing prints the same line
     to stderr and exits 0. The alert still counts as sent (state updated).
+    Provider and label are shown display-safe (display_safe: non-printable
+    characters dropped, cut to 24 / 48 characters); state keys and
+    thresholds use them unchanged.
 No network call leaves the machine: the hub URL must be loopback.
 
 Config <config>/tatitok/alerts.json (keep it 0600), <config> =
@@ -29,7 +32,10 @@ else ~/.local/share. A damaged state file is treated as empty.
 
   --install    write the systemd user service + 5-minute timer (both carry
                a marker line), daemon-reload, enable --now the timer;
-               refuses when either unit exists without the marker
+               refuses when either unit exists without the marker, or
+               when a value it would write into the service
+               (XDG_CONFIG_HOME, XDG_DATA_HOME, the script path) holds a
+               CR or LF
   --uninstall  disable --now the timer and remove the two units (only if
                they carry the marker)
 """
@@ -59,11 +65,16 @@ NOTIFY_TIMEOUT_S = 5
 # on each poll (seen 2026-09-24: ...600613 then ...600629). resetAt values this
 # close are one window; a new window resets at least an hour later.
 RESET_TOLERANCE_MS = 60_000
+# Display caps, in characters, for hub text shown in an alert or on stderr.
+PROVIDER_CAP = 24
+LABEL_CAP = 48
 
 CONFIG_FILE = "alerts.json"
 CONFIG_KEYS = ("hub_url", "default_threshold", "thresholds")
 
 UNIT_NAME = "tatitok-quota-alert"
+# Pinned into the service when set at install time (see service_unit).
+UNIT_ENV = ("XDG_CONFIG_HOME", "XDG_DATA_HOME")
 UNIT_DIR = os.path.expanduser("~/.config/systemd/user")
 MARKER = "# managed-by: quota_alert.py --install"
 
@@ -198,20 +209,31 @@ def due_alerts(providers, cfg, state):
     return out
 
 
+def display_safe(text, cap):
+    """text as it may be shown: every character str.isprintable() rejects
+    (C0/C1 controls such as ESC, CR and LF, format characters, separators
+    other than the space) dropped, then cut to cap characters. Hub text
+    reaches a notification and stderr; the hub bounds it too."""
+    return "".join(c for c in text if c.isprintable())[:cap]
+
+
 def alert_body(provider, label, pct, reset_at):
-    """One line; the reset time in this machine's local zone."""
+    """One line; provider and label display-safe, the reset time in this
+    machine's local zone."""
     try:
         when = _dt.datetime.fromtimestamp(reset_at / 1000).strftime("%H:%M") if reset_at > 0 else "unknown"
     except (OverflowError, OSError, ValueError):
         when = "unknown"
-    return "%s %s %d%% — resets %s" % (provider, label, round(pct), when)
+    return "%s %s %d%% — resets %s" % (display_safe(provider, PROVIDER_CAP),
+                                       display_safe(label, LABEL_CAP), round(pct), when)
 
 
 def notify(body, run=subprocess.run):
     """notify-send the alert; on any failure print it to stderr instead.
-    Never raises."""
+    "--" ends notify-send's options, so a body starting with "-" stays the
+    body. Never raises."""
     try:
-        run(["notify-send", "tatitok", body], check=True, timeout=NOTIFY_TIMEOUT_S,
+        run(["notify-send", "--", "tatitok", body], check=True, timeout=NOTIFY_TIMEOUT_S,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except (OSError, subprocess.SubprocessError) as exc:
@@ -288,6 +310,12 @@ def _unit_quote(s):
     return s
 
 
+def unit_env():
+    """[(name, value)] of the UNIT_ENV variables set now: what service_unit
+    pins as Environment= lines."""
+    return [(var, os.environ[var]) for var in UNIT_ENV if os.environ.get(var)]
+
+
 def service_unit(script):
     lines = [
         MARKER,
@@ -300,12 +328,10 @@ def service_unit(script):
         # runtime dir, so this is the systemd user default bus address.
         "Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus",
     ]
-    for var in ("XDG_CONFIG_HOME", "XDG_DATA_HOME"):
-        val = os.environ.get(var)
-        if val:
-            # The config and state paths follow these; the user manager may
-            # not carry them, so the service pins the install-time value.
-            lines.append("Environment=" + _unit_quote(var + "=" + val))
+    for var, val in unit_env():
+        # The config and state paths follow these; the user manager may
+        # not carry them, so the service pins the install-time value.
+        lines.append("Environment=" + _unit_quote(var + "=" + val))
     lines.append("ExecStart=" + _unit_quote(script))
     return "\n".join(lines) + "\n"
 
@@ -345,6 +371,11 @@ def _systemctl(*args):
 
 def install(unit_dir=UNIT_DIR, script=None, systemctl=_systemctl):
     script = script or os.path.abspath(__file__)
+    # _unit_quote cannot carry a CR or LF: it would split the unit line.
+    for name, val in unit_env() + [("script path", script)]:
+        if "\r" in val or "\n" in val:
+            raise SystemExit("refusing: %s %r holds a CR or LF, which a systemd unit line "
+                             "cannot carry" % (name, val))
     if not os.access(script, os.X_OK):
         raise SystemExit("refusing: %s is not executable (chmod +x it first)" % script)
     service, timer = unit_paths(unit_dir)
