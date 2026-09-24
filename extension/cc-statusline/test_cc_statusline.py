@@ -1,6 +1,7 @@
 """python3 -W error::ResourceWarning -m unittest extension/cc-statusline/test_cc_statusline.py"""
 
 import contextlib
+import datetime
 import importlib.util
 import io
 import json
@@ -17,6 +18,7 @@ cs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cs)
 
 DAY = "2026-09-24"
+NOW = datetime.datetime(2026, 9, 24, 12, 0, tzinfo=datetime.timezone.utc)
 STATS = {"grain": "day", "tz": "UTC", "source": "rollup", "daily": [{
     "date": DAY, "inputTokens": 200_000, "outputTokens": 50_000,
     "cacheCreationTokens": 150_000, "cacheReadTokens": 800_000,
@@ -51,8 +53,8 @@ class FakeHub:
 
 
 def line(hub, budget=1.0):
-    return cs.status_line(get=hub, origin=("127.0.0.1", 8284), day=DAY, stdin=io.BytesIO(b"{}"),
-                          deadline=time.monotonic() + budget)
+    return cs.status_line(get=hub, origin=("127.0.0.1", 8284), zone="UTC", now=NOW,
+                          stdin=io.BytesIO(b"{}"), deadline=time.monotonic() + budget)
 
 
 class LineTests(unittest.TestCase):
@@ -60,7 +62,7 @@ class LineTests(unittest.TestCase):
         hub = FakeHub()
         self.assertEqual(line(hub), LEFT + " | " + RIGHT)
         self.assertEqual(sorted(p for _, p in hub.paths),
-                         ["/api/v1/limits", "/api/v1/stats/daily?from=%s&to=%s" % (DAY, DAY)])
+                         ["/api/v1/limits", "/api/v1/stats/daily?from=%s&to=%s&timezone=UTC" % (DAY, DAY)])
 
     def test_one_part_missing(self):
         self.assertEqual(line(FakeHub(down=("limits",))), LEFT)
@@ -97,7 +99,7 @@ class LineTests(unittest.TestCase):
     def test_run_prints_one_line_and_exits_0(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            self.assertEqual(cs.run(get=FakeHub(), origin=("127.0.0.1", 8284), day=DAY,
+            self.assertEqual(cs.run(get=FakeHub(), origin=("127.0.0.1", 8284), zone="UTC", now=NOW,
                                     stdin=io.BytesIO(b"{}"), deadline=time.monotonic() + 1), 0)
         self.assertEqual(out.getvalue(), LEFT + " | " + RIGHT + "\n")
 
@@ -115,6 +117,50 @@ class LineTests(unittest.TestCase):
             os.close(r)
             if w is not None:
                 os.close(w)
+
+
+class ZoneTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.link = os.path.join(self.tmp.name, "localtime")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_zone_from_tz(self):
+        os.symlink("/usr/share/zoneinfo/Europe/Istanbul", self.link)
+        self.assertEqual(cs.local_zone(env={"TZ": "Asia/Tokyo"}, localtime=self.link), "Asia/Tokyo")
+
+    def test_zone_from_the_localtime_symlink(self):
+        for target in ("/usr/share/zoneinfo/Europe/Istanbul", "../usr/share/zoneinfo/Europe/Istanbul"):
+            with self.subTest(target=target):
+                os.symlink(target, self.link)
+                self.assertEqual(cs.local_zone(env={}, localtime=self.link), "Europe/Istanbul")
+                self.assertEqual(cs.local_zone(env={"TZ": ""}, localtime=self.link), "Europe/Istanbul")
+                os.unlink(self.link)
+
+    def test_fallback_to_utc(self):
+        # no TZ and no symlink (missing, or a regular file) -> UTC
+        self.assertEqual(cs.local_zone(env={}, localtime=self.link), "UTC")
+        with open(self.link, "w"):
+            pass
+        self.assertEqual(cs.local_zone(env={}, localtime=self.link), "UTC")
+        # an unknown zone name -> UTC, with one stderr line
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(cs.today_in("Not/AZone", NOW), ("UTC", DAY))
+        self.assertEqual(err.getvalue().count("\n"), 1)
+        self.assertIn("Not/AZone", err.getvalue())
+
+    def test_local_date_at_the_utc_boundary(self):
+        # 01:00 in Europe/Istanbul (UTC+3) is 22:00 the previous UTC day
+        now = datetime.datetime(2026, 9, 23, 22, 0, tzinfo=datetime.timezone.utc)
+        hub = FakeHub()
+        cs.status_line(get=hub, origin=("127.0.0.1", 8284), zone="Europe/Istanbul", now=now,
+                       stdin=io.BytesIO(b"{}"), deadline=time.monotonic() + 1)
+        self.assertIn((("127.0.0.1", 8284),
+                       "/api/v1/stats/daily?from=2026-09-24&to=2026-09-24&timezone=Europe%2FIstanbul"),
+                      hub.paths)
 
 
 SETTINGS = ('{\n  "model": "opus",\n  "env": {\n    "K": "caf\\u00e9"\n  },\n'

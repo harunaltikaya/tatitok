@@ -8,9 +8,10 @@ running hub, and it prints one line:
 
 - Left, verified: today's tokens (input + output + cache write + cache read,
   the dashboard's total) and API-equivalent cost, summed from
-  `GET /api/v1/stats/daily?from=D&to=D`, the rows the dashboard's range totals
-  sum. D is the calendar day in the hub's default zone, UTC, so "today" turns
-  over at 00:00 UTC, not local midnight.
+  `GET /api/v1/stats/daily?from=D&to=D&timezone=Z`, the rows the dashboard's
+  range totals sum. D is today in the local zone Z, which is `$TZ` if set, else
+  the zone the `/etc/localtime` symlink points at, else UTC, and is passed as
+  `timezone=` the way the dashboard passes it.
 - Right, reported: the `claude` provider's windows from `GET /api/v1/limits`,
   in the order the hub serves them (the companion extension's numbers).
 

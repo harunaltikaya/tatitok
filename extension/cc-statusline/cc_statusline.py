@@ -7,10 +7,11 @@ statusLine command, it asks the running hub, it prints ONE line:
   today 1.2M tok · $14.20 api-eq | claude 5h 63% · 7d 57% · Fable 7d 71%
 
   left  (verified) today's tokens (input + output + cache write + cache
-        read, the dashboard's total) and API-equivalent cost for the
-        calendar day in the hub's default zone (UTC), summed from
-        GET /api/v1/stats/daily?from=D&to=D, the rows the dashboard's
-        range totals sum.
+        read, the dashboard's total) and API-equivalent cost for today in
+        the local zone Z, summed from
+        GET /api/v1/stats/daily?from=D&to=D&timezone=Z, the rows the
+        dashboard's range totals sum. Z is $TZ if set, else the zone the
+        /etc/localtime symlink points at, else UTC.
   right (reported) the "claude" provider's windows from GET
         /api/v1/limits, in the hub's order, "<label> <pct>%".
 
@@ -43,12 +44,14 @@ import stat  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 import threading  # noqa: E402
+import urllib.parse  # noqa: E402
+import zoneinfo  # noqa: E402
 
 # TATITOK_HUB_URL overrides the default origin, but ONLY a loopback origin
 # is accepted (the agy hook's rule); anything else falls back to the default.
 DEFAULT_HUB_URL = "http://127.0.0.1:8284"
 HUB_URL_RE = re.compile(r"^http://(127\.0\.0\.1|localhost)(?::(\d{1,5}))?$")
-STATS_PATH = "/api/v1/stats/daily?from=%s&to=%s"
+STATS_PATH = "/api/v1/stats/daily?from=%s&to=%s&timezone=%s"
 LIMITS_PATH = "/api/v1/limits"
 PROVIDER = "claude"
 TOKEN_FIELDS = ("inputTokens", "outputTokens", "cacheCreationTokens", "cacheReadTokens")
@@ -65,6 +68,11 @@ MAX_BYTES = 1 << 20
 # at limit + 1 bytes, EOF or the stdin deadline (from T0).
 STDIN_LIMIT = 256 * 1024
 STDIN_DEADLINE_S = 0.100
+
+# The zone "today" is counted in when $TZ is unset or empty: the target of
+# this symlink, relative to its zoneinfo dir. /etc/timezone is never read.
+LOCALTIME = "/etc/localtime"
+ZONE_RE = re.compile(r"(?:.*/)?zoneinfo/(.+)")
 
 SETTINGS_PATH = os.path.expanduser("~/.claude/settings.json")
 BACKUP_SUFFIX = ".pre-tatitok-statusline"
@@ -128,6 +136,41 @@ def wait_fetches(threads, out, deadline):
     for t in threads:
         t.join(max(0.0, deadline - time.monotonic()))
     return dict(out)
+
+
+# ---- today --------------------------------------------------------------
+
+def local_zone(env=None, localtime=LOCALTIME):
+    """$TZ if set and non-empty, else the /etc/localtime symlink's target
+    relative to its zoneinfo dir, else "UTC". `env` and `localtime`
+    override the real ones (tests)."""
+    tz = (os.environ if env is None else env).get("TZ", "")
+    if tz:
+        return tz
+    try:
+        target = os.readlink(localtime)
+    except OSError:
+        return "UTC"
+    m = ZONE_RE.fullmatch(target)
+    return m.group(1) if m else "UTC"
+
+
+def today_in(zone, now=None):
+    """(zone, today's YYYY-MM-DD in it). An unknown zone name falls back to
+    UTC with one stderr line. `now` (aware) overrides the clock (tests)."""
+    try:
+        tzinfo = zoneinfo.ZoneInfo(zone)
+    except (KeyError, ValueError, OSError):
+        sys.stderr.write("tatitok: unknown zone %r, using UTC\n" % zone)
+        zone, tzinfo = "UTC", _dt.timezone.utc
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    return zone, now.astimezone(tzinfo).strftime("%Y-%m-%d")
+
+
+def stats_path(zone, day):
+    """The one-day stats/daily path, the zone passed as the dashboard passes
+    it (timezone=, percent-encoded like encodeURIComponent)."""
+    return STATS_PATH % (day, day, urllib.parse.quote(zone, safe=""))
 
 
 # ---- the line -----------------------------------------------------------
@@ -226,14 +269,15 @@ def drain_stdin(stream=None):
 
 # ---- one run ------------------------------------------------------------
 
-def status_line(get=get_json, origin=None, day=None, stdin=None, deadline=None):
-    """The line. `deadline` (monotonic) overrides the 80 ms / T0 budget
-    (tests)."""
+def status_line(get=get_json, origin=None, zone=None, now=None, stdin=None, deadline=None):
+    """The line. `zone` and `now` override the local zone and the clock,
+    `deadline` (monotonic) the 80 ms / T0 budget (tests)."""
     origin = origin or hub_origin()
-    day = day or _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+    zone, day = today_in(local_zone() if zone is None else zone, now)
+    path = stats_path(zone, day)
     started = time.monotonic()
     threads, out = start_fetches({
-        "stats": lambda: get(origin, STATS_PATH % (day, day)),
+        "stats": lambda: get(origin, path),
         "limits": lambda: get(origin, LIMITS_PATH),
     })
     try:
