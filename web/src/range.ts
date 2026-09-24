@@ -76,7 +76,20 @@ export function activePreset(from: string, to: string, tz: string, now: Date = n
 // there), so the step is shiftDay's date-part arithmetic and a DST
 // switch in either period cannot add or drop a day; `zone` itself does
 // not enter the arithmetic.
-export function precedingRange(from: string, to: string, _zone: string): { from: string; to: string } {
-  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 864e5 + 1;
+//
+// null when there is no preceding period to compare against: from or to
+// is not a YYYY-MM-DD day (a hand-edited URL — "bad", "", "2026-09"), or
+// the preceding period would end before 1970-01-01 (from <= ALL_FROM, the
+// "all" preset). It never throws: this runs synchronously in loadRange,
+// outside the fetch error handler, so a bad range must fall through to
+// the main fetch's 400 instead.
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+export function precedingRange(from: string, to: string, _zone: string): { from: string; to: string } | null {
+  if (!DAY.test(from) || !DAY.test(to)) return null;
+  const f = Date.parse(`${from}T00:00:00Z`);
+  const t = Date.parse(`${to}T00:00:00Z`);
+  if (Number.isNaN(f) || Number.isNaN(t) || f <= Date.parse(`${ALL_FROM}T00:00:00Z`)) return null;
+  const days = (t - f) / 864e5 + 1;
   return { from: shiftDay(from, -days), to: shiftDay(from, -1) };
 }

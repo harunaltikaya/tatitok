@@ -406,7 +406,8 @@ export default function App() {
       fetchActivity(f, t, q, z),
       // Period compare: the preceding range, same filters and zone. A failure
       // resolves null (the cards drop their prev line), never rejects the batch.
-      fetchDaily(prev.from, prev.to, q, z).then((r) => r.daily ?? [], () => null),
+      // No preceding range (invalid or pre-1970 bounds) → null, no request.
+      prev ? fetchDaily(prev.from, prev.to, q, z).then((r) => r.daily ?? [], () => null) : null,
     ])
       .then(([d, p, h, m, pj, a, pd]) => {
         if (gen !== rangeGen.current) return; // superseded by a newer request

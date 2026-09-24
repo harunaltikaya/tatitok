@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { defaultRange, initialRange, activePreset, presetRange, daysAgo, shiftDay, precedingRange, ALL_FROM } from "./range.ts";
+import { filtersFromURL } from "./filters.ts";
 
 const now = new Date("2026-09-03T11:30:00Z"); // 14:30 in Europe/Istanbul, 04:30 in America/Los_Angeles
 
@@ -99,4 +100,37 @@ test("precedingRange: a 7d range across the 2026 US spring-forward, one day, a m
   assert.deepEqual(precedingRange("2026-02-26", "2026-03-04", "UTC"), { from: "2026-02-19", to: "2026-02-25" });
   assert.deepEqual(precedingRange("2026-09-05", "2026-10-04", "UTC"), { from: "2026-08-06", to: "2026-09-04" });
   assert.equal(calendarDays("2026-08-06", "2026-09-04"), 30);
+});
+
+// Review 0924g MED: loadRange calls precedingRange synchronously, outside
+// the fetch error handler, so a hand-edited URL range must yield null (no
+// compare request) instead of throwing from shiftDay; the main fetch's 400
+// then reaches the normal error UI.
+test("precedingRange: null for invalid or pre-1970 bounds, never throws", () => {
+  const to = "2026-09-24";
+  assert.equal(precedingRange("bad", to, "UTC"), null);
+  assert.equal(precedingRange("", to, "UTC"), null);
+  assert.equal(precedingRange(ALL_FROM, to, "UTC"), null); // the "all" preset
+  assert.equal(precedingRange("1969-12-31", to, "UTC"), null);
+  assert.equal(precedingRange("2026-09-18", "bad", "UTC"), null);
+  // Date.parse accepts these, shiftDay would not.
+  assert.equal(precedingRange("2026-09", to, "UTC"), null);
+  assert.equal(precedingRange("2026", to, "UTC"), null);
+  // A valid range is unchanged; the day after ALL_FROM still compares.
+  assert.deepEqual(precedingRange("2026-09-18", to, "UTC"), { from: "2026-09-11", to: "2026-09-17" });
+  assert.deepEqual(precedingRange("1970-01-02", "1970-01-02", "UTC"), { from: "1970-01-01", to: "1970-01-01" });
+  const all = presetRange("all", "UTC", now);
+  assert.equal(precedingRange(all.from, all.to, "UTC"), null);
+});
+
+// Codex's path: the URL through the same parse the app uses
+// (filtersFromURL → initialRange), then precedingRange.
+test("precedingRange: ?from=bad and an empty from, parsed like the app", () => {
+  for (const search of ["?from=bad&to=2026-09-24", "?from=&to=2026-09-24"]) {
+    const u = filtersFromURL(search);
+    const r = initialRange(u.from, u.to, "UTC", now);
+    assert.equal(r.to, "2026-09-24", search);
+    assert.doesNotThrow(() => precedingRange(r.from, r.to, "UTC"), search);
+    assert.equal(precedingRange(r.from, r.to, "UTC"), null, search);
+  }
 });
