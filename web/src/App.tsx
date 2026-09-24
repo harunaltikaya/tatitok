@@ -664,16 +664,8 @@ export default function App() {
     "break-model": (
       <Breakdown totals={sortTotals(sumByKey(modelSeries), sort)} sort={sort} onSort={onSort} bases={modelBases} onSelect={onModelSelect} active={filters.model} />
     ),
-    // The empty project ("") reads "(no project)" here; its raw value still
-    // filters on "".
     "break-project": (
-      <Breakdown
-        totals={sortTotals(sumByKey(byProject).map((t) => (t.raw === "" ? { ...t, key: "(no project)" } : t)), sort)}
-        sort={sort}
-        onSort={onSort}
-        onSelect={(raw) => toggle("project", raw)}
-        active={filters.project}
-      />
+      <Breakdown totals={sortTotals(sumByKey(byProject), sort)} sort={sort} onSort={onSort} onSelect={(raw) => toggle("project", raw)} active={filters.project} />
     ),
     "ingest-health": <IngestHealth sources={sources} />,
   };
