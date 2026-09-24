@@ -52,13 +52,13 @@ clean:
 PARITY_FULL_CCUSAGE := 20.0.24
 
 parity-full:
-	TATITOK_PARITY_FULL=1 TATITOK_PARITY_CCUSAGE=$(PARITY_FULL_CCUSAGE) go test -v -run 'TestParityFull$$' ./internal/parity
+	TATITOK_PARITY_FULL=1 TATITOK_PARITY_CCUSAGE=$(PARITY_FULL_CCUSAGE) go test -count=1 -v -run 'TestParityFull$$' ./internal/parity
 
 parity-full-codex:
-	TATITOK_PARITY_FULL_CODEX=1 go test -v -run TestParityFullCodex ./internal/parity
+	TATITOK_PARITY_FULL_CODEX=1 go test -count=1 -v -run TestParityFullCodex ./internal/parity
 
 parity-full-opencode:
-	TATITOK_PARITY_FULL_OPENCODE=1 go test -v -run TestParityFullOpencode ./internal/parity
+	TATITOK_PARITY_FULL_OPENCODE=1 go test -count=1 -v -run TestParityFullOpencode ./internal/parity
 
 # Watcher soak (M4 Task 1): replays the fixture corpus as live appends
 # against a running watcher, asserts the rollup property afterwards, and
