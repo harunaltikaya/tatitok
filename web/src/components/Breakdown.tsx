@@ -118,7 +118,7 @@ export default function Breakdown({
         )}
         {totals.map((t) => (
           <tr
-            key={t.key}
+            key={t.raw}
             className={`border-t-[0.5px] border-hairline ${onSelect ? "cursor-pointer hover:bg-[var(--surface-hover)]" : ""}`}
             style={active?.includes(t.raw) ? { background: "var(--accent-soft)" } : undefined}
             onClick={onSelect ? () => onSelect(t.raw) : undefined}
