@@ -382,7 +382,9 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 // (weekday, hour) in tz over the range, under the active filters. An additive,
 // read-only VIEW of the same events the daily path serves (no new stored field,
 // no counting change); ≤168 buckets, empty cells absent. Same param parsing as
-// apiStatsDaily; tz is echoed (the bucketing zone).
+// apiStatsDaily; tz is echoed (the bucketing zone). Always the events path
+// (Activity has no rollup grain), declared as "source":"events" like the daily
+// payload declares its path.
 func (h *Hub) apiActivity(w http.ResponseWriter, r *http.Request) {
 	if err := checkParams(r, append([]string{"from", "to", "timezone"}, filterParamNames...)...); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_param", err.Error())
@@ -411,7 +413,7 @@ func (h *Hub) apiActivity(w http.ResponseWriter, r *http.Request) {
 	if buckets == nil {
 		buckets = []store.ActivityBucket{}
 	}
-	payload := map[string]any{"tz": tz.String(), "buckets": buckets}
+	payload := map[string]any{"tz": tz.String(), "source": "events", "buckets": buckets}
 	if from != "" {
 		payload["from"] = from
 	}

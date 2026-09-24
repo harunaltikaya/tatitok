@@ -528,6 +528,28 @@ func TestAPIStatsSessions(t *testing.T) {
 	if totals.Source != "events" {
 		t.Errorf("totals with session: source=%q", totals.Source)
 	}
+	// Activity is always the events path; under the session filter its
+	// buckets sum to the session's row.
+	var act struct {
+		Source  string                 `json:"source"`
+		Buckets []store.ActivityBucket `json:"buckets"`
+	}
+	getOK(t, h, "/api/v1/stats/activity", &act)
+	if act.Source != "events" {
+		t.Errorf("activity: source=%q, want events", act.Source)
+	}
+	getOK(t, h, "/api/v1/stats/activity?session="+top.Session, &act)
+	var actEvents, actTokens int64
+	for _, b := range act.Buckets {
+		actEvents += b.Events
+		actTokens += b.Tokens
+	}
+	if act.Source != "events" || actEvents != top.Events ||
+		actTokens != top.Input+top.Output+top.CacheWrite+top.CacheRead {
+		t.Errorf("activity under session %s: source=%q events=%d tokens=%d, want events, the row's %d / %d",
+			top.Session, act.Source, actEvents, actTokens, top.Events,
+			top.Input+top.Output+top.CacheWrite+top.CacheRead)
+	}
 
 	// 400 bad_param, like the daily endpoint.
 	long := strings.Repeat("a", 65)
