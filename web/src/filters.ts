@@ -10,6 +10,13 @@ export type FacetDim = "harness" | "provider" | "model" | "project" | "basis";
 
 export const facetDims: FacetDim[] = ["harness", "provider", "model", "project", "basis"];
 
+// FilterDim adds session to the facet dims: a filter (URL param, chip,
+// every request) with no rail entry. filterParamNames mirrors the hub's
+// list (internal/hub/api.go).
+export type FilterDim = FacetDim | "session";
+
+export const filterParamNames: FilterDim[] = [...facetDims, "session"];
+
 // View is the page dimension (M8 chunk 1A): the minimal "home" overview vs
 // the full "detail" breakdown. It is SHAREABLE view state — which page you
 // are looking at — so it rides the URL beside filters/range/tz (M8 owner
@@ -51,14 +58,14 @@ export function parseSort(key: string | null, dir: string | null): Sort {
   };
 }
 
-export type FilterState = Record<FacetDim, string[]>;
+export type FilterState = Record<FilterDim, string[]>;
 
 export function emptyFilters(): FilterState {
-  return { harness: [], provider: [], model: [], project: [], basis: [] };
+  return { harness: [], provider: [], model: [], project: [], basis: [], session: [] };
 }
 
 export function countActive(f: FilterState): number {
-  return facetDims.reduce((n, d) => n + f[d].length, 0);
+  return filterParamNames.reduce((n, d) => n + f[d].length, 0);
 }
 
 // displayValue renders the empty-string value (events without a
@@ -78,23 +85,36 @@ export function projectLabel(raw: string): string {
   return trimmed.slice(trimmed.lastIndexOf("/") + 1);
 }
 
+// sessionLabel prints a session id by its first 8 characters ("(none)" for
+// ""). Display only — the filter keeps the full id.
+export function sessionLabel(raw: string): string {
+  return raw === "" ? "(none)" : raw.slice(0, 8);
+}
+
+// chipValue is the text after "<dim>:" on a filter chip.
+export function chipValue(dim: FilterDim, raw: string): string {
+  if (dim === "project") return projectLabel(raw);
+  if (dim === "session") return sessionLabel(raw);
+  return displayValue(raw);
+}
+
 export function rawValue(display: string): string {
   return display === "(none)" ? "" : display;
 }
 
-export function hasValue(f: FilterState, dim: FacetDim, value: string): boolean {
+export function hasValue(f: FilterState, dim: FilterDim, value: string): boolean {
   return f[dim].includes(value);
 }
 
 // toggleValue returns a NEW state with value added to / removed from
 // the dimension (click-to-filter everywhere shares this).
-export function toggleValue(f: FilterState, dim: FacetDim, value: string): FilterState {
+export function toggleValue(f: FilterState, dim: FilterDim, value: string): FilterState {
   const cur = f[dim];
   const next = cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];
   return { ...f, [dim]: next };
 }
 
-export function removeValue(f: FilterState, dim: FacetDim, value: string): FilterState {
+export function removeValue(f: FilterState, dim: FilterDim, value: string): FilterState {
   return { ...f, [dim]: f[dim].filter((v) => v !== value) };
 }
 
@@ -102,7 +122,7 @@ export function removeValue(f: FilterState, dim: FacetDim, value: string): Filte
 // ("&harness=a&harness=b…"), empty string when unconstrained.
 export function filterQuery(f: FilterState): string {
   const p = new URLSearchParams();
-  for (const dim of facetDims) {
+  for (const dim of filterParamNames) {
     for (const v of f[dim]) p.append(dim, v);
   }
   const s = p.toString();
@@ -118,7 +138,7 @@ export function filterQuery(f: FilterState): string {
 export function filtersFromURL(search: string): { filters: FilterState; from: string | null; to: string | null; tz: string | null; view: View; groupBy: GroupBy; sort: Sort } {
   const p = new URLSearchParams(search);
   const filters = emptyFilters();
-  for (const dim of facetDims) filters[dim] = p.getAll(dim);
+  for (const dim of filterParamNames) filters[dim] = p.getAll(dim);
   return { filters, from: p.get("from"), to: p.get("to"), tz: p.get("tz"), view: parseView(p.get("view")), groupBy: parseGroupBy(p.get("groupBy")), sort: parseSort(p.get("sort"), p.get("dir")) };
 }
 
@@ -133,7 +153,7 @@ export function filtersToURL(f: FilterState, from: string, to: string, tz: strin
   if (groupBy !== "model") p.set("groupBy", groupBy);
   if (sort.key !== "equiv") p.set("sort", sort.key);
   if (sort.dir !== "desc") p.set("dir", sort.dir);
-  for (const dim of facetDims) {
+  for (const dim of filterParamNames) {
     for (const v of f[dim]) p.append(dim, v);
   }
   return `?${p.toString()}`;

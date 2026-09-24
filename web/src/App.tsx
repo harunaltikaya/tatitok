@@ -10,6 +10,7 @@ import {
   fetchLimits,
   fetchSources,
   fetchActivity,
+  fetchSessions,
   fetchOnboardDetect,
   usd,
   compactTokens,
@@ -28,15 +29,17 @@ import {
   type ModelInfo,
   type LimitsSnapshot,
   type PlanStatus,
+  type SessionsPayload,
   type SourceHealth,
   type TokenSums,
   type OnboardDetect,
   type OnboardApplyResult,
 } from "./api";
 import {
+  chipValue,
   displayValue,
   emptyFilters,
-  facetDims,
+  filterParamNames,
   filterQuery,
   projectLabel,
   filtersFromURL,
@@ -45,6 +48,7 @@ import {
   removeValue,
   toggleValue,
   type FacetDim,
+  type FilterDim,
   type FilterState,
   type GroupBy,
   type Sort,
@@ -70,6 +74,7 @@ import PlanCard from "./components/Plans";
 import Heatmap from "./components/Heatmap";
 import IngestHealth from "./components/IngestHealth";
 import CacheHit from "./components/CacheHit";
+import Sessions from "./components/Sessions";
 import MeterBar from "./ui/MeterBar";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
@@ -310,6 +315,7 @@ export default function App() {
   const [byModel, setByModel] = useState<DailyByRow[]>([]);
   const [byProject, setByProject] = useState<DailyByRow[]>([]);
   const [activity, setActivity] = useState<ActivityBucket[]>([]);
+  const [sessions, setSessions] = useState<SessionsPayload>({ sessions: [], total: 0, limit: 0 });
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [facets, setFacets] = useState<Record<string, FacetValue[]>>({});
   const [plans, setPlans] = useState<PlanStatus[]>([]);
@@ -392,7 +398,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [fullscreen]);
 
-  const toggle = (dim: FacetDim, value: string) => setFilters((f) => toggleValue(f, dim, value));
+  const toggle = (dim: FilterDim, value: string) => setFilters((f) => toggleValue(f, dim, value));
 
   const loadRange = (f: string, t: string, q: string, z: string) => {
     const gen = ++rangeGen.current;
@@ -404,12 +410,13 @@ export default function App() {
       fetchDailyBy("model", f, t, q, z),
       fetchDailyBy("project", f, t, q, z),
       fetchActivity(f, t, q, z),
+      fetchSessions(f, t, q, z),
       // Period compare: the preceding range, same filters and zone. A failure
       // resolves null (the cards drop their prev line), never rejects the batch.
       // No preceding range (invalid or pre-1970 bounds) → null, no request.
       prev ? fetchDaily(prev.from, prev.to, q, z).then((r) => r.daily ?? [], () => null) : null,
     ])
-      .then(([d, p, h, m, pj, a, pd]) => {
+      .then(([d, p, h, m, pj, a, ss, pd]) => {
         if (gen !== rangeGen.current) return; // superseded by a newer request
         setDaily(d.daily ?? []);
         setByProvider(p.daily_by ?? []);
@@ -417,6 +424,7 @@ export default function App() {
         setByModel(m.daily_by ?? []);
         setByProject(pj.daily_by ?? []);
         setActivity(a.buckets ?? []);
+        setSessions({ sessions: ss.sessions ?? [], total: ss.total, limit: ss.limit });
         setPrevDaily(pd);
         setSource(d.source);
         setErr(null);
@@ -672,7 +680,7 @@ export default function App() {
   const onSort = (key: SortKey) =>
     setSort((s) => (s.key === key ? { key, dir: s.dir === "desc" ? "asc" : "desc" } : { key, dir: "desc" }));
 
-  const chips = facetDims.flatMap((dim) => filters[dim].map((v) => ({ dim, value: v })));
+  const chips = filterParamNames.flatMap((dim) => filters[dim].map((v) => ({ dim, value: v })));
 
   // Panel content keyed by panel id (M6 Task 4): the charts and tables,
   // each with its filter handlers intact. PanelGrid only positions and
@@ -702,6 +710,7 @@ export default function App() {
     ),
     "ingest-health": <IngestHealth sources={sources} />,
     "cache-hit": <CacheHit rows={byHarness} />,
+    sessions: <Sessions data={sessions} tz={tz} onSelect={(raw) => toggle("session", raw)} active={filters.session} />,
   };
 
   return (
@@ -807,7 +816,7 @@ export default function App() {
               title={
                 source === "rollup"
                   ? `served from rollups — ${tz} is a whole-hour offset, so local days map to whole UTC hours`
-                  : `served from exact events — ${tz} is a fractional offset (or a basis filter is active), so the UTC-hour rollups cannot serve it`
+                  : `served from exact events — ${tz} is a fractional offset (or a basis or session filter is active), so the UTC-hour rollups cannot serve it`
               }
             >
               · {source}
@@ -836,8 +845,8 @@ export default function App() {
             <FilterChip
               key={`${c.dim}|${c.value}`}
               dim={c.dim}
-              value={c.dim === "project" ? projectLabel(c.value) : displayValue(c.value)}
-              {...(c.dim === "project" && c.value !== "" ? { title: c.value } : {})}
+              value={chipValue(c.dim, c.value)}
+              {...((c.dim === "project" || c.dim === "session") && c.value !== "" ? { title: c.value } : {})}
               onRemove={() => setFilters((f) => removeValue(f, c.dim, c.value))}
             />
           ))}

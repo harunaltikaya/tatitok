@@ -39,6 +39,27 @@ export interface ActivityBucket {
   tokens: number;
 }
 
+// One session's events inside the range (GET /api/v1/stats/sessions).
+// session and project are raw ("" when not logged); firstTs/lastTs are
+// UTC RFC3339.
+export interface SessionRow extends TokenSums {
+  session: string;
+  harness: string;
+  project: string;
+  firstTs: string;
+  lastTs: string;
+  events: number;
+  costAPIEquivMicro: number;
+}
+
+// The payload: at most limit rows, sorted by API-equivalent; total is the
+// session count before the cap.
+export interface SessionsPayload {
+  sessions: SessionRow[];
+  total: number;
+  limit: number;
+}
+
 export interface ModelInfo {
   provider: string;
   model: string;
@@ -160,6 +181,10 @@ export function fetchTotals(window: string, fq = "", tz = "UTC"): Promise<{ tz: 
 // filtered/timezoned range every other fetch obeys (one global state).
 export function fetchActivity(from: string, to: string, fq = "", tz = "UTC"): Promise<{ tz: string; buckets: ActivityBucket[] }> {
   return getJSON(`/api/v1/stats/activity?from=${from}&to=${to}&timezone=${encodeURIComponent(tz)}${fq}`);
+}
+
+export function fetchSessions(from: string, to: string, fq = "", tz = "UTC"): Promise<SessionsPayload & { tz: string; source: string }> {
+  return getJSON(`/api/v1/stats/sessions?from=${from}&to=${to}&timezone=${encodeURIComponent(tz)}${fq}`);
 }
 
 export function fetchModels(): Promise<{ models: ModelInfo[] }> {
@@ -430,6 +455,20 @@ export function dayInTZ(date: Date, tz: string): string {
 
 export function todayInTZ(tz: string): string {
   return dayInTZ(new Date(), tz);
+}
+
+// zoneTimeLabel formats an instant as "MM-DD HH:mm" in tz; "" when the
+// engine rejects tz or the instant.
+export function zoneTimeLabel(iso: string, tz: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(iso));
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+    return `${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`;
+  } catch {
+    return "";
+  }
 }
 
 // tzOffsetLabel renders a zone's UTC offset for the selector annotation (M8 1I)

@@ -10,9 +10,9 @@
 // loaded directly by Node's test runner (groupby.test.ts), whose ESM resolver
 // needs the extension — unlike the bundle, where Vite resolves extensionless.
 // tsconfig allowImportingTsExtensions makes tsc accept them.
-import type { DailyByRow, FacetValue, ActivityBucket, ModelInfo } from "./api.ts";
-import { totalTokens } from "./api.ts";
-import { displayValue, type Sort } from "./filters.ts";
+import type { DailyByRow, FacetValue, ActivityBucket, ModelInfo, SessionRow } from "./api.ts";
+import { totalTokens, zoneTimeLabel } from "./api.ts";
+import { displayValue, projectLabel, sessionLabel, type Sort } from "./filters.ts";
 
 export interface KeyTotals {
   key: string; // display form ("(none)" for the empty value)
@@ -399,4 +399,32 @@ export function cacheHitRows(rows: DailyByRow[]): { rows: CacheHitRow[]; total: 
     .map(([raw, t]) => ({ key: displayValue(raw), raw, ...t, hitRate: hitRateLabel(t.cacheRead, t.input) }))
     .sort((a, b) => b.input + b.cacheRead - (a.input + a.cacheRead) || (a.raw < b.raw ? -1 : a.raw > b.raw ? 1 : 0));
   return { rows: out, total: { key: "total", raw: "", cacheRead, input, hitRate: hitRateLabel(cacheRead, input) } };
+}
+
+// SessionLine is one sessions-panel row, shaped for display.
+export interface SessionLine {
+  raw: string; // the session id a click filters on
+  label: string; // first 8 characters, "(none)" for ""
+  harness: string;
+  project: string; // folder name (projectLabel)
+  projectRaw: string;
+  start: string; // firstTs as "MM-DD HH:mm" in tz
+  events: number;
+  tokens: number; // the four-field total
+  equivMicro: number;
+}
+
+// sessionLines shapes the served rows in their served order.
+export function sessionLines(rows: SessionRow[], tz: string): SessionLine[] {
+  return rows.map((r) => ({
+    raw: r.session,
+    label: sessionLabel(r.session),
+    harness: displayValue(r.harness),
+    project: projectLabel(r.project),
+    projectRaw: r.project,
+    start: zoneTimeLabel(r.firstTs, tz),
+    events: r.events,
+    tokens: totalTokens(r),
+    equivMicro: r.costAPIEquivMicro,
+  }));
 }
