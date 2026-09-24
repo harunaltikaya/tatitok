@@ -10,10 +10,13 @@ statusLine command, it asks the running hub, it prints ONE line:
         read, the dashboard's total) and API-equivalent cost for today in
         the local zone Z, summed from
         GET /api/v1/stats/daily?from=D&to=D&timezone=Z, the rows the
-        dashboard's range totals sum. Z is $TZ if set, else the zone the
-        /etc/localtime symlink points at, else UTC.
+        dashboard's range totals sum. Z is $TZ if set (one leading ":"
+        removed, as libc reads it), else the zone the /etc/localtime
+        symlink points at, else UTC.
   right (reported) the "claude" provider's windows from GET
-        /api/v1/limits, in the hub's order, "<label> <pct>%".
+        /api/v1/limits, in the hub's order, "<label> <pct>%". Provider
+        and labels are display-safe: non-printable characters dropped,
+        cut to 24 / 48 characters.
 
 Claude Code pipes one JSON object on stdin (model, workspace, cost,
 context_window, rate_limits, ...). It is read to EOF with the agy hook's
@@ -56,6 +59,9 @@ LIMITS_PATH = "/api/v1/limits"
 PROVIDER = "claude"
 TOKEN_FIELDS = ("inputTokens", "outputTokens", "cacheCreationTokens", "cacheReadTokens")
 HUB_DOWN = "tatitok: hub down"
+# Display caps, in characters, for hub text on the line.
+PROVIDER_CAP = 24
+LABEL_CAP = 48
 
 GET_TIMEOUT_S = 0.080
 # Hard stop for the GETs, from T0; leaves the rest of the 200 ms for the
@@ -142,9 +148,13 @@ def wait_fetches(threads, out, deadline):
 
 def local_zone(env=None, localtime=LOCALTIME):
     """$TZ if set and non-empty, else the /etc/localtime symlink's target
-    relative to its zoneinfo dir, else "UTC". `env` and `localtime`
-    override the real ones (tests)."""
+    relative to its zoneinfo dir, else "UTC". One leading ":" is removed
+    from $TZ first (":Europe/Istanbul" is how libc also reads
+    Europe/Istanbul); the result names the zone for both the date and
+    timezone=. `env` and `localtime` override the real ones (tests)."""
     tz = (os.environ if env is None else env).get("TZ", "")
+    if tz.startswith(":"):
+        tz = tz[1:]
     if tz:
         return tz
     try:
@@ -194,18 +204,30 @@ def verified_part(doc):
     return "today %s tok · $%.2f api-eq" % (compact_tokens(tokens), equiv / 1_000_000)
 
 
+def display_safe(text, cap):
+    """text as it may be printed: every character str.isprintable() rejects
+    (C0/C1 controls such as ESC, CR and LF, format characters, separators
+    other than the space) dropped, then cut to cap characters. Hub text
+    reaches the terminal; the hub bounds it too. (quota_alert.py holds the
+    same helper; the companions share no module.)"""
+    return "".join(c for c in text if c.isprintable())[:cap]
+
+
 def reported_part(doc):
     """"claude <label> <pct>% · ..." from a limits reply, or None when the
-    provider has no windows."""
+    provider has no windows. Provider and labels are display_safe; a label
+    that is empty afterwards is left out."""
     providers = doc.get("providers") if isinstance(doc, dict) else None
     bucket = providers.get(PROVIDER) if isinstance(providers, dict) else None
     windows = bucket.get("windows") if isinstance(bucket, dict) else None
     items = []
     for w in windows or ():
         label, pct = w.get("label"), w.get("usedPercent")
-        if isinstance(label, str) and label and isinstance(pct, (int, float)) and not isinstance(pct, bool):
-            items.append("%s %d%%" % (label, round(pct)))
-    return "%s %s" % (PROVIDER, " · ".join(items)) if items else None
+        if isinstance(label, str) and isinstance(pct, (int, float)) and not isinstance(pct, bool):
+            label = display_safe(label, LABEL_CAP)
+            if label:
+                items.append("%s %d%%" % (label, round(pct)))
+    return "%s %s" % (display_safe(PROVIDER, PROVIDER_CAP), " · ".join(items)) if items else None
 
 
 def compose(stats_doc, limits_doc):

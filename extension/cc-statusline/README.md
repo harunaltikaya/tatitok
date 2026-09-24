@@ -9,11 +9,14 @@ running hub, and it prints one line:
 - Left, verified: today's tokens (input + output + cache write + cache read,
   the dashboard's total) and API-equivalent cost, summed from
   `GET /api/v1/stats/daily?from=D&to=D&timezone=Z`, the rows the dashboard's
-  range totals sum. D is today in the local zone Z, which is `$TZ` if set, else
-  the zone the `/etc/localtime` symlink points at, else UTC, and is passed as
-  `timezone=` the way the dashboard passes it.
+  range totals sum. D is today in the local zone Z, which is `$TZ` if set (one
+  leading `:` removed, as libc reads it), else the zone the `/etc/localtime`
+  symlink points at, else UTC, and is passed as `timezone=` the way the
+  dashboard passes it.
 - Right, reported: the `claude` provider's windows from `GET /api/v1/limits`,
   in the order the hub serves them (the companion extension's numbers).
+  Non-printable characters are dropped from the labels and each is cut to 48
+  characters, so the line stays one line of plain text.
 
 Claude Code pipes a JSON object on stdin (model, workspace, cost,
 context_window, rate_limits and so on). The script reads it to EOF with the agy
@@ -29,7 +32,10 @@ arrived, else `tatitok: hub down`. The script always exits 0.
   `settings.json.pre-tatitok-statusline` (0600). The key is spliced in as text,
   so every other key keeps its bytes. Install refuses when a different
   statusLine is already set or when the backup already exists. Installing
-  the same command twice changes nothing.
+  the same command twice changes nothing. One exception to byte-for-byte:
+  when settings.json is an empty object, the whitespace inside its braces is
+  not kept across install and uninstall; an empty object holds no user
+  content, and the parsed JSON stays equal.
 - Uninstall: same script with `--uninstall`. It removes the key only when its
   command is exactly this script's, and keeps the backup.
 - Custom hub address: set `TATITOK_HUB_URL` (default `http://127.0.0.1:8284`).

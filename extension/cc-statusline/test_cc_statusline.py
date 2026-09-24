@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "cc_statusline.py")
@@ -103,6 +104,24 @@ class LineTests(unittest.TestCase):
                                     stdin=io.BytesIO(b"{}"), deadline=time.monotonic() + 1), 0)
         self.assertEqual(out.getvalue(), LEFT + " | " + RIGHT + "\n")
 
+    def test_label_controls_and_length_give_one_clean_line(self):
+        limits = {"providers": {"claude": {"fetchedAt": 1, "windows": [
+            {"label": "Fable\x1b[2J\r\n7d", "usedPercent": 70.6, "resetAt": 1},
+            {"label": "\x1b]0;title\x07\x9b5h", "usedPercent": 63.2, "resetAt": 1},
+            {"label": "x" * 200, "usedPercent": 1, "resetAt": 1},
+            {"label": "\r\n\x1b", "usedPercent": 5, "resetAt": 1}]}}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cs.run(get=FakeHub(limits=limits), origin=("127.0.0.1", 8284), zone="UTC", now=NOW,
+                   stdin=io.BytesIO(b"{}"), deadline=time.monotonic() + 1)
+        text = out.getvalue()
+        self.assertEqual(text.count("\n"), 1)
+        self.assertTrue(text.endswith("\n"))
+        for c in ("\x1b", "\r", "\x07", "\x9b"):
+            self.assertNotIn(c, text)
+        self.assertEqual(text, LEFT + " | claude Fable[2J7d 71% · ]0;title5h 63% · " + "x" * 48 + " 1%\n")
+        self.assertEqual(cs.display_safe("p" * 30, cs.PROVIDER_CAP), "p" * 24)
+
     def test_stdin_is_read_to_eof(self):
         payload = b'{"session_id": "abc", "model": {"id": "x"}}'
         r, w = os.pipe()
@@ -151,6 +170,26 @@ class ZoneTests(unittest.TestCase):
             self.assertEqual(cs.today_in("Not/AZone", NOW), ("UTC", DAY))
         self.assertEqual(err.getvalue().count("\n"), 1)
         self.assertIn("Not/AZone", err.getvalue())
+
+    def test_leading_colon_in_tz(self):
+        os.symlink("/usr/share/zoneinfo/Asia/Tokyo", self.link)
+        self.assertEqual(cs.local_zone(env={"TZ": ":Europe/Istanbul"}, localtime=self.link),
+                         "Europe/Istanbul")
+        self.assertEqual(cs.local_zone(env={"TZ": "::Europe/Istanbul"}, localtime=self.link),
+                         ":Europe/Istanbul")  # exactly one is removed
+        self.assertEqual(cs.local_zone(env={"TZ": ":"}, localtime=self.link), "Asia/Tokyo")
+
+    def test_leading_colon_tz_at_the_utc_boundary(self):
+        # TZ=:Europe/Istanbul is Istanbul to libc; 22:00 UTC is already the
+        # next local day, and the stripped name is the timezone= value
+        now = datetime.datetime(2026, 9, 23, 22, 0, tzinfo=datetime.timezone.utc)
+        hub = FakeHub()
+        with unittest.mock.patch.dict(os.environ, {"TZ": ":Europe/Istanbul"}):
+            cs.status_line(get=hub, origin=("127.0.0.1", 8284), now=now,
+                           stdin=io.BytesIO(b"{}"), deadline=time.monotonic() + 1)
+        self.assertIn((("127.0.0.1", 8284),
+                       "/api/v1/stats/daily?from=2026-09-24&to=2026-09-24&timezone=Europe%2FIstanbul"),
+                      hub.paths)
 
     def test_local_date_at_the_utc_boundary(self):
         # 01:00 in Europe/Istanbul (UTC+3) is 22:00 the previous UTC day
