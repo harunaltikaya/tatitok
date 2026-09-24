@@ -205,9 +205,18 @@ func TestBackfillFixtures(t *testing.T) {
 		if e.Project == "" || e.SessionID == "" || len(e.Raw) == 0 {
 			t.Fatalf("missing project/session/raw on %s", e.ID)
 		}
-		// Every fixture record carries cwd: the project is that cwd.
-		if cwd, _ := e.Meta["cwd"].(string); cwd == "" || e.Project != cwd {
-			t.Fatalf("event %s project %q, want the record's cwd %q", e.ID, e.Project, cwd)
+	}
+	// Every fixture file records a cwd: each event's project is its file's
+	// first cwd (the session's launch dir).
+	for path, evs := range sink.byFile {
+		want := firstCwdInFile(t, path)
+		if want == "" {
+			t.Fatalf("fixture file %s records no cwd", path)
+		}
+		for _, e := range evs {
+			if e.Project != want {
+				t.Fatalf("event %s project %q, want the file's first cwd %q", e.ID, e.Project, want)
+			}
 		}
 	}
 
@@ -230,15 +239,34 @@ func TestBackfillFixtures(t *testing.T) {
 	}
 }
 
-// TestProjectFromCwd: a record's cwd is its project; a record without
-// cwd keeps the encoded folder name. The ID does not depend on either.
+// firstCwdInFile scans a session file for its first non-empty cwd.
+func firstCwdInFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range bytes.Split(b, []byte("\n")) {
+		var rec record
+		if json.Unmarshal(l, &rec) == nil && rec.Cwd != "" {
+			return rec.Cwd
+		}
+	}
+	return ""
+}
+
+// TestProjectFromCwd: a file's project is its first cwd (the session's
+// launch dir), on every record — also one before that cwd appears and
+// one whose own cwd differs, which keeps its own cwd in meta. A file
+// with no cwd keeps the encoded folder name. IDs do not depend on it.
 func TestProjectFromCwd(t *testing.T) {
 	fixtures, err := filepath.Glob(filepath.Join(fixtureBase, "projects", "*", "*.jsonl"))
 	if err != nil || len(fixtures) == 0 {
 		t.Fatalf("no fixture session files: %v", err)
 	}
-	var line []byte
-	var cwd string
+	// Two real billable records with different cwds.
+	var lines [][]byte
+	var cwds []string
 	for _, f := range fixtures {
 		b, err := os.ReadFile(f)
 		if err != nil {
@@ -246,46 +274,83 @@ func TestProjectFromCwd(t *testing.T) {
 		}
 		for _, l := range bytes.Split(b, []byte("\n")) {
 			var rec record
-			if json.Unmarshal(l, &rec) == nil && rec.Type == "assistant" && rec.Cwd != "" &&
-				rec.Message != nil && rec.Message.Usage != nil && rec.Message.Usage.InputTokens != nil {
-				line, cwd = l, rec.Cwd
+			if json.Unmarshal(l, &rec) != nil || rec.Type != "assistant" || rec.Cwd == "" ||
+				rec.Message == nil || rec.Message.Usage == nil || rec.Message.Usage.InputTokens == nil {
+				continue
+			}
+			if len(cwds) == 0 || rec.Cwd != cwds[0] {
+				lines, cwds = append(lines, l), append(cwds, rec.Cwd)
+			}
+			if len(lines) == 2 {
 				break
 			}
 		}
-		if line != nil {
+		if len(lines) == 2 {
 			break
 		}
 	}
-	if line == nil {
-		t.Fatal("no fixture assistant record with cwd")
+	if len(lines) != 2 {
+		t.Fatal("need two fixture assistant records with different cwds")
 	}
-	var obj map[string]any
-	if err := json.Unmarshal(line, &obj); err != nil {
-		t.Fatal(err)
+	dropCwd := func(l []byte) []byte {
+		var obj map[string]any
+		if err := json.Unmarshal(l, &obj); err != nil {
+			t.Fatal(err)
+		}
+		delete(obj, "cwd")
+		out, err := json.Marshal(obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
 	}
-	delete(obj, "cwd")
-	noCwd, err := json.Marshal(obj)
-	if err != nil {
-		t.Fatal(err)
+	root := filepath.Join(t.TempDir(), "projects")
+	src := adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}
+	run := func(folder string, recs ...[]byte) []core.Event {
+		t.Helper()
+		path := filepath.Join(root, folder, "s.jsonl")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(bytes.Join(recs, []byte("\n")), '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sink := newCollectSink(t)
+		if err := (Adapter{}).BackfillFile(context.Background(), src, path, sink); err != nil {
+			t.Fatal(err)
+		}
+		if len(sink.events) != len(recs) {
+			t.Fatalf("%s: %d events, want %d", folder, len(sink.events), len(recs))
+		}
+		return sink.events
 	}
 
-	src := adapters.Source{Harness: harnessName, Root: "/r", Machine: "gx10"}
-	withEv, ok, err := parseLine(line, src, "/r/-folder-x/s.jsonl", 0, "-folder-x", "s")
-	if err != nil || !ok {
-		t.Fatalf("parse with cwd: ok=%v err=%v", ok, err)
+	// Second record's cwd differs: both carry the first; meta keeps each own.
+	evs := run("-folder-a", lines[0], lines[1])
+	for i, e := range evs {
+		if e.Project != cwds[0] {
+			t.Errorf("record %d project %q, want the file's first cwd %q", i, e.Project, cwds[0])
+		}
+		if got, _ := e.Meta["cwd"].(string); got != cwds[i] {
+			t.Errorf("record %d meta cwd %q, want its own %q", i, got, cwds[i])
+		}
 	}
-	if withEv.Project != cwd {
-		t.Errorf("project %q, want the record's cwd %q", withEv.Project, cwd)
+	// A record before the first cwd takes it too.
+	early := run("-folder-b", dropCwd(lines[0]), lines[1])
+	for i, e := range early {
+		if e.Project != cwds[1] {
+			t.Errorf("early file record %d project %q, want %q", i, e.Project, cwds[1])
+		}
 	}
-	noEv, ok, err := parseLine(noCwd, src, "/r/-folder-x/s.jsonl", 0, "-folder-x", "s")
-	if err != nil || !ok {
-		t.Fatalf("parse without cwd: ok=%v err=%v", ok, err)
-	}
-	if noEv.Project != "-folder-x" {
-		t.Errorf("project %q, want the folder name when cwd is absent", noEv.Project)
-	}
-	if withEv.ID != noEv.ID {
-		t.Errorf("ID changed with cwd: %s vs %s", withEv.ID, noEv.ID)
+	// No cwd anywhere: the folder name.
+	none := run("-folder-c", dropCwd(lines[0]), dropCwd(lines[1]))
+	for i, e := range none {
+		if e.Project != "-folder-c" {
+			t.Errorf("no-cwd file record %d project %q, want the folder name", i, e.Project)
+		}
+		if e.ID != evs[i].ID {
+			t.Errorf("record %d ID changed with the project: %s vs %s", i, e.ID, evs[i].ID)
+		}
 	}
 }
 

@@ -29,7 +29,9 @@ import (
 // path (M1.1 ID hardening — all event IDs changed).
 // v3: Project is the record's cwd (folder name only when cwd is absent);
 // event IDs unchanged.
-const AdapterVersion = 3
+// v4: Project is the session's launch cwd — the file's first cwd, on
+// every record of the file; event IDs unchanged.
+const AdapterVersion = 4
 
 const harnessName = "claude-code"
 
@@ -304,8 +306,22 @@ func backfillFile(ctx context.Context, src adapters.Source, path string, sink ad
 		MTime: st.ModTime().UTC(),
 		Size:  st.Size(),
 	}
-	project := filepath.Base(filepath.Dir(path))
+	folder := filepath.Base(filepath.Dir(path))
 	sessionFromName := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+
+	// Project is the session's launch cwd: the first cwd the file records,
+	// on every record of the file (a record's own cwd follows cd and stays
+	// in meta). A file with no cwd keeps the encoded folder name.
+	project, err := firstCwd(bufio.NewReaderSize(f, 256*1024))
+	if err != nil {
+		return res, err, nil
+	}
+	if project == "" {
+		project = folder
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return res, err, nil
+	}
 
 	var batch []core.Event
 	flush := func() error {
@@ -333,7 +349,7 @@ func backfillFile(ctx context.Context, src adapters.Source, path string, sink ad
 		}
 		if len(line) > 0 {
 			res.LineCount++
-			ev, ok, perr := parseLine(line, src, path, lineIdx, project, sessionFromName)
+			ev, ok, perr := parseLine(line, src, path, lineIdx, folder, project, sessionFromName)
 			switch {
 			case perr != nil && errors.Is(lineErr, io.EOF):
 				// Unterminated final line that does not parse: a write in
@@ -367,6 +383,28 @@ func backfillFile(ctx context.Context, src adapters.Source, path string, sink ad
 	return res, nil, nil
 }
 
+// firstCwd returns the first non-empty cwd among the file's records ("" if
+// none); lines that do not parse are passed over.
+func firstCwd(r *bufio.Reader) (string, error) {
+	for {
+		line, err := readLine(r)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+		if len(line) > 0 {
+			var rec struct {
+				Cwd string `json:"cwd"`
+			}
+			if json.Unmarshal(line, &rec) == nil && rec.Cwd != "" {
+				return rec.Cwd, nil
+			}
+		}
+		if err != nil {
+			return "", nil
+		}
+	}
+}
+
 // parseLine returns (event, true, nil) for a billable assistant message,
 // (zero, false, nil) for a valid but non-billable record, and an error
 // for a malformed line.
@@ -377,7 +415,7 @@ func backfillFile(ctx context.Context, src adapters.Source, path string, sink ad
 // Code's locally generated assistant notices — no API usage); and
 // isApiErrorMessage entries.
 func parseLine(line []byte, src adapters.Source, path string, lineIdx int,
-	project, sessionFromName string) (core.Event, bool, error) {
+	folder, project, sessionFromName string) (core.Event, bool, error) {
 	var rec record
 	if err := json.Unmarshal(line, &rec); err != nil {
 		return core.Event{}, false, err
@@ -406,7 +444,7 @@ func parseLine(line []byte, src adapters.Source, path string, lineIdx int,
 	if rec.Message.ID != "" && rec.RequestID != "" {
 		id = core.EventID(harnessName, rec.Message.ID, rec.RequestID)
 	} else {
-		fileRel := project + "/" + filepath.Base(path)
+		fileRel := folder + "/" + filepath.Base(path)
 		id = core.FallbackID(harnessName, fileRel, lineIdx, rec.Timestamp)
 	}
 
@@ -441,15 +479,6 @@ func parseLine(line []byte, src adapters.Source, path string, lineIdx int,
 		sessionID = sessionFromName
 	}
 
-	// Project is the record's working directory, the value the other
-	// harnesses carry, so one directory reads as one project. A record
-	// without cwd keeps the encoded folder name. The fallback ID above
-	// stays keyed on the folder name.
-	eventProject := project
-	if rec.Cwd != "" {
-		eventProject = rec.Cwd
-	}
-
 	return core.Event{
 		ID:          id,
 		TS:          ts.UTC(),
@@ -459,7 +488,7 @@ func parseLine(line []byte, src adapters.Source, path string, lineIdx int,
 		Provider:    "anthropic",
 		Model:       rec.Message.Model,
 		ModelFamily: rec.Message.Model, // unknown models pass through raw until the mapping milestone
-		Project:     eventProject,
+		Project:     project,
 		SessionID:   sessionID,
 		RequestID:   rec.RequestID,
 		TokensInput: *u.InputTokens, TokensOutput: *u.OutputTokens,
