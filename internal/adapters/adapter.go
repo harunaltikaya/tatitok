@@ -28,6 +28,7 @@ package adapters
 import (
 	"context"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -136,17 +137,39 @@ type SkippedDir struct {
 // (claude-code's <folder>/<session>/subagents/ included), that match
 // accepts, in lexical order. A directory below root that cannot be read
 // is returned in skipped; an unreadable root is an error.
+//
+// WalkDir does not follow a symlinked root, so a root that is itself a
+// symlink (~/.claude/projects linked elsewhere) is walked at its target
+// and every path is reported under root as given — source paths and
+// event ids do not depend on the link. A dangling root link is an
+// error. Symlinks below root are not followed.
 func ListFiles(root string, match func(path string) string) (files []string, skipped []SkippedDir, err error) {
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	walkRoot := root
+	if fi, lerr := os.Lstat(root); lerr == nil && fi.Mode()&fs.ModeSymlink != 0 {
+		if walkRoot, err = filepath.EvalSymlinks(root); err != nil {
+			return nil, nil, err
+		}
+	}
+	under := func(path string) string {
+		if path == walkRoot {
+			return root
+		}
+		if walkRoot == root {
+			return path
+		}
+		rel, _ := filepath.Rel(walkRoot, path)
+		return filepath.Join(root, rel)
+	}
+	err = filepath.WalkDir(walkRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			if path == root {
+			if path == walkRoot {
 				return err
 			}
-			skipped = append(skipped, SkippedDir{Path: path, Err: err})
+			skipped = append(skipped, SkippedDir{Path: under(path), Err: err})
 			return nil
 		}
-		if !d.IsDir() && match(path) != "" {
-			files = append(files, path)
+		if !d.IsDir() && match(under(path)) != "" {
+			files = append(files, under(path))
 		}
 		return nil
 	})

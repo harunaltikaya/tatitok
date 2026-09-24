@@ -396,6 +396,52 @@ func TestBackfillNestedSubagents(t *testing.T) {
 	}
 }
 
+// A projects root that is a symlink to a directory (review 0925a F1):
+// Backfill ingests both files through the link, with source paths
+// under the link, not its target.
+func TestBackfillSymlinkedRoot(t *testing.T) {
+	fixtures, err := filepath.Glob(filepath.Join(fixtureBase, "projects", "*", "*.jsonl"))
+	if err != nil || len(fixtures) == 0 {
+		t.Fatalf("no fixture session files: %v", err)
+	}
+	realLog, err := os.ReadFile(fixtures[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real")
+	for _, p := range []string{
+		filepath.Join(target, "-folder", "s.jsonl"),
+		filepath.Join(target, "-folder", "s", "subagents", "agent-a.jsonl"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, realLog, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := filepath.Join(dir, "projects")
+	if err := os.Symlink(target, root); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	top := filepath.Join(root, "-folder", "s.jsonl")
+	nested := filepath.Join(root, "-folder", "s", "subagents", "agent-a.jsonl")
+
+	src := adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}
+	sink := newCollectSink(t)
+	if err := (Adapter{}).Backfill(context.Background(), src, sink); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	got := map[string]int{}
+	for _, res := range sink.results {
+		got[res.Path] = res.Events
+	}
+	if len(got) != 2 || got[top] == 0 || got[nested] == 0 {
+		t.Fatalf("backfill files = %v, want both %s and %s with events", got, top, nested)
+	}
+}
+
 // Hard rule 5: re-ingesting the same files twice must yield identical DB
 // contents.
 func TestReingestIdempotent(t *testing.T) {
