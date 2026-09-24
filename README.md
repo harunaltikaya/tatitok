@@ -189,11 +189,19 @@ The charts aren't static — any panel expands to fullscreen, and hovering a day
 
 Privacy, restated plainly: it binds to loopback only (a non-loopback bind is refused), makes no network calls of its own, and sends no telemetry — ever. Your prompts and responses are never stored, only token counts and metadata.
 
+### Compared with the period before
+
+Under the home page's **value extracted** figure, and under the API-equivalent and token totals on the detail page, a muted line compares your range with the one just before it:
+
+    prev $812.40 (+36%)
+
+The previous period has the same number of calendar days and ends the day before your range starts. Its days are counted in the timezone you've selected, and it uses the same filters. The percent is the change from the previous period to yours, rounded to a whole number. When the previous value is 0, the line shows the value with no percent. There's no line for the "all" preset, which starts at 1970-01-01 with nothing before it, or when the previous period fails to load. A page opened on a range the hub rejects, such as a hand-edited `from` in the URL, shows the error and no line.
+
 ### Projects
 
 The detail page's **by project** panel breaks the range out by the directory the work ran in. Where that directory comes from depends on the harness:
 
-- **Claude Code**: the session's launch directory, which is the first `cwd` recorded in its transcript. It applies to every turn in that transcript, so a `cd` mid-session doesn't split one repo into its subfolders. A transcript that records no `cwd` falls back to the name of its folder under `~/.claude/projects`.
+- **Claude Code**: the session's launch directory, which is the first `cwd` recorded in its transcript. It applies to every turn in that transcript, so a `cd` mid-session doesn't split one repo into its subfolders. A transcript that records no `cwd` falls back to the name of its parent folder under the Claude Code projects root tatitok detected. That root is usually `~/.claude/projects`, but it can also be `~/.config/claude/projects`, or the `projects` folder of each directory in `CLAUDE_CONFIG_DIR` when that's set.
 - **Codex, OpenCode, pi and agy**: the working directory the harness records.
 
 A project is shown by its last folder name, so `/path/to/tatitok` reads `tatitok`, in the panel, the facet rail and the filter chips. Hover the name to see the full path. Clicking a project in the panel or the rail filters on the full path, so two directories that share a last folder name stay separate rows. Usage with no project reads "(none)".
@@ -225,6 +233,15 @@ The panel refreshes on every live update, whatever range you've picked. It reads
   ]
 }
 ```
+
+### Cache hit rate
+
+The detail page's **cache hit rate (by harness)** panel shows how much of each harness's input came from the prompt cache over the selected range. It has one row per harness with events in the range, largest first, and a total row:
+
+- **hit rate**: cache-read ÷ (input + cache-read), to one decimal place, or "—" when both are 0.
+- **cache read** and **input**: the two token counts behind the rate.
+
+Each rate is taken on counts summed over the range. The total row's rate is taken on the sums across harnesses, not averaged from the rows above it. Cache writes aren't part of the ratio. That matters for Claude Code: its input count is only the part of each prompt that was neither written to nor read from the cache, so its rate usually reads close to 100%. For Codex, input plus cache-read is the whole prompt. The panel follows the page's range, filters and timezone.
 
 ## Honest scope (this is a v1)
 
