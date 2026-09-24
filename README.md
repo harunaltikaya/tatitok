@@ -243,6 +243,40 @@ The detail page's **cache hit rate (by harness)** panel shows how much of each h
 
 Each rate is taken on counts summed over the range. The total row's rate is taken on the sums across harnesses, not averaged from the rows above it. Cache writes aren't part of the ratio. That matters for Claude Code: its input count is only the part of each prompt that was neither written to nor read from the cache, so its rate usually reads close to 100%. For Codex, input plus cache-read is the whole prompt. The panel follows the page's range, filters and timezone.
 
+### Sessions
+
+The detail page's **sessions** panel has one row per session with events in the selected range. A session is one conversation in one harness, identified by the session id the harness records. Only events inside the range count, so a session that started before your range shows just its part inside it. Rows are sorted by API-equivalent value, largest first, then by first event, earlier first. The panel shows the top 200; when there are more, a line under the table reads "200 of N sessions". The columns:
+
+- **session**: the first 8 characters of the id. Hover it to see the full id. A session stored without an id reads "(none)".
+- **harness**.
+- **project**: the project of the session's first event in the range, shown by its last folder name as in the [by project](#projects) panel. Hover it to see the full path.
+- **start**: the session's first event in the range, as month-day and hour:minute (`09-18 11:56`) in the timezone you've selected.
+- **events**, **tokens** (input, output, cache write and cache read) and **API-equivalent**.
+
+Click a row to filter by that session. A chip reading `session:` and the id's first 8 characters appears (hover it for the full id), the row is highlighted, and the page's charts, tables and totals narrow to that session like they do for any other filter. Click the row again, or the chip, to clear it. The filter is kept in the page URL as `session=<id>`, next to the other filters, so a filtered view can be bookmarked. The hub accepts an id of at most 64 printable characters and answers anything else with a 400; `session=` with nothing after it matches sessions stored without an id.
+
+Plain daily figures and totals (`GET /api/v1/stats/daily` and `GET /api/v1/totals`) are normally served from rollups, tables of usage already summed per day or hour. The rollups don't carry an event's cost basis or its session, so a session filter, like a basis filter, makes the hub read the raw events instead. Each payload says which it used, as `"source":"rollup"` or `"source":"events"`, and the badge at the right end of the header shows the same word. (A timezone whose day boundaries don't fall on whole UTC hours reads events too.) `GET /api/v1/stats/activity`, behind the home page's heatmap, has no rollup: it always reads events, and its payload now declares `"source":"events"` as well.
+
+The panel reads `GET /api/v1/stats/sessions`. It takes `from` and `to` (`YYYY-MM-DD`, both optional), `timezone` (an IANA name, UTC by default) and the filters `harness`, `provider`, `model`, `project`, `basis` and `session`, each repeatable; any other parameter is a 400. The payload has `tz`, `source` (always `"events"`), `total` (the session count before the cap), `limit` (200), `sessions`, and `filters` when any are set. Each row looks like this:
+
+```json
+{
+  "session": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "harness": "claude-code",
+  "project": "/path/to/tatitok",
+  "firstTs": "2026-09-18T08:56:59Z",
+  "lastTs": "2026-09-18T15:38:52Z",
+  "events": 238,
+  "inputTokens": 476,
+  "outputTokens": 275566,
+  "cacheCreationTokens": 949759,
+  "cacheReadTokens": 76173090,
+  "costAPIEquivMicro": 54475724
+}
+```
+
+`session` and `project` are the raw values (`""` when the harness left them empty). `firstTs` and `lastTs` are the first and last events inside the range, in UTC to the second. `costAPIEquivMicro` is the API-equivalent value in millionths of a dollar, so the row above is $54.48.
+
 ## Honest scope (this is a v1)
 
 A few things to know going in:
