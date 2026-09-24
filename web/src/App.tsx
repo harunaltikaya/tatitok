@@ -36,6 +36,7 @@ import {
   emptyFilters,
   facetDims,
   filterQuery,
+  projectLabel,
   filtersFromURL,
   filtersToURL,
   rawValue,
@@ -665,7 +666,13 @@ export default function App() {
       <Breakdown totals={sortTotals(sumByKey(modelSeries), sort)} sort={sort} onSort={onSort} bases={modelBases} onSelect={onModelSelect} active={filters.model} />
     ),
     "break-project": (
-      <Breakdown totals={sortTotals(sumByKey(byProject), sort)} sort={sort} onSort={onSort} onSelect={(raw) => toggle("project", raw)} active={filters.project} />
+      <Breakdown
+        totals={sortTotals(sumByKey(byProject).map((t) => ({ ...t, key: projectLabel(t.raw) })), sort)}
+        sort={sort}
+        onSort={onSort}
+        onSelect={(raw) => toggle("project", raw)}
+        active={filters.project}
+      />
     ),
     "ingest-health": <IngestHealth sources={sources} />,
   };
@@ -802,7 +809,8 @@ export default function App() {
             <FilterChip
               key={`${c.dim}|${c.value}`}
               dim={c.dim}
-              value={displayValue(c.value)}
+              value={c.dim === "project" ? projectLabel(c.value) : displayValue(c.value)}
+              {...(c.dim === "project" && c.value !== "" ? { title: c.value } : {})}
               onRemove={() => setFilters((f) => removeValue(f, c.dim, c.value))}
             />
           ))}

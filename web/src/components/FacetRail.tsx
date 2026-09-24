@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { FacetValue } from "../api";
 import { compactTokens } from "../api";
-import { displayValue, facetDims, hasValue, type FacetDim, type FilterState } from "../filters";
+import { displayValue, facetDims, hasValue, projectLabel, type FacetDim, type FilterState } from "../filters";
 import { railItems, FILTER_TOP_N, type Locals } from "../aggregate";
 import Card from "../ui/Card";
 
@@ -87,7 +87,11 @@ export default function FacetRail({
         onClick={() => onToggle(dim, value)}
         title={`${displayValue(value)} — ${events} events (click to ${selected ? "unfilter" : "filter"})`}
       >
-        <span className="truncate">{displayValue(value)}</span>
+        {dim === "project" ? (
+          <span className="truncate" title={value || undefined}>{projectLabel(value)}</span>
+        ) : (
+          <span className="truncate">{displayValue(value)}</span>
+        )}
         <span className="ml-2 shrink-0 text-xs tabular-nums" style={{ color: "var(--text-faint)" }}>
           {compactTokens(events)}
         </span>

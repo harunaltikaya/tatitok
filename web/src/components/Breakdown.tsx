@@ -124,7 +124,7 @@ export default function Breakdown({
             onClick={onSelect ? () => onSelect(t.raw) : undefined}
             title={onSelect ? "click to filter" : undefined}
           >
-            <td className="max-w-48 truncate py-1.5 pr-2 text-primary" title={t.key}>
+            <td className="max-w-48 truncate py-1.5 pr-2 text-primary" title={t.raw || t.key}>
               {/* Provider-channel swatch (M8 1F): a leading colour chip tying
                   the row to its chart/donut colour (Anthropic brand, others
                   hashed). Decorative — the provider NAME carries the meaning. */}

@@ -67,6 +67,17 @@ export function displayValue(v: string): string {
   return v === "" ? "(none)" : v;
 }
 
+// projectLabel prints a project by name: the last path segment of the raw
+// value ("(none)" for ""). Trailing slashes are ignored ("/a/b/" → "b"); a
+// value without "/" (a claude-code folder name, "~") and an all-slash value
+// print unchanged. Display only — filters keep the raw path.
+export function projectLabel(raw: string): string {
+  if (raw === "") return "(none)";
+  const trimmed = raw.replace(/\/+$/, "");
+  if (trimmed === "") return raw;
+  return trimmed.slice(trimmed.lastIndexOf("/") + 1);
+}
+
 export function rawValue(display: string): string {
   return display === "(none)" ? "" : display;
 }
