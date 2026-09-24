@@ -45,7 +45,7 @@ There's one card per provider. The flow:
 
 1. **It pre-fills what it can detect.** Your ChatGPT/Codex tier (Plus, Pro, …) is read straight from your Codex logs and shown already selected, marked with a `✓`.
 
-2. **It asks for what it can't.** Your Claude tier — Free, Pro, Max 5×, or Max 20× — isn't recorded in any log, so the Claude card reads *"choose your plan — not auto-detectable"* and waits for you to pick. Same story for ChatGPT **Pro $100 vs $200**: both look identical in the logs (*"Codex Pro detected — pick $100 or $200"*), so you choose. The third card, **Google AI Pro** (for Antigravity CLI), is always your call too: pick AI Pro or metered.
+2. **It asks for what it can't.** Your Claude tier — Free, Pro, Max 5×, or Max 20× — isn't recorded in any log, so the Claude card reads *"choose your plan — not auto-detectable"* and waits for you to pick. ChatGPT Pro is half the same story. When Codex logs the plan as `prolite`, that is the $100 tier, and the card shows it detected as **Pro $100**. When the logs say plain `pro`, **Pro $100 and $200** look identical (*"Codex Pro detected — pick $100 or $200"*), so you choose. The third card, **Google AI Pro** (for Antigravity CLI), is always your call too: pick AI Pro or metered.
 
 3. **Prices are pre-filled at published list rates.** Each paid tier shows its monthly price in an editable box. If your real bill differs — tax, annual billing, a promo — just edit it.
 
@@ -57,9 +57,11 @@ You can dismiss the panel with **"skip for now"** and reopen it anytime from the
 
 Each declared plan gets a card on the dashboard with its live usage-limit windows. The Claude and ChatGPT windows come from the [browser extension](#the-browser-extension-optional). The Google AI Pro card shows Antigravity's four windows, fed by the [agy hook](#the-agy-hook-antigravity-cli): Gemini 5h and weekly, and Claude+GPT 5h and weekly (the non-Gemini models inside agy).
 
+Each card is titled with its plan's label, which onboarding fills in from the tier you pick: "Claude Max 5x", "ChatGPT Plus", "Google AI Pro" and so on. Both ChatGPT Pro tiers read "ChatGPT Pro"; the card's monthly price tells them apart. The label is display text only. It's stored as `"label"` on the plan in `~/.config/tatitok/prices.json` (under `$XDG_CONFIG_HOME` if you set it), so you can edit it there to rename a card. Nothing is repriced, so no `recompute` is needed; the hub shows the new title the next time `serve` starts. A plan without a label is titled by its name (`claude-max`, `chatgpt-plus`, `google-ai-pro`).
+
 ### Why it asks instead of guessing
 
-This is the whole idea, so it's worth saying plainly. Your Claude subscription tier genuinely is not in any log tatitok can read (the API's `service_tier` field is a serving class, not your plan), and ChatGPT Pro $100 and Pro $200 are indistinguishable in the Codex logs. tatitok *could* guess — but the point of the tool is to tell you a true number, and a guessed plan would silently fake the one figure you came here to trust. So it detects what's real, asks for what isn't, and shows every price as an editable default. Nothing is invented.
+This is the whole idea, so it's worth saying plainly. Your Claude subscription tier genuinely is not in any log tatitok can read (the API's `service_tier` field is a serving class, not your plan), and when the Codex logs say plain `pro`, ChatGPT Pro $100 and Pro $200 are indistinguishable. tatitok *could* guess — but the point of the tool is to tell you a true number, and a guessed plan would silently fake the one figure you came here to trust. So it detects what's real, asks for what isn't, and shows every price as an editable default. Nothing is invented.
 
 > Prefer the terminal? `tatitok onboard` does the same thing from the CLI: it auto-detects your Codex tier, prompts for the rest, and prints the `tatitok recompute --pricing` step that reprices your stored events. Run `tatitok onboard --help` for the flags.
 
@@ -70,6 +72,10 @@ The dashboard's core is built only from numbers your local logs actually contain
 ![Two usage-limit cards — claude-max with 5h, 7d and Sonnet windows showing $1190.67 extracted vs $200.00/mo (6.0×), and chatgpt-plus with 5h and Weekly windows showing $264.09 vs $20.00/mo (13.2×)](docs/images/limit-cards.png)
 
 *The cards the extension feeds: each window's usage, plus how much value you've pulled from the plan against its monthly price (6.0× and 13.2× here).*
+
+The current extension is version 0.6.2. On the Claude card it shows every usage bucket claude.ai reports for your account (such as 5h and 7d), plus the scoped weekly windows from the `limits` list in the same response, such as "Fable 7d". The Claude Code cloud-session credit is one of those buckets and appears as "iguana_necktie (cloud credit)"; the codename stays in the label because claude.ai may rename it. On the ChatGPT card it shows the 5h and weekly windows. After pulling a new version, click the extension's reload button on `chrome://extensions`.
+
+The hub takes provider names and window labels as short plain text only. When the extension (or any other feeder) posts to `POST /api/v1/limits`, each one must be non-blank, at most 64 characters and printable. Anything else is refused with a 400 and the whole post is dropped.
 
 Setup is manual for now — it isn't in the Chrome Web Store yet:
 
@@ -109,6 +115,47 @@ That writes a systemd user service and a daily timer to `~/.config/systemd/user/
 It's add-only: tatitok prices an event from that file only when the pinned snapshot has no entry for its model, so no rate the snapshot knows ever changes. The download is the companion's job. The tatitok binary still makes no network calls; it only reads the file, and a running hub picks up a new one without a restart. The live layer prices new events as they arrive and does not bulk-reprice stored history. `tatitok recompute --pricing` is the explicit way to apply it throughout; re-ingested rows and `tatitok recompute --model-map` pick it up as they run.
 
 To remove it, run the same script with `--uninstall`. It removes the two units only if they're still the ones it wrote.
+
+## Limit alerts (optional)
+
+`extension/quota-alert/` sends a desktop notification when a usage-limit window crosses a threshold you set. It's plain Python with the standard library only. Every 5 minutes it reads the same numbers the cards show from your running hub (`GET /api/v1/limits`, loopback only) and, for any window at or above its threshold, runs `notify-send`:
+
+    tatitok
+    claude Fable 7d 71% — resets 14:00
+
+Each window alerts once per crossing. A state file remembers the reset time it alerted for, and the window stays quiet until the provider reports a new one. Nothing is sent on the way down. It makes no network calls beyond that loopback read.
+
+Configure it in `~/.config/tatitok/alerts.json` (under `$XDG_CONFIG_HOME` if you set it):
+
+```json
+{
+  "hub_url": "http://127.0.0.1:8284",
+  "default_threshold": 80,
+  "thresholds": { "claude": { "Fable 7d": 70 } }
+}
+```
+
+`default_threshold` is required. `hub_url` is optional and must be `http://127.0.0.1[:port]` or `http://localhost[:port]`. `thresholds` is optional, keyed by provider (`claude`, `codex`, `agy`) and then by the window label the hub reports (for agy that's the raw key, such as `gemini-5h`). Then install it:
+
+```sh
+python3 extension/quota-alert/quota_alert.py --install
+```
+
+That writes a systemd user service and a 5-minute timer to `~/.config/systemd/user/` and enables the timer. It refuses to overwrite units it didn't write. `--uninstall` disables the timer and removes only its own units. Notifications need a desktop session; see [`extension/quota-alert/README.md`](extension/quota-alert/README.md).
+
+## Claude Code status line (optional)
+
+`extension/cc-statusline/` is a status line for Claude Code, the agy hook's twin in the other direction. It's plain Python with the standard library only, and it prints one line from your running hub:
+
+    today 1.2M tok · $14.20 api-eq | claude 5h 63% · 7d 57% · Fable 7d 71%
+
+The left part is verified, counted from your own logs: today's tokens (input, output, cache write and cache read, the dashboard's total) and their API-equivalent cost. "Today" is your local calendar day, taken from `$TZ`, else the zone `/etc/localtime` points at, else UTC. The right part is reported: the Claude windows the browser extension posted. It asks the hub over loopback only and has a 200 ms budget: whatever hasn't arrived in time is left out, and with the hub down the line reads `tatitok: hub down`.
+
+```sh
+python3 extension/cc-statusline/cc_statusline.py --install
+```
+
+That sets `statusLine` in `~/.claude/settings.json`, first copying the file to `settings.json.pre-tatitok-statusline`. It refuses if a different status line is already set. `--uninstall` removes the entry only if it's still this script, and keeps the backup. See [`extension/cc-statusline/README.md`](extension/cc-statusline/README.md) for details.
 
 ## How it works / what's tracked
 
