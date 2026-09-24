@@ -67,6 +67,7 @@ import { sumByKey, rollupRows, mergeFamilies, chartCells, sortTotals, brandColor
 import PlanCard from "./components/Plans";
 import Heatmap from "./components/Heatmap";
 import IngestHealth from "./components/IngestHealth";
+import CacheHit from "./components/CacheHit";
 import MeterBar from "./ui/MeterBar";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
@@ -675,6 +676,7 @@ export default function App() {
       />
     ),
     "ingest-health": <IngestHealth sources={sources} />,
+    "cache-hit": <CacheHit rows={byHarness} />,
   };
 
   return (

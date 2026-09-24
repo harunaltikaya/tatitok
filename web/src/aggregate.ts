@@ -362,3 +362,41 @@ export function activityGrid(buckets: ActivityBucket[], metric: (b: ActivityBuck
   }
   return grid;
 }
+
+// --- cache hit rate per harness ----------------------------------------------
+
+export interface CacheHitRow {
+  key: string; // display form ("(none)" for the empty value)
+  raw: string;
+  cacheRead: number;
+  input: number;
+  hitRate: string; // "12.3%", or "—" when input + cache-read is 0
+}
+
+// hitRateLabel: cache-read ÷ (input + cache-read), one decimal.
+function hitRateLabel(cacheRead: number, input: number): string {
+  const denom = input + cacheRead;
+  return denom === 0 ? "—" : `${((cacheRead / denom) * 100).toFixed(1)}%`;
+}
+
+// cacheHitRows: one row per harness present in the served by-harness rows
+// (a row exists only for a harness with events that day), largest
+// input + cache-read first, plus a total summed from the same rows. The
+// total's rate is computed on the summed counts, not averaged.
+export function cacheHitRows(rows: DailyByRow[]): { rows: CacheHitRow[]; total: CacheHitRow } {
+  const acc = new Map<string, { cacheRead: number; input: number }>();
+  let cacheRead = 0;
+  let input = 0;
+  for (const r of rows) {
+    const t = acc.get(r.key) ?? { cacheRead: 0, input: 0 };
+    t.cacheRead += r.cacheReadTokens;
+    t.input += r.inputTokens;
+    acc.set(r.key, t);
+    cacheRead += r.cacheReadTokens;
+    input += r.inputTokens;
+  }
+  const out = [...acc.entries()]
+    .map(([raw, t]) => ({ key: displayValue(raw), raw, ...t, hitRate: hitRateLabel(t.cacheRead, t.input) }))
+    .sort((a, b) => b.input + b.cacheRead - (a.input + a.cacheRead) || (a.raw < b.raw ? -1 : a.raw > b.raw ? 1 : 0));
+  return { rows: out, total: { key: "total", raw: "", cacheRead, input, hitRate: hitRateLabel(cacheRead, input) } };
+}

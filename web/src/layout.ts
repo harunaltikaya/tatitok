@@ -37,6 +37,7 @@ export const PANELS: PanelDef[] = [
   { id: "break-model", title: "by model", defaultSpan: 2, kind: "table" },
   { id: "break-project", title: "by project", defaultSpan: 2, kind: "table" },
   { id: "ingest-health", title: "ingest health", defaultSpan: 4, kind: "table" },
+  { id: "cache-hit", title: "cache hit rate (by harness)", defaultSpan: 2, kind: "table" },
 ];
 
 export interface PanelState {
