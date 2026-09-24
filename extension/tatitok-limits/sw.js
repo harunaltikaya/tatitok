@@ -258,6 +258,11 @@ const CLAUDE_LABELS = {
   seven_day: "7d",
   seven_day_sonnet: "Sonnet 7d",
   seven_day_opus: "Opus 7d",
+  // claude.ai reports the Claude Code cloud-session credit as a bucket under
+  // this key (utilization = share of the credit used, resets_at = its expiry),
+  // seen live 2026-09-24; the key stays in the label because it is a codename
+  // that may be renamed upstream.
+  iguana_necktie: "iguana_necktie (cloud credit)",
 };
 
 function normalizeClaude(data) {

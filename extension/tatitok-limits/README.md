@@ -23,7 +23,9 @@ dashboard-gated `chrome.alarms` timer and writes normalized windows to
 - **Claude** — cookie session, `GET /api/organizations/<org>/usage`. Every
   non-null `{ utilization, resets_at }` bucket becomes a window, and the
   scoped weekly windows (e.g. "Fable 7d") are read from the response's
-  `limits` array (its `weekly_scoped` entries). `<org>` is the
+  `limits` array (its `weekly_scoped` entries). The Claude Code cloud-session
+  credit arrives as the `iguana_necktie` bucket and is labelled
+  "iguana_necktie (cloud credit)". `<org>` is the
   user's own org id, **discovered at runtime** from `GET /api/organizations`
   (same session) and cached — never hardcoded; an optional override lives in the
   options page, and the Claude poll is skipped (not crashed) when no org is known.
