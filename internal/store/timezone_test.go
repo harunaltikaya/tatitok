@@ -67,14 +67,14 @@ func TestWholeHourZone(t *testing.T) {
 		want bool
 	}{
 		{"UTC", true},
-		{"Asia/Tokyo", true},            // +09:00, no DST
-		{"Europe/Istanbul", true},       // +03:00, no DST since 2016
-		{"America/New_York", true},      // -05:00 / -04:00, whole-hour DST
-		{"Europe/Berlin", true},         // +01:00 / +02:00, whole-hour DST
-		{"Pacific/Apia", true},          // +13:00 date-line, whole-hour
-		{"Asia/Kolkata", false},         // +05:30, fractional
-		{"Asia/Kathmandu", false},       // +05:45, fractional
-		{"Australia/Lord_Howe", false},  // +10:30 / +11:00, half-hour DST
+		{"Asia/Tokyo", true},           // +09:00, no DST
+		{"Europe/Istanbul", true},      // +03:00, no DST since 2016
+		{"America/New_York", true},     // -05:00 / -04:00, whole-hour DST
+		{"Europe/Berlin", true},        // +01:00 / +02:00, whole-hour DST
+		{"Pacific/Apia", true},         // +13:00 date-line, whole-hour
+		{"Asia/Kolkata", false},        // +05:30, fractional
+		{"Asia/Kathmandu", false},      // +05:45, fractional
+		{"Australia/Lord_Howe", false}, // +10:30 / +11:00, half-hour DST
 	}
 	for _, c := range cases {
 		if got := wholeHourZone(mustLoad(t, c.zone), lo, hi); got != c.want {

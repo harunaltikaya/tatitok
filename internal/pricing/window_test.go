@@ -19,9 +19,9 @@ func TestPlanWindowsPartition(t *testing.T) {
 	events := []WindowEvent{
 		{TS: at(9, 30), Input: 100, EquivMicro: 10},
 		{TS: at(9, 45), Output: 50, EquivMicro: 5},
-		{TS: at(13, 59), CacheRead: 7, EquivMicro: 1},   // still inside [09:00, 14:00)
-		{TS: at(14, 0), Input: 1, EquivMicro: 2},        // at end — opens [14:00, 19:00)
-		{TS: at(23, 30), Input: 9, Unpriced: true},      // gap — opens [23:00, 04:00)
+		{TS: at(13, 59), CacheRead: 7, EquivMicro: 1}, // still inside [09:00, 14:00)
+		{TS: at(14, 0), Input: 1, EquivMicro: 2},      // at end — opens [14:00, 19:00)
+		{TS: at(23, 30), Input: 9, Unpriced: true},    // gap — opens [23:00, 04:00)
 	}
 	w := PlanWindows(events, dur, AnchorFloored)
 	if len(w) != 3 {

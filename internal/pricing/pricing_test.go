@@ -136,7 +136,7 @@ func TestResolveBases(t *testing.T) {
 		{"opencode", "deepseek-v4-flash-free", "deepseek-v4-flash", BasisAPIPrice, false},
 		{"deepseek", "deepseek-v4-flash", "deepseek-v4-flash", BasisAPIPrice, false},
 		{"nonsuch", "nonsuch-v0", "nonsuch-v0", BasisUnknown, false}, // absent from snapshot — honest unknown
-		{"openai", "", "", BasisUnknown, false},                                     // codex pre-turn_context
+		{"openai", "", "", BasisUnknown, false},                      // codex pre-turn_context
 		{"openai", "gpt-5.5", "gpt-5.5", BasisAPIPrice, false},
 	}
 	for _, c := range cases {
@@ -1087,22 +1087,22 @@ func TestPlanParsing(t *testing.T) {
 	}
 
 	bad := map[string]string{
-		"missing name":   `{"plans": [{"matchers": [{"harness": "h"}], "window": "5h"}]}`,
-		"duplicate name": `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h"}, {"name": "p", "matchers": [{"harness": "x"}], "window": "5h"}]}`,
-		"no matchers":    `{"plans": [{"name": "p", "window": "5h"}]}`,
+		"missing name":                           `{"plans": [{"matchers": [{"harness": "h"}], "window": "5h"}]}`,
+		"duplicate name":                         `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h"}, {"name": "p", "matchers": [{"harness": "x"}], "window": "5h"}]}`,
+		"no matchers":                            `{"plans": [{"name": "p", "window": "5h"}]}`,
 		"empty matcher (would cover everything)": `{"plans": [{"name": "p", "matchers": [{}], "window": "5h"}]}`,
-		"missing window":      `{"plans": [{"name": "p", "matchers": [{"harness": "h"}]}]}`,
-		"unparseable window":  `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5 hours"}]}`,
-		"non-positive window": `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "-5h"}]}`,
-		"bad weekly cap":      `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "weekly_cap_equiv_usd": "lots"}]}`,
-		"zero monthly price":  `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "monthly_price_usd": "0"}]}`,
-		"unknown plan key":    `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "cap": "1"}]}`,
-		"unknown matcher key": `{"plans": [{"name": "p", "matchers": [{"harnes": "h"}], "window": "5h"}]}`,
-		"invalid window_start": `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "window_start": "rounded"}]}`,
+		"missing window":                         `{"plans": [{"name": "p", "matchers": [{"harness": "h"}]}]}`,
+		"unparseable window":                     `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5 hours"}]}`,
+		"non-positive window":                    `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "-5h"}]}`,
+		"bad weekly cap":                         `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "weekly_cap_equiv_usd": "lots"}]}`,
+		"zero monthly price":                     `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "monthly_price_usd": "0"}]}`,
+		"unknown plan key":                       `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "cap": "1"}]}`,
+		"unknown matcher key":                    `{"plans": [{"name": "p", "matchers": [{"harnes": "h"}], "window": "5h"}]}`,
+		"invalid window_start":                   `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "5h", "window_start": "rounded"}]}`,
 		// Codex M5 round, finding 3 (MED): hour-floored starts overlap
 		// for non-whole-hour durations ≥ 1h (90m: [09:00,10:30) then
 		// [10:00,11:30)) — rejected at load, by validation not new math.
-		"non-whole-hour floored window": `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "90m"}]}`,
+		"non-whole-hour floored window":            `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "90m"}]}`,
 		"non-whole-hour floored window (explicit)": `{"plans": [{"name": "p", "matchers": [{"harness": "h"}], "window": "1h30m", "window_start": "floored"}]}`,
 	}
 	dir := t.TempDir()
