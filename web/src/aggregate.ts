@@ -370,12 +370,13 @@ export interface CacheHitRow {
   raw: string;
   cacheRead: number;
   input: number;
-  hitRate: string; // "12.3%", or "—" when input + cache-read is 0
+  cacheWrite: number;
+  hitRate: string; // "12.3%", or "—" when input + cache-write + cache-read is 0
 }
 
-// hitRateLabel: cache-read ÷ (input + cache-read), one decimal.
-function hitRateLabel(cacheRead: number, input: number): string {
-  const denom = input + cacheRead;
+// hitRateLabel: cache-read ÷ (input + cache-write + cache-read), one decimal.
+function hitRateLabel(cacheRead: number, input: number, cacheWrite: number): string {
+  const denom = input + cacheWrite + cacheRead;
   return denom === 0 ? "—" : `${((cacheRead / denom) * 100).toFixed(1)}%`;
 }
 
@@ -384,21 +385,27 @@ function hitRateLabel(cacheRead: number, input: number): string {
 // input + cache-read first, plus a total summed from the same rows. The
 // total's rate is computed on the summed counts, not averaged.
 export function cacheHitRows(rows: DailyByRow[]): { rows: CacheHitRow[]; total: CacheHitRow } {
-  const acc = new Map<string, { cacheRead: number; input: number }>();
+  const acc = new Map<string, { cacheRead: number; input: number; cacheWrite: number }>();
   let cacheRead = 0;
   let input = 0;
+  let cacheWrite = 0;
   for (const r of rows) {
-    const t = acc.get(r.key) ?? { cacheRead: 0, input: 0 };
+    const t = acc.get(r.key) ?? { cacheRead: 0, input: 0, cacheWrite: 0 };
     t.cacheRead += r.cacheReadTokens;
     t.input += r.inputTokens;
+    t.cacheWrite += r.cacheCreationTokens;
     acc.set(r.key, t);
     cacheRead += r.cacheReadTokens;
     input += r.inputTokens;
+    cacheWrite += r.cacheCreationTokens;
   }
   const out = [...acc.entries()]
-    .map(([raw, t]) => ({ key: displayValue(raw), raw, ...t, hitRate: hitRateLabel(t.cacheRead, t.input) }))
+    .map(([raw, t]) => ({ key: displayValue(raw), raw, ...t, hitRate: hitRateLabel(t.cacheRead, t.input, t.cacheWrite) }))
     .sort((a, b) => b.input + b.cacheRead - (a.input + a.cacheRead) || (a.raw < b.raw ? -1 : a.raw > b.raw ? 1 : 0));
-  return { rows: out, total: { key: "total", raw: "", cacheRead, input, hitRate: hitRateLabel(cacheRead, input) } };
+  return {
+    rows: out,
+    total: { key: "total", raw: "", cacheRead, input, cacheWrite, hitRate: hitRateLabel(cacheRead, input, cacheWrite) },
+  };
 }
 
 // SessionLine is one sessions-panel row, shaped for display.

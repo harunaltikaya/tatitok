@@ -1,11 +1,12 @@
 // CacheHit: prompt-cache hit rate per harness over the selected range —
-// cache-read ÷ (input + cache-read), with both counts beside it and a
-// total row. Rows come from cacheHitRows (../aggregate, tested).
+// cache-read ÷ (input + cache-write + cache-read), with cache-read and
+// input beside it and a total row. Rows come from cacheHitRows
+// (../aggregate, tested).
 
 import { compactTokens, type DailyByRow } from "../api";
 import { cacheHitRows } from "../aggregate";
 
-const rateTitle = "cache-read ÷ (input + cache-read); — when both are 0";
+const rateTitle = "cache-read ÷ (input + cache-write + cache-read); — when all three are 0";
 
 export default function CacheHit({ rows }: { rows: DailyByRow[] }) {
   const { rows: harnesses, total } = cacheHitRows(rows);

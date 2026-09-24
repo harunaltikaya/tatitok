@@ -16,18 +16,24 @@ function row(date: string, key: string, input: number, output: number, cacheWrit
 
 test("cacheHitRows: per-harness rate over the range, a zero denominator, the total", () => {
   const { rows, total } = cacheHitRows([
-    row("2026-09-23", "claude-code", 60, 10, 7, 150),
-    row("2026-09-24", "claude-code", 40, 5, 3, 50),
-    // Events, but no input and no cache-read: the rate is undefined.
-    row("2026-09-24", "codex", 0, 40, 5, 0),
+    // claude-code's input holds only the uncached tail; its cache
+    // writes are most of the rest of the prompt.
+    row("2026-09-23", "claude-code", 6, 10, 300, 900),
+    row("2026-09-24", "claude-code", 4, 5, 100, 600),
+    // codex writes no cache: its rate is what it was without cache-write.
+    row("2026-09-24", "codex", 300, 40, 0, 700),
+    // Events, but no input, cache-write or cache-read: the rate is undefined.
+    row("2026-09-24", "pi", 0, 40, 0, 0),
   ]);
   assert.deepEqual(rows, [
-    // 200 ÷ (100 + 200); output and cache-write never enter the ratio.
-    { key: "claude-code", raw: "claude-code", cacheRead: 200, input: 100, hitRate: "66.7%" },
-    { key: "codex", raw: "codex", cacheRead: 0, input: 0, hitRate: "—" },
+    // 1500 ÷ (10 + 400 + 1500); it was 99.3% with cache-write left out.
+    { key: "claude-code", raw: "claude-code", cacheRead: 1500, input: 10, cacheWrite: 400, hitRate: "78.5%" },
+    // 700 ÷ (300 + 0 + 700), unchanged.
+    { key: "codex", raw: "codex", cacheRead: 700, input: 300, cacheWrite: 0, hitRate: "70.0%" },
+    { key: "pi", raw: "pi", cacheRead: 0, input: 0, cacheWrite: 0, hitRate: "—" },
   ]);
-  // Summed from the same rows, rate on the sums.
-  assert.deepEqual(total, { key: "total", raw: "", cacheRead: 200, input: 100, hitRate: "66.7%" });
+  // Summed from the same rows, rate on the sums: 2200 ÷ (310 + 400 + 2200).
+  assert.deepEqual(total, { key: "total", raw: "", cacheRead: 2200, input: 310, cacheWrite: 400, hitRate: "75.6%" });
 });
 
 test("cacheHitRows: the total's rate is on the summed counts, not a mean of rates", () => {

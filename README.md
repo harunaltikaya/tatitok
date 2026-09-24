@@ -238,10 +238,10 @@ The panel refreshes on every live update, whatever range you've picked. It reads
 
 The detail page's **cache hit rate (by harness)** panel shows how much of each harness's input came from the prompt cache over the selected range. It has one row per harness with events in the range, largest first, and a total row:
 
-- **hit rate**: cache-read ÷ (input + cache-read), to one decimal place, or "—" when both are 0.
-- **cache read** and **input**: the two token counts behind the rate.
+- **hit rate**: cache-read ÷ (input + cache-write + cache-read), to one decimal place, or "—" when all three are 0.
+- **cache read** and **input**: two of the three token counts behind the rate.
 
-Each rate is taken on counts summed over the range. The total row's rate is taken on the sums across harnesses, not averaged from the rows above it. Cache writes aren't part of the ratio. That matters for Claude Code: its input count is only the part of each prompt that was neither written to nor read from the cache, so its rate usually reads close to 100%. For Codex, input plus cache-read is the whole prompt. The panel follows the page's range, filters and timezone.
+Each rate is taken on counts summed over the range. The total row's rate is taken on the sums across harnesses, not averaged from the rows above it. Cache writes count in the denominator, so the rate is the share of the whole prompt that was read from the cache. That matters for Claude Code: its input count is only the part of each prompt that was neither written to nor read from the cache, and its cache writes are much of the rest. Codex records no cache writes, so for it input plus cache-read is the whole prompt. The panel follows the page's range, filters and timezone.
 
 ### Sessions
 
