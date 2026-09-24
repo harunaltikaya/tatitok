@@ -35,6 +35,7 @@ export const PANELS: PanelDef[] = [
   { id: "break-harness", title: "by harness", defaultSpan: 2, kind: "table" },
   { id: "break-provider", title: "by provider", defaultSpan: 2, kind: "table" },
   { id: "break-model", title: "by model", defaultSpan: 2, kind: "table" },
+  { id: "break-project", title: "by project", defaultSpan: 2, kind: "table" },
   { id: "ingest-health", title: "ingest health", defaultSpan: 4, kind: "table" },
 ];
 

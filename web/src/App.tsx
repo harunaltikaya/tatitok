@@ -278,6 +278,7 @@ export default function App() {
   const [byProvider, setByProvider] = useState<DailyByRow[]>([]);
   const [byHarness, setByHarness] = useState<DailyByRow[]>([]);
   const [byModel, setByModel] = useState<DailyByRow[]>([]);
+  const [byProject, setByProject] = useState<DailyByRow[]>([]);
   const [activity, setActivity] = useState<ActivityBucket[]>([]);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [facets, setFacets] = useState<Record<string, FacetValue[]>>({});
@@ -370,14 +371,16 @@ export default function App() {
       fetchDailyBy("provider", f, t, q, z),
       fetchDailyBy("harness", f, t, q, z),
       fetchDailyBy("model", f, t, q, z),
+      fetchDailyBy("project", f, t, q, z),
       fetchActivity(f, t, q, z),
     ])
-      .then(([d, p, h, m, a]) => {
+      .then(([d, p, h, m, pj, a]) => {
         if (gen !== rangeGen.current) return; // superseded by a newer request
         setDaily(d.daily ?? []);
         setByProvider(p.daily_by ?? []);
         setByHarness(h.daily_by ?? []);
         setByModel(m.daily_by ?? []);
+        setByProject(pj.daily_by ?? []);
         setActivity(a.buckets ?? []);
         setSource(d.source);
         setErr(null);
@@ -660,6 +663,17 @@ export default function App() {
     ),
     "break-model": (
       <Breakdown totals={sortTotals(sumByKey(modelSeries), sort)} sort={sort} onSort={onSort} bases={modelBases} onSelect={onModelSelect} active={filters.model} />
+    ),
+    // The empty project ("") reads "(no project)" here; its raw value still
+    // filters on "".
+    "break-project": (
+      <Breakdown
+        totals={sortTotals(sumByKey(byProject).map((t) => (t.raw === "" ? { ...t, key: "(no project)" } : t)), sort)}
+        sort={sort}
+        onSort={onSort}
+        onSelect={(raw) => toggle("project", raw)}
+        active={filters.project}
+      />
     ),
     "ingest-health": <IngestHealth sources={sources} />,
   };
