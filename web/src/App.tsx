@@ -15,6 +15,7 @@ import {
   compactTokens,
   totalTokens,
   freshCachedSplit,
+  compareLabel,
   browserTZ,
   availableTZs,
   todayInTZ,
@@ -28,6 +29,7 @@ import {
   type LimitsSnapshot,
   type PlanStatus,
   type SourceHealth,
+  type TokenSums,
   type OnboardDetect,
   type OnboardApplyResult,
 } from "./api";
@@ -51,7 +53,7 @@ import {
 } from "./filters";
 import { dayTotal, topModelsAtDay } from "./tooltip";
 import { touchedInRange } from "./invalidate";
-import { presets, presetRange, initialRange, activePreset } from "./range";
+import { presets, presetRange, initialRange, activePreset, precedingRange } from "./range";
 import {
   LAYOUT_KEY,
   defaultLayout,
@@ -246,6 +248,30 @@ function valueDonut(rows: DailyByRow[], colorFor: (key: string) => string = seri
   };
 }
 
+// Range sums behind the value and token cards, shared with their period
+// compare so the preceding range is summed exactly like the current one.
+function sumEquiv(rows: DailyRow[]): number {
+  return rows.reduce((n, r) => n + r.costAPIEquivMicro, 0);
+}
+function sumTokenFields(rows: DailyRow[]): TokenSums {
+  return rows.reduce(
+    (a, r) => ({
+      inputTokens: a.inputTokens + r.inputTokens,
+      outputTokens: a.outputTokens + r.outputTokens,
+      cacheCreationTokens: a.cacheCreationTokens + r.cacheCreationTokens,
+      cacheReadTokens: a.cacheReadTokens + r.cacheReadTokens,
+    }),
+    { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 },
+  );
+}
+
+// PrevLine: the muted compare line under a card's number. prev is null
+// until the compare fetch succeeds, and after it fails: no line.
+function PrevLine({ current, prev, fmt }: { current: number; prev: number | null; fmt: (n: number) => string }) {
+  if (prev === null) return null;
+  return <div className="mt-1 text-xs text-faint tabular-nums">{compareLabel(current, prev, fmt)}</div>;
+}
+
 export default function App() {
   // Filter state and the day range live in the URL — shareable,
   // bookmarkable, survives refresh; no persistence beyond that (M5
@@ -277,6 +303,8 @@ export default function App() {
   // Shareable → URL; default equiv-desc (never actual cost).
   const [sort, setSort] = useState<Sort>(initial.sort);
   const [daily, setDaily] = useState<DailyRow[]>([]);
+  // The preceding range's daily rows (period compare); null = no line.
+  const [prevDaily, setPrevDaily] = useState<DailyRow[] | null>(null);
   const [byProvider, setByProvider] = useState<DailyByRow[]>([]);
   const [byHarness, setByHarness] = useState<DailyByRow[]>([]);
   const [byModel, setByModel] = useState<DailyByRow[]>([]);
@@ -368,6 +396,7 @@ export default function App() {
 
   const loadRange = (f: string, t: string, q: string, z: string) => {
     const gen = ++rangeGen.current;
+    const prev = precedingRange(f, t, z);
     Promise.all([
       fetchDaily(f, t, q, z),
       fetchDailyBy("provider", f, t, q, z),
@@ -375,8 +404,11 @@ export default function App() {
       fetchDailyBy("model", f, t, q, z),
       fetchDailyBy("project", f, t, q, z),
       fetchActivity(f, t, q, z),
+      // Period compare: the preceding range, same filters and zone. A failure
+      // resolves null (the cards drop their prev line), never rejects the batch.
+      fetchDaily(prev.from, prev.to, q, z).then((r) => r.daily ?? [], () => null),
     ])
-      .then(([d, p, h, m, pj, a]) => {
+      .then(([d, p, h, m, pj, a, pd]) => {
         if (gen !== rangeGen.current) return; // superseded by a newer request
         setDaily(d.daily ?? []);
         setByProvider(p.daily_by ?? []);
@@ -384,6 +416,7 @@ export default function App() {
         setByModel(m.daily_by ?? []);
         setByProject(pj.daily_by ?? []);
         setActivity(a.buckets ?? []);
+        setPrevDaily(pd);
         setSource(d.source);
         setErr(null);
       })
@@ -577,26 +610,17 @@ export default function App() {
   // Shared range aggregates (display-only sums over the served daily rows) —
   // used by both the home hero/donut-center and the detail range-totals card,
   // so the two pages state the same number by construction.
-  const rangeEquiv = useMemo(() => daily.reduce((n, r) => n + r.costAPIEquivMicro, 0), [daily]);
+  const rangeEquiv = useMemo(() => sumEquiv(daily), [daily]);
   const rangeActual = useMemo(() => daily.reduce((n, r) => n + r.costUSDMicro, 0), [daily]);
   // Token split (M8 1K): the range's tokens broken into cached (cache-read) vs
   // fresh — display only, fresh + cached = total (the total is unchanged).
   // rangeTokenSums sums the four served token columns; freshCachedSplit derives
   // the binary; cacheTitle/cachedPct are the shared readout bits.
-  const rangeTokenSums = useMemo(
-    () =>
-      daily.reduce(
-        (a, r) => ({
-          inputTokens: a.inputTokens + r.inputTokens,
-          outputTokens: a.outputTokens + r.outputTokens,
-          cacheCreationTokens: a.cacheCreationTokens + r.cacheCreationTokens,
-          cacheReadTokens: a.cacheReadTokens + r.cacheReadTokens,
-        }),
-        { inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0 },
-      ),
-    [daily],
-  );
+  const rangeTokenSums = useMemo(() => sumTokenFields(daily), [daily]);
   const tokenSplit = freshCachedSplit(rangeTokenSums);
+  // The same two sums over the preceding range (period compare).
+  const prevEquiv = useMemo(() => (prevDaily ? sumEquiv(prevDaily) : null), [prevDaily]);
+  const prevTokens = useMemo(() => (prevDaily ? totalTokens(sumTokenFields(prevDaily)) : null), [prevDaily]);
   // Models in range with no price at all (footer honesty count; the by-model
   // table marks the same rows "unpriced").
   const unpricedModels = useMemo(() => countUnpriced(sumByKey(byModel)), [byModel]);
@@ -851,6 +875,7 @@ export default function App() {
                   value={usd(rangeEquiv)}
                   sub={`API-equivalent value of your usage · ${from} → ${to}`}
                 />
+                <PrevLine current={rangeEquiv} prev={prevEquiv} fmt={usd} />
                 <div className="mt-2 text-xs text-faint tabular-nums">
                   vs {usd(rangeActual)} actual out-of-pocket
                   {rangeActual > 0 && rangeEquiv > 0 && ` · ${(rangeEquiv / rangeActual).toFixed(1)}× extracted`}
@@ -937,17 +962,23 @@ export default function App() {
                 ))}
                 <Card className="md:col-span-2" title="range totals">
                   <div className="flex flex-wrap gap-x-10 gap-y-4">
-                    <Stat value={usd(rangeEquiv)} sub={`API-equivalent (${from} → ${to})`} />
+                    <div>
+                      <Stat value={usd(rangeEquiv)} sub={`API-equivalent (${from} → ${to})`} />
+                      <PrevLine current={rangeEquiv} prev={prevEquiv} fmt={usd} />
+                    </div>
                     <Stat
                       value={usd(rangeActual)}
                       unpriced={rangeUnpriced > 0}
                       unpricedTitle={`${rangeUnpriced} events in range carry no resolvable price — cost is a floor (the CLI's asterisk).`}
                       sub="actual cost"
                     />
-                    <Stat
-                      value={compactTokens(tokenSplit.total)}
-                      sub={<span title={cacheTitle} style={{ cursor: "help" }}>tokens · {cachedPct}% cached</span>}
-                    />
+                    <div>
+                      <Stat
+                        value={compactTokens(tokenSplit.total)}
+                        sub={<span title={cacheTitle} style={{ cursor: "help" }}>tokens · {cachedPct}% cached</span>}
+                      />
+                      <PrevLine current={tokenSplit.total} prev={prevTokens} fmt={compactTokens} />
+                    </div>
                     <Stat value={String(daily.length)} sub="active days" />
                   </div>
                 </Card>

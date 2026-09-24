@@ -2,7 +2,7 @@
 // preset detection (the "lit" button) — pure helpers, no .tsx.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { defaultRange, initialRange, activePreset, presetRange, daysAgo, shiftDay, ALL_FROM } from "./range.ts";
+import { defaultRange, initialRange, activePreset, presetRange, daysAgo, shiftDay, precedingRange, ALL_FROM } from "./range.ts";
 
 const now = new Date("2026-09-03T11:30:00Z"); // 14:30 in Europe/Istanbul, 04:30 in America/Los_Angeles
 
@@ -69,4 +69,34 @@ test("daysAgo: a 7d preset spans exactly 7 calendar days across the 2026 US spri
   assert.equal(shiftDay("2026-01-01", -1), "2025-12-31");
   assert.equal(shiftDay("2025-12-31", 1), "2026-01-01");
   assert.equal(shiftDay("2024-03-01", -1), "2024-02-29");
+});
+
+// precedingRange: the period compare's range — same calendar-day count,
+// ending the day before `from`.
+test("precedingRange: a 7d range across the 2026 US spring-forward, one day, a month start", () => {
+  const tz = "America/Los_Angeles";
+  const calendarDays = (from: string, to: string) =>
+    (Date.UTC(+to.slice(0, 4), +to.slice(5, 7) - 1, +to.slice(8)) - Date.UTC(+from.slice(0, 4), +from.slice(5, 7) - 1, +from.slice(8))) / 864e5 + 1;
+  // The 7d preset at 00:30 PDT on 2026-03-09 spans the switch (Sunday
+  // 03-08, 02:00 PST → 03:00 PDT); so does the range after it, whose
+  // preceding period is the DST week itself.
+  const r = presetRange("7d", tz, new Date("2026-03-09T07:30:00Z"));
+  assert.deepEqual(r, { from: "2026-03-03", to: "2026-03-09" });
+  assert.deepEqual(precedingRange(r.from, r.to, tz), { from: "2026-02-24", to: "2026-03-02" });
+  assert.deepEqual(precedingRange("2026-03-10", "2026-03-16", tz), r);
+  // Every hour of the DST week: 7 calendar days, ending the day before from.
+  for (let h = 0; h < 24 * 9; h++) {
+    const t = new Date(Date.UTC(2026, 2, 6, h, 30));
+    const cur = presetRange("7d", tz, t);
+    const p = precedingRange(cur.from, cur.to, tz);
+    assert.equal(calendarDays(p.from, p.to), 7, t.toISOString());
+    assert.equal(p.to, shiftDay(cur.from, -1));
+  }
+  // One day → the day before.
+  assert.deepEqual(precedingRange("2026-09-24", "2026-09-24", tz), { from: "2026-09-23", to: "2026-09-23" });
+  // A range crossing a month start (Feb has 28 days in 2026), and a 30d
+  // range whose preceding period crosses one.
+  assert.deepEqual(precedingRange("2026-02-26", "2026-03-04", "UTC"), { from: "2026-02-19", to: "2026-02-25" });
+  assert.deepEqual(precedingRange("2026-09-05", "2026-10-04", "UTC"), { from: "2026-08-06", to: "2026-09-04" });
+  assert.equal(calendarDays("2026-08-06", "2026-09-04"), 30);
 });

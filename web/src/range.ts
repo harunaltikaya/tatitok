@@ -69,3 +69,14 @@ export function activePreset(from: string, to: string, tz: string, now: Date = n
   }
   return null;
 }
+
+// precedingRange: the period just before [from, to] — the same number of
+// calendar days, ending the day before `from`. from/to are already
+// calendar days in `zone` (presetRange and the date inputs pick them
+// there), so the step is shiftDay's date-part arithmetic and a DST
+// switch in either period cannot add or drop a day; `zone` itself does
+// not enter the arithmetic.
+export function precedingRange(from: string, to: string, _zone: string): { from: string; to: string } {
+  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 864e5 + 1;
+  return { from: shiftDay(from, -days), to: shiftDay(from, -1) };
+}

@@ -381,6 +381,15 @@ export function freshCachedSplit(t: TokenSums): { fresh: number; cached: number;
   return { fresh: total - cached, cached, total, cachedShare: total > 0 ? cached / total : 0 };
 }
 
+// compareLabel: the period-compare line under a range card's number —
+// "prev <value> (+N%)", the value in the card's own format, N rounded to a
+// whole percent. No percent when prev is 0: the change has no base.
+export function compareLabel(current: number, prev: number, fmt: (n: number) => string): string {
+  if (prev === 0) return `prev ${fmt(prev)}`;
+  const pct = Math.round(((current - prev) / prev) * 100);
+  return `prev ${fmt(prev)} (${pct > 0 ? "+" : ""}${pct}%)`;
+}
+
 // Timezone helpers for the range picker (M6 Task 2). The browser only
 // detects the IANA NAME (Intl) and picks default range bounds; the
 // SERVER does the authoritative day bucketing against its embedded
