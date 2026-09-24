@@ -93,6 +93,13 @@ package pricing
 // the official DeepSeek v4-flash rates from this file's overrides —
 // a source gap, not a rate error, so the group is explained rather
 // than represented. The entry lives in the owner's prices.json.
+//
+// "provider_aliases" (optional): {"<stored name>": "<name to use>"}. The
+// ingest layer renames a matching event's provider on the insert path,
+// for every harness, before any provider rule (local name rule, plans,
+// divergences) sees it. A provider with no entry passes through
+// unchanged; an empty or absent map changes nothing. Stored rows are
+// not rewritten — a row takes the alias when its source is next read.
 
 import (
 	"bytes"
@@ -168,6 +175,7 @@ type Overrides struct {
 	// divergences: (provider, model) → reason, from explained_divergences.
 	divergences map[[2]string]string
 	plans       []Plan
+	aliases     map[string]string // provider_aliases: stored name → name to use
 	path        string
 }
 
@@ -298,6 +306,18 @@ func (o *Overrides) Len() int {
 		return 0
 	}
 	return len(o.patches)
+}
+
+// ProviderAlias returns the name provider_aliases gives provider, or
+// provider unchanged when it has no entry.
+func (o *Overrides) ProviderAlias(provider string) string {
+	if o == nil {
+		return provider
+	}
+	if to, ok := o.aliases[provider]; ok {
+		return to
+	}
+	return provider
 }
 
 func (o *Overrides) lookup(keys ...string) (overridePatch, bool) {
@@ -433,6 +453,7 @@ type overrideFile struct {
 	ReferenceModels      map[string]string        `json:"reference_models"`
 	ExplainedDivergences []divergenceEntry        `json:"explained_divergences"`
 	Plans                []planEntry              `json:"plans"`
+	ProviderAliases      map[string]string        `json:"provider_aliases"`
 }
 
 // OverridesPath resolves the override file location from the
@@ -581,6 +602,15 @@ func LoadOverrides(path string) (*Overrides, error) {
 			ov.divergences = make(map[[2]string]string, len(f.ExplainedDivergences))
 		}
 		ov.divergences[[2]string{provider, model}] = reason
+	}
+	for from, to := range f.ProviderAliases {
+		if from == "" || to == "" {
+			return nil, fmt.Errorf("price overrides %s: empty provider_aliases entry (%q: %q)", path, from, to)
+		}
+		if ov.aliases == nil {
+			ov.aliases = make(map[string]string, len(f.ProviderAliases))
+		}
+		ov.aliases[from] = to
 	}
 	names := map[string]bool{}
 	for i, pe := range f.Plans {

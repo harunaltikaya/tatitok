@@ -117,8 +117,11 @@ func (k *storeSink) EmitBatch(path string, events []core.Event) error {
 	// verbatim and no cost fields; the ingest layer derives the family
 	// through the versioned map and prices the event under the pinned
 	// snapshot + user overrides. Unknown models pass through unchanged
-	// and unpriceable events stay basis `unknown` with NULL cost.
+	// and unpriceable events stay basis `unknown` with NULL cost. The
+	// provider alias (prices.json provider_aliases) comes first, so every
+	// provider rule in pricing sees the name to use.
 	for i := range events {
+		events[i].Provider = k.overrides.ProviderAlias(events[i].Provider)
 		events[i].ModelFamily = modelmap.Family(events[i].Model)
 		if err := pricing.Apply(&events[i], k.overrides); err != nil {
 			return fmt.Errorf("%s: %w", path, err)

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
+	"github.com/harunaltikaya/tatitok/internal/pricing"
 	"github.com/harunaltikaya/tatitok/internal/store"
 )
 
@@ -418,5 +420,58 @@ func TestIngestStampsAdapterVersion(t *testing.T) {
 		rows[0].AdapterVersion == nil || *rows[0].AdapterVersion != 7 ||
 		rows[0].Events != 2 || rows[0].SourceFiles != 1 {
 		t.Fatalf("provenance wrong: %+v", rows)
+	}
+}
+
+// Provider aliases (prices.json provider_aliases) apply on the insert
+// path before any provider rule: the aliased provider is stored under
+// its new name and priced by it (a -local name is local basis); a
+// provider with no entry is stored as it came.
+func TestIngestProviderAliases(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "prices.json")
+	if err := os.WriteFile(path, []byte(`{"provider_aliases": {"llamacpp-x": "llamacpp-x-local"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ov, err := pricing.LoadOverrides(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliased := synthEvent(1)
+	aliased.Provider = "llamacpp-x"
+	plain := synthEvent(2) // provider "test", no entry
+	a := &fakeAdapter{files: []fakeFile{
+		{path: "/fake/a.jsonl", batches: [][]core.Event{{aliased, plain}}},
+	}}
+	if _, err := IngestBackfill(ctx, s, a, []Source{{Harness: "fake"}}, ov); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	rows, err := s.DB().QueryContext(ctx, `SELECT provider, COALESCE(cost_basis, '') FROM usage_events`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var provider, basis string
+		if err := rows.Scan(&provider, &basis); err != nil {
+			t.Fatal(err)
+		}
+		got[provider] = basis
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got["llamacpp-x-local"] != "local" || got["test"] == "" || got["test"] == "local" {
+		t.Fatalf("stored provider → basis = %v, want llamacpp-x-local → local and test unchanged, not local", got)
+	}
+
+	// An empty name on either side does not load.
+	if err := os.WriteFile(path, []byte(`{"provider_aliases": {"llamacpp-x": ""}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pricing.LoadOverrides(path); err == nil {
+		t.Fatal("provider_aliases entry with an empty name loaded")
 	}
 }
