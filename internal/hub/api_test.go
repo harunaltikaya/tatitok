@@ -806,7 +806,7 @@ func TestAPISources(t *testing.T) {
 	if len(got.Sources) != 3 {
 		t.Fatalf("%d sources, want 3 in registration order: %v", len(got.Sources), got.Sources)
 	}
-	keys := []string{"harness", "root", "watch", "last_ingest_at", "parse_errors_24h", "last_event_at"}
+	keys := []string{"harness", "root", "watch", "last_ingest_at", "parse_errors_last_pass", "last_event_at"}
 	for i, s := range got.Sources {
 		if len(s) != len(keys) {
 			t.Errorf("source %d has keys %v, want exactly %v", i, s, keys)
@@ -824,7 +824,7 @@ func TestAPISources(t *testing.T) {
 	wantLast := last["claude-code"].UTC().Format(time.RFC3339)
 
 	fedRow, idleRow, cxRow := got.Sources[0], got.Sources[1], got.Sources[2]
-	if fedRow["root"] != "~/fed" || fedRow["watch"] != "fsnotify" || fedRow["parse_errors_24h"] != float64(0) {
+	if fedRow["root"] != "~/fed" || fedRow["watch"] != "fsnotify" || fedRow["parse_errors_last_pass"] != float64(0) {
 		t.Errorf("fed row = %v", fedRow)
 	}
 	if s, ok := fedRow["last_ingest_at"].(string); !ok {

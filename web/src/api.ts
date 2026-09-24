@@ -207,15 +207,16 @@ export function fetchLimits(): Promise<{ providers: LimitsSnapshot }> {
 }
 
 // Ingest health: one row per watch target, so a broken log format does not
-// look like a quiet day. Times are RFC3339 UTC, null when never seen;
-// last_event_at is per harness (every target of a harness shows the same).
-// An empty list means the hub runs without watchers.
+// look like a quiet day. Times are RFC3339 UTC or null. last_ingest_at lives
+// in the serve process: null until the source's first pass since the serve
+// started. last_event_at is per harness (every target of a harness shows the
+// same). An empty list means the hub runs without watchers.
 export interface SourceHealth {
   harness: string;
   root: string; // home shown as "~"
   watch: string; // "fsnotify" | "polling"
   last_ingest_at: string | null;
-  parse_errors_24h: number;
+  parse_errors_last_pass: number; // 0 when no pass yet
   last_event_at: string | null;
 }
 export interface Sources {

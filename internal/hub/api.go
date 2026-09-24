@@ -164,12 +164,12 @@ func (h *Hub) apiSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type sourceRow struct {
-		Harness        string  `json:"harness"`
-		Root           string  `json:"root"`
-		Watch          string  `json:"watch"`
-		LastIngestAt   *string `json:"last_ingest_at"`
-		ParseErrors24h int     `json:"parse_errors_24h"`
-		LastEventAt    *string `json:"last_event_at"`
+		Harness             string  `json:"harness"`
+		Root                string  `json:"root"`
+		Watch               string  `json:"watch"`
+		LastIngestAt        *string `json:"last_ingest_at"`
+		ParseErrorsLastPass int     `json:"parse_errors_last_pass"`
+		LastEventAt         *string `json:"last_event_at"`
 	}
 	stamp := func(t time.Time) *string {
 		if t.IsZero() {
@@ -187,10 +187,10 @@ func (h *Hub) apiSources(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		home, _ := os.UserHomeDir()
-		for _, s := range h.w.health(now) {
+		for _, s := range h.w.health() {
 			rows = append(rows, sourceRow{
 				Harness: s.Harness, Root: tildeHome(s.Root, home), Watch: s.Watch,
-				LastIngestAt: stamp(s.LastIngestAt), ParseErrors24h: s.ParseErrors24h,
+				LastIngestAt: stamp(s.LastIngestAt), ParseErrorsLastPass: s.ParseErrorsLastPass,
 				LastEventAt: stamp(last[s.Harness]),
 			})
 		}

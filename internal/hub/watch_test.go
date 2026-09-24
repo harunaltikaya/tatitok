@@ -547,33 +547,24 @@ func TestWatchDebounceCoalescing(t *testing.T) {
 	assertConverged(t, h.st, claudecode.Adapter{}, src)
 }
 
-// TestWatchHealthStamps: parse-error stamps older than 24 h drop on
-// write and on read, the sum covers what is left, and the last
-// successful pass time is kept.
-func TestWatchHealthStamps(t *testing.T) {
+// TestWatchHealthLastPass: each successful pass replaces the previous
+// pass's parse-error count and time (2 then 0 reads 0).
+func TestWatchHealthLastPass(t *testing.T) {
 	tg := &watchTarget{src: adapters.Source{Harness: "claude-code", Root: "/r"}}
 	w := &watcher{targets: []*watchTarget{tg}}
 	t0 := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 
-	tg.recordPass(t0.Add(-25*time.Hour), 5)
-	tg.recordPass(t0.Add(-23*time.Hour), 2)
-	tg.recordPass(t0.Add(-time.Hour), 0) // clean pass: no stamp
-	tg.recordPass(t0, 3)
-	if n := len(tg.errStamps); n != 2 {
-		t.Errorf("after write: %d stamps, want 2 (25 h old dropped, clean pass not kept)", n)
+	if got := w.health(); got[0].ParseErrorsLastPass != 0 || !got[0].LastIngestAt.IsZero() {
+		t.Errorf("before any pass = %+v, want 0 errors and no last ingest", got[0])
 	}
-	got := w.health(t0)
-	if len(got) != 1 || got[0].ParseErrors24h != 5 || !got[0].LastIngestAt.Equal(t0) {
-		t.Fatalf("health at t0 = %+v, want 5 errors, last ingest %s", got, t0)
+	tg.recordPass(t0, 2)
+	if got := w.health(); got[0].ParseErrorsLastPass != 2 || !got[0].LastIngestAt.Equal(t0) {
+		t.Errorf("after a pass with 2 errors = %+v", got[0])
 	}
-	if got := w.health(t0.Add(2 * time.Hour)); got[0].ParseErrors24h != 3 {
-		t.Errorf("2 h later: %d errors, want 3 (the 23 h stamp aged out)", got[0].ParseErrors24h)
-	}
-	if n := len(tg.errStamps); n != 1 {
-		t.Errorf("after read: %d stamps, want 1 (dropped on read)", n)
-	}
-	if got := w.health(t0.Add(25 * time.Hour)); got[0].ParseErrors24h != 0 || !got[0].LastIngestAt.Equal(t0) {
-		t.Errorf("25 h later = %+v, want 0 errors and last ingest unchanged", got[0])
+	t1 := t0.Add(time.Minute)
+	tg.recordPass(t1, 0)
+	if got := w.health(); got[0].ParseErrorsLastPass != 0 || !got[0].LastIngestAt.Equal(t1) {
+		t.Errorf("after a clean pass = %+v, want 0 errors, last ingest %s", got[0], t1)
 	}
 }
 
@@ -584,9 +575,10 @@ func (failAdapter) BackfillFile(context.Context, adapters.Source, string, adapte
 	return errors.New("simulated ingest failure")
 }
 
-// TestWatchHealthRunPass: runPass stamps a successful target with its
-// parse errors, a failed pass records nothing, and a polled target
-// reports "polling".
+// TestWatchHealthRunPass: runPass records a successful target's parse
+// errors, a failed pass records nothing (a target that never succeeded
+// stays empty; one that did keeps its previous values), and a polled
+// target reports "polling".
 func TestWatchHealthRunPass(t *testing.T) {
 	whole := fixtureSessionFiles(t)[0]
 	root := t.TempDir()
@@ -613,19 +605,26 @@ func TestWatchHealthRunPass(t *testing.T) {
 	bad := &watchTarget{adapter: failAdapter{}, src: adapters.Source{Harness: "claude-code", Root: root, Machine: "gx10"}}
 	bad.polled.Store(true)
 	w := &watcher{st: st, overrides: func() *pricing.Overrides { return nil }, targets: []*watchTarget{good, bad}}
+	batch := map[*watchTarget]map[string]struct{}{good: {path: {}}, bad: {path: {}}}
 	before := time.Now().UTC()
-	w.runPass(context.Background(), map[*watchTarget]map[string]struct{}{
-		good: {path: {}}, bad: {path: {}},
-	})
+	w.runPass(context.Background(), batch)
 
-	got := w.health(time.Now().UTC())
+	got := w.health()
 	if len(got) != 2 {
 		t.Fatalf("health has %d rows, want 2", len(got))
 	}
-	if g := got[0]; g.Watch != "fsnotify" || g.LastIngestAt.Before(before) || g.ParseErrors24h != 1 {
+	g := got[0]
+	if g.Watch != "fsnotify" || g.LastIngestAt.Before(before) || g.ParseErrorsLastPass != 1 {
 		t.Errorf("good target = %+v, want fsnotify, stamped, 1 parse error", g)
 	}
-	if b := got[1]; b.Watch != "polling" || !b.LastIngestAt.IsZero() || b.ParseErrors24h != 0 {
+	if b := got[1]; b.Watch != "polling" || !b.LastIngestAt.IsZero() || b.ParseErrorsLastPass != 0 {
 		t.Errorf("failed target = %+v, want polling, never ingested, 0 errors", b)
+	}
+
+	// The good target now fails: its previous pass stays as reported.
+	good.adapter = failAdapter{}
+	w.runPass(context.Background(), batch)
+	if again := w.health()[0]; !again.LastIngestAt.Equal(g.LastIngestAt) || again.ParseErrorsLastPass != 1 {
+		t.Errorf("after a failed pass = %+v, want the previous pass kept (%s, 1 error)", again, g.LastIngestAt)
 	}
 }
