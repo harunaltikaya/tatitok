@@ -144,17 +144,22 @@ func TestCCUsageDailyParity(t *testing.T) {
 
 // TestParityFull is the owner-run gate against the full real logs
 // (`make parity-full`). It RECAPTURES ccusage output from the live logs
-// at comparison time — pinned version from the fixture META.json — and
-// never reads a committed or on-disk -full expectation file. Days bucket
-// in the machine's local timezone on both sides (ccusage's rule).
+// at comparison time — version pinned by the make target
+// (TATITOK_PARITY_CCUSAGE; see the Makefile for why it is not the
+// fixture META.json version) — and never reads a committed or on-disk
+// -full expectation file. Days bucket in the machine's local timezone on
+// both sides (ccusage's rule); only finished days are compared.
 func TestParityFull(t *testing.T) {
 	if os.Getenv("TATITOK_PARITY_FULL") != "1" {
 		t.Skip("owner-run full parity: make parity-full (needs live ~/.claude logs + npx)")
 	}
-	meta, err := LoadMeta(filepath.Join(fixtureRoot, "gx10", "expected", "META.json"))
-	if err != nil {
-		t.Fatal(err)
+	version := os.Getenv("TATITOK_PARITY_CCUSAGE")
+	if version == "" {
+		t.Fatal("TATITOK_PARITY_CCUSAGE unset: run make parity-full, which pins the ccusage version")
 	}
+	// Taken before the recapture, so a run that crosses midnight leaves
+	// the same day out on both sides.
+	today := time.Now().In(time.Local).Format("2006-01-02")
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -174,7 +179,7 @@ func TestParityFull(t *testing.T) {
 	}
 
 	// Recapture from the live logs, never from a stored -full file.
-	cmd := exec.Command("npx", "-y", "ccusage@"+meta.CCUsageVersion,
+	cmd := exec.Command("npx", "-y", "ccusage@"+version,
 		"claude", "daily", "--json", "--offline")
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
@@ -191,12 +196,66 @@ func TestParityFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	got, want = finishedDays(got, want, today)
 	if diff := CompareDaily(got, want); diff != "" {
 		t.Fatalf("full-history token parity broken vs ccusage %s:\n%s",
-			meta.CCUsageVersion, diff)
+			version, diff)
 	}
-	t.Logf("full-history parity holds across %d days (ccusage %s)",
-		len(want.Daily), meta.CCUsageVersion)
+	t.Logf("full-history parity holds across %d finished days (ccusage %s; %s left out)",
+		len(want.Daily), version, today)
+}
+
+// finishedDays keeps only the days before today on both sides. Today is
+// still being written while the gate runs, so the two captures can
+// differ on it by timing alone.
+func finishedDays(got []store.DailyRow, want CCUsageDaily, today string) ([]store.DailyRow, CCUsageDaily) {
+	var keptGot []store.DailyRow
+	for _, r := range got {
+		if r.Date < today {
+			keptGot = append(keptGot, r)
+		}
+	}
+	var keptWant CCUsageDaily
+	for _, d := range want.Daily {
+		if d.Date < today {
+			keptWant.Daily = append(keptWant.Daily, d)
+		}
+	}
+	return keptGot, keptWant
+}
+
+// TestFinishedDays: the full gate drops today (and anything later) from
+// both sides and keeps every earlier day untouched, so an open-day
+// mismatch no longer fails it and a finished-day mismatch still does.
+func TestFinishedDays(t *testing.T) {
+	day := func(date string, input int64) store.DailyRow {
+		return store.DailyRow{Date: date, TokenSums: store.TokenSums{Input: input}}
+	}
+	ccDay := func(date string, input int64) CCUsageDay {
+		return CCUsageDay{Date: date, TokenSums: store.TokenSums{Input: input}}
+	}
+	got := []store.DailyRow{day("2026-09-23", 5), day("2026-09-24", 7), day("2026-09-25", 9)}
+	want := CCUsageDaily{Daily: []CCUsageDay{
+		ccDay("2026-09-23", 5), ccDay("2026-09-24", 7), ccDay("2026-09-25", 8), ccDay("2026-09-26", 1),
+	}}
+
+	g, w := finishedDays(got, want, "2026-09-25")
+	if len(g) != 2 || g[0].Date != "2026-09-23" || g[1].Date != "2026-09-24" {
+		t.Fatalf("tatitok side: got %+v, want 09-23 and 09-24 only", g)
+	}
+	if len(w.Daily) != 2 || w.Daily[0].Date != "2026-09-23" || w.Daily[1].Date != "2026-09-24" {
+		t.Fatalf("ccusage side: got %+v, want 09-23 and 09-24 only", w.Daily)
+	}
+	if diff := CompareDaily(g, w); diff != "" {
+		t.Fatalf("open-day mismatch still fails the gate:\n%s", diff)
+	}
+
+	// A finished-day mismatch is kept, so the gate still fails on it.
+	want.Daily[1].Input = 6
+	g, w = finishedDays(got, want, "2026-09-25")
+	if diff := CompareDaily(g, w); !strings.Contains(diff, "2026-09-24: MISMATCH") {
+		t.Fatalf("finished-day mismatch lost, diff:\n%s", diff)
+	}
 }
 
 // TestParityFullCodex is the owner-run gate against the full real codex

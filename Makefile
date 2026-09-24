@@ -43,10 +43,16 @@ clean:
 	rm -rf $(DIST)
 
 # Owner-run full-history parity gate: recaptures ccusage from the LIVE
-# logs at comparison time (pinned version from expected/META.json) —
-# never reads an on-disk -full expectation file.
+# logs at comparison time — never reads an on-disk -full expectation
+# file. Finished days only: today, in the local zone, is left out.
+# ccusage is pinned here, not from expected/META.json (20.0.9, the
+# fixture capture version): 20.0.9 silently drops assistant records
+# whose usage.iterations[].model is null (Claude Code 2.1.268 and
+# 2.1.270); 20.0.24 counts them, as tatitok does.
+PARITY_FULL_CCUSAGE := 20.0.24
+
 parity-full:
-	TATITOK_PARITY_FULL=1 go test -v -run 'TestParityFull$$' ./internal/parity
+	TATITOK_PARITY_FULL=1 TATITOK_PARITY_CCUSAGE=$(PARITY_FULL_CCUSAGE) go test -v -run 'TestParityFull$$' ./internal/parity
 
 parity-full-codex:
 	TATITOK_PARITY_FULL_CODEX=1 go test -v -run TestParityFullCodex ./internal/parity
