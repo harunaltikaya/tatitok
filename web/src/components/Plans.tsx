@@ -25,7 +25,7 @@ import Badge from "../ui/Badge";
 // resetLabel / fetchedLabel format the reported epoch-ms timestamps in the
 // viewer's LOCAL time. These are absolute instants reported by the provider —
 // unrelated to tatitok's day-bucketing timezone, so plain local time is right.
-function resetLabel(epochMs: number): string {
+export function resetLabel(epochMs: number): string {
   return new Date(epochMs).toLocaleString([], {
     month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   });

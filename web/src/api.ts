@@ -206,6 +206,27 @@ export function fetchLimits(): Promise<{ providers: LimitsSnapshot }> {
   return getJSON(`/api/v1/limits`);
 }
 
+// Ingest health: one row per watch target, so a broken log format does not
+// look like a quiet day. Times are RFC3339 UTC, null when never seen;
+// last_event_at is per harness (every target of a harness shows the same).
+// An empty list means the hub runs without watchers.
+export interface SourceHealth {
+  harness: string;
+  root: string; // home shown as "~"
+  watch: string; // "fsnotify" | "polling"
+  last_ingest_at: string | null;
+  parse_errors_24h: number;
+  last_event_at: string | null;
+}
+export interface Sources {
+  now: string;
+  sources: SourceHealth[];
+}
+
+export function fetchSources(): Promise<Sources> {
+  return getJSON(`/api/v1/sources`);
+}
+
 // Onboarding (Stage 2): thin wrappers over the hub's /api/onboard/* — detection
 // + the apply (write prices.json + reprice). Backend reuses Stage 1's logic.
 export interface OnboardTier {

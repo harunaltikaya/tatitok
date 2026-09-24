@@ -8,6 +8,7 @@ import {
   fetchModels,
   fetchPlans,
   fetchLimits,
+  fetchSources,
   fetchActivity,
   fetchOnboardDetect,
   usd,
@@ -26,6 +27,7 @@ import {
   type ModelInfo,
   type LimitsSnapshot,
   type PlanStatus,
+  type SourceHealth,
   type OnboardDetect,
   type OnboardApplyResult,
 } from "./api";
@@ -63,6 +65,7 @@ import Breakdown from "./components/Breakdown";
 import { sumByKey, rollupRows, mergeFamilies, chartCells, sortTotals, brandColorFor, countUnpriced, localProviders, localModels, OTHERS_KEY, LOCAL_KEY, HOME_TOP_N } from "./aggregate";
 import PlanCard from "./components/Plans";
 import Heatmap from "./components/Heatmap";
+import IngestHealth from "./components/IngestHealth";
 import MeterBar from "./ui/MeterBar";
 import FacetRail from "./components/FacetRail";
 import PanelGrid from "./components/PanelGrid";
@@ -283,6 +286,8 @@ export default function App() {
   // (below), never in loadRange's Promise.all — a failed/empty /api/v1/limits
   // yields the card empty-state, never a broken dashboard.
   const [limits, setLimits] = useState<LimitsSnapshot>({});
+  // Ingest health: per watch target, independent of the date range.
+  const [sources, setSources] = useState<SourceHealth[]>([]);
   const [health, setHealth] = useState<Health | null>(null);
   // Onboarding (Stage 2): the detect payload + whether the confirm panel is open.
   const [onboardDetect, setOnboardDetect] = useState<OnboardDetect | null>(null);
@@ -389,11 +394,13 @@ export default function App() {
     fetchHealth().then(setHealth).catch(() => {});
   }, [from, to, fq, tz]);
 
-  // Live updates: every pass refreshes the plan window meters and the facet
-  // counts; the range refetches only when a touched day falls inside it (or
-  // when the stream says we lost events / reconnected: touchedDays empty).
+  // Live updates: every pass refreshes the plan window meters, the ingest
+  // health and the facet counts; the range refetches only when a touched day
+  // falls inside it (or when the stream says we lost events / reconnected:
+  // touchedDays empty).
   useEffect(() => {
     fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
+    fetchSources().then((s) => setSources(s.sources ?? [])).catch(() => {});
     if (stream.bump === 0 || stream.bump === lastRangeFetch.current) return;
     fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
     // SSE touched-days are UTC; the visible range is local — map before
@@ -654,6 +661,7 @@ export default function App() {
     "break-model": (
       <Breakdown totals={sortTotals(sumByKey(modelSeries), sort)} sort={sort} onSort={onSort} bases={modelBases} onSelect={onModelSelect} active={filters.model} />
     ),
+    "ingest-health": <IngestHealth sources={sources} />,
   };
 
   return (
