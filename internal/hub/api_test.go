@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/harunaltikaya/tatitok/internal/adapters"
 	"github.com/harunaltikaya/tatitok/internal/adapters/claudecode"
@@ -121,7 +123,8 @@ func getOK(t *testing.T, h *Hub, path string, into any) {
 	}
 }
 
-// assertErrEnvelope: every failure shape is the one envelope.
+// assertErrEnvelope: every failure shape is the one envelope. A GET's 400
+// is always a bad query parameter, so its code must be bad_param.
 func assertErrEnvelope(t *testing.T, h *Hub, path string, wantStatus int) {
 	t.Helper()
 	status, b := get(t, h, path)
@@ -131,6 +134,9 @@ func assertErrEnvelope(t *testing.T, h *Hub, path string, wantStatus int) {
 	var e apiError
 	if err := json.Unmarshal(b, &e); err != nil || e.Error.Code == "" || e.Error.Message == "" {
 		t.Errorf("GET %s: not the error envelope: %s", path, b)
+	}
+	if wantStatus == http.StatusBadRequest && e.Error.Code != "bad_param" {
+		t.Errorf("GET %s: error code %q, want bad_param", path, e.Error.Code)
 	}
 }
 
@@ -515,18 +521,40 @@ func TestAPIStatsSessions(t *testing.T) {
 			top.Session, sum, equiv, top.TokenSums, top.CostAPIEquivMicro)
 	}
 	var by struct {
-		Source string `json:"source"`
+		Source  string             `json:"source"`
+		DailyBy []store.DailyByRow `json:"daily_by"`
 	}
 	getOK(t, h, "/api/v1/stats/daily?by=harness&session="+top.Session, &by)
 	if by.Source != "events" {
 		t.Errorf("daily_by with session: source=%q", by.Source)
 	}
+	sum, equiv = store.TokenSums{}, 0
+	for _, r := range by.DailyBy {
+		sum.Input += r.Input
+		sum.Output += r.Output
+		sum.CacheWrite += r.CacheWrite
+		sum.CacheRead += r.CacheRead
+		equiv += r.CostAPIEquivMicro
+	}
+	if sum != top.TokenSums || equiv != top.CostAPIEquivMicro {
+		t.Errorf("daily_by under session %s = %+v / %d, want the row's %+v / %d",
+			top.Session, sum, equiv, top.TokenSums, top.CostAPIEquivMicro)
+	}
 	var totals struct {
 		Source string `json:"source"`
+		Totals struct {
+			store.TokenSums
+			store.CostSums
+		} `json:"totals"`
 	}
 	getOK(t, h, "/api/v1/totals?session="+top.Session, &totals)
 	if totals.Source != "events" {
 		t.Errorf("totals with session: source=%q", totals.Source)
+	}
+	if totals.Totals.TokenSums != top.TokenSums || totals.Totals.CostAPIEquivMicro != top.CostAPIEquivMicro {
+		t.Errorf("totals under session %s = %+v / %d, want the row's %+v / %d",
+			top.Session, totals.Totals.TokenSums, totals.Totals.CostAPIEquivMicro,
+			top.TokenSums, top.CostAPIEquivMicro)
 	}
 	// Activity is always the events path; under the session filter its
 	// buckets sum to the session's row.
@@ -552,24 +580,39 @@ func TestAPIStatsSessions(t *testing.T) {
 	}
 
 	// 400 bad_param, like the daily endpoint.
-	long := strings.Repeat("a", 65)
 	for _, p := range []string{
 		"/api/v1/stats/sessions?from=2026-02-02&to=2026-01-01",
 		"/api/v1/stats/sessions?from=01-01-2026",
 		"/api/v1/stats/sessions?timezone=Not/AZone",
 		"/api/v1/stats/sessions?by=harness",
 		"/api/v1/stats/sessions?limit=5",
-		"/api/v1/stats/sessions?session=" + long,
-		"/api/v1/stats/sessions?session=a%01b",
-		"/api/v1/stats/daily?session=" + long,
+	} {
+		assertErrEnvelope(t, h, p, http.StatusBadRequest)
+	}
+	// The session bound on every endpoint that reads filters: 64 printable
+	// runes pass (160 bytes here, so runes are counted, not bytes); 65
+	// runes or a control character are 400 bad_param.
+	fits := strings.Repeat("aş界🙂", 16)
+	if n := utf8.RuneCountInString(fits); n != 64 {
+		t.Fatalf("fits has %d runes", n)
+	}
+	for _, ep := range []string{
+		"/api/v1/stats/daily?", "/api/v1/stats/daily?by=harness&", "/api/v1/totals?",
+		"/api/v1/stats/activity?", "/api/v1/stats/sessions?",
+	} {
+		for _, bad := range []string{fits + "a", "a\x01b", "a\u0085b"} {
+			assertErrEnvelope(t, h, ep+"session="+url.QueryEscape(bad), http.StatusBadRequest)
+		}
+		var ok map[string]any
+		getOK(t, h, ep+"session="+url.QueryEscape(fits), &ok)
+	}
+	for _, p := range []string{
 		"/api/v1/stats/daily?session=a%0Ab",
-		"/api/v1/stats/activity?session=" + long,
 		"/api/v1/totals?session=a%7Fb",
 	} {
 		assertErrEnvelope(t, h, p, http.StatusBadRequest)
 	}
-	// 64 characters and "" are fine.
-	getOK(t, h, "/api/v1/stats/sessions?session="+strings.Repeat("a", 64), &got)
+	// "" is fine.
 	getOK(t, h, "/api/v1/stats/daily?session=", &daily)
 	if daily.Source != "events" {
 		t.Errorf(`daily with session="": source=%q`, daily.Source)
@@ -683,10 +726,17 @@ func TestAPIMetaModels(t *testing.T) {
 // both halves permanently.
 func TestAPIMethodNotAllowed(t *testing.T) {
 	h := seedHub(t)
+	// /api/v1/stream must stay LAST: its HEAD leaves the SSE handler
+	// running on the keep-alive connection, so the next request on that
+	// connection hangs until the test timeout. New paths go before it.
 	paths := []string{
 		"/api/v1/health", "/api/v1/stats/daily", "/api/v1/totals",
 		"/api/v1/meta/models", "/api/v1/meta/facets", "/api/v1/plans",
 		"/api/v1/sources", "/api/v1/stats/sessions", "/api/v1/stream",
+	}
+	if last := paths[len(paths)-1]; last != "/api/v1/stream" {
+		t.Fatalf("last path is %s, want /api/v1/stream: its HEAD leaves the SSE handler "+
+			"on the keep-alive connection, so any request after it hangs until the test timeout", last)
 	}
 	for _, p := range paths {
 		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
