@@ -27,7 +27,9 @@ import (
 // AdapterVersion is bumped whenever format handling changes.
 // v2: length-prefixed ID hashing; fallback IDs keyed by project-relative
 // path (M1.1 ID hardening — all event IDs changed).
-const AdapterVersion = 2
+// v3: Project is the record's cwd (folder name only when cwd is absent);
+// event IDs unchanged.
+const AdapterVersion = 3
 
 const harnessName = "claude-code"
 
@@ -439,6 +441,15 @@ func parseLine(line []byte, src adapters.Source, path string, lineIdx int,
 		sessionID = sessionFromName
 	}
 
+	// Project is the record's working directory, the value the other
+	// harnesses carry, so one directory reads as one project. A record
+	// without cwd keeps the encoded folder name. The fallback ID above
+	// stays keyed on the folder name.
+	eventProject := project
+	if rec.Cwd != "" {
+		eventProject = rec.Cwd
+	}
+
 	return core.Event{
 		ID:          id,
 		TS:          ts.UTC(),
@@ -448,7 +459,7 @@ func parseLine(line []byte, src adapters.Source, path string, lineIdx int,
 		Provider:    "anthropic",
 		Model:       rec.Message.Model,
 		ModelFamily: rec.Message.Model, // unknown models pass through raw until the mapping milestone
-		Project:     project,
+		Project:     eventProject,
 		SessionID:   sessionID,
 		RequestID:   rec.RequestID,
 		TokensInput: *u.InputTokens, TokensOutput: *u.OutputTokens,

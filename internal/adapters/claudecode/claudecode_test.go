@@ -205,6 +205,10 @@ func TestBackfillFixtures(t *testing.T) {
 		if e.Project == "" || e.SessionID == "" || len(e.Raw) == 0 {
 			t.Fatalf("missing project/session/raw on %s", e.ID)
 		}
+		// Every fixture record carries cwd: the project is that cwd.
+		if cwd, _ := e.Meta["cwd"].(string); cwd == "" || e.Project != cwd {
+			t.Fatalf("event %s project %q, want the record's cwd %q", e.ID, e.Project, cwd)
+		}
 	}
 
 	// Per-file health: every fixture file reports clean, with provenance.
@@ -223,6 +227,65 @@ func TestBackfillFixtures(t *testing.T) {
 	}
 	if totalEvents != wantEmitted {
 		t.Errorf("FileResult.Events sums to %d, want %d", totalEvents, wantEmitted)
+	}
+}
+
+// TestProjectFromCwd: a record's cwd is its project; a record without
+// cwd keeps the encoded folder name. The ID does not depend on either.
+func TestProjectFromCwd(t *testing.T) {
+	fixtures, err := filepath.Glob(filepath.Join(fixtureBase, "projects", "*", "*.jsonl"))
+	if err != nil || len(fixtures) == 0 {
+		t.Fatalf("no fixture session files: %v", err)
+	}
+	var line []byte
+	var cwd string
+	for _, f := range fixtures {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range bytes.Split(b, []byte("\n")) {
+			var rec record
+			if json.Unmarshal(l, &rec) == nil && rec.Type == "assistant" && rec.Cwd != "" &&
+				rec.Message != nil && rec.Message.Usage != nil && rec.Message.Usage.InputTokens != nil {
+				line, cwd = l, rec.Cwd
+				break
+			}
+		}
+		if line != nil {
+			break
+		}
+	}
+	if line == nil {
+		t.Fatal("no fixture assistant record with cwd")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(line, &obj); err != nil {
+		t.Fatal(err)
+	}
+	delete(obj, "cwd")
+	noCwd, err := json.Marshal(obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src := adapters.Source{Harness: harnessName, Root: "/r", Machine: "gx10"}
+	withEv, ok, err := parseLine(line, src, "/r/-folder-x/s.jsonl", 0, "-folder-x", "s")
+	if err != nil || !ok {
+		t.Fatalf("parse with cwd: ok=%v err=%v", ok, err)
+	}
+	if withEv.Project != cwd {
+		t.Errorf("project %q, want the record's cwd %q", withEv.Project, cwd)
+	}
+	noEv, ok, err := parseLine(noCwd, src, "/r/-folder-x/s.jsonl", 0, "-folder-x", "s")
+	if err != nil || !ok {
+		t.Fatalf("parse without cwd: ok=%v err=%v", ok, err)
+	}
+	if noEv.Project != "-folder-x" {
+		t.Errorf("project %q, want the folder name when cwd is absent", noEv.Project)
+	}
+	if withEv.ID != noEv.ID {
+		t.Errorf("ID changed with cwd: %s vs %s", withEv.ID, noEv.ID)
 	}
 }
 
