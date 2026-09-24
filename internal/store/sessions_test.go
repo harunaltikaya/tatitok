@@ -13,19 +13,24 @@ import (
 	"github.com/harunaltikaya/tatitok/internal/core"
 )
 
+// addSessionEvent inserts one priced synthetic event.
+func addSessionEvent(t *testing.T, s *Store, harness, msgID, session, project string, ts time.Time, in, equiv int64) {
+	t.Helper()
+	e := eventH(harness, msgID, "r-"+msgID, "m", session, ts, TokenSums{Input: in, Output: 1, CacheWrite: 2, CacheRead: 3})
+	e.Project = project
+	cost := int64(0)
+	e.CostUSDMicro, e.CostBasis, e.PriceSnapshot = &cost, "plan_included", "test"
+	e.CostAPIEquivMicro = &equiv
+	if _, err := s.InsertBatch(context.Background(), []core.Event{e}, testSource(1)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func seedSessionEvents(t *testing.T) *Store {
 	t.Helper()
 	s := openTemp(t)
-	ctx := context.Background()
 	mk := func(harness, msgID, session, project string, ts time.Time, in, equiv int64) {
-		e := eventH(harness, msgID, "r-"+msgID, "m", session, ts, TokenSums{Input: in, Output: 1, CacheWrite: 2, CacheRead: 3})
-		e.Project = project
-		cost := int64(0)
-		e.CostUSDMicro, e.CostBasis, e.PriceSnapshot = &cost, "plan_included", "test"
-		e.CostAPIEquivMicro = &equiv
-		if _, err := s.InsertBatch(ctx, []core.Event{e}, testSource(1)); err != nil {
-			t.Fatal(err)
-		}
+		addSessionEvent(t, s, harness, msgID, session, project, ts, in, equiv)
 	}
 	day := func(d, h, m int) time.Time { return time.Date(2026, 6, d, h, m, 0, 0, time.UTC) }
 	// s1 spans 06-09..06-11 UTC and changes project mid-session.
@@ -152,6 +157,58 @@ func TestSessionsInRange(t *testing.T) {
 	}
 	if rows == nil || len(rows) != 0 || total != 0 {
 		t.Errorf("empty range: %v total %d", rows, total)
+	}
+}
+
+// TestTsMillisForm: tsMillis parses every stored ts form (whole seconds,
+// trimmed fractions, nanoseconds) into one fixed width Go can parse.
+func TestTsMillisForm(t *testing.T) {
+	s := openTemp(t)
+	for in, want := range map[string]string{
+		"2026-06-10T09:00:59Z":           "2026-06-10T09:00:59.000Z",
+		"2026-06-10T09:00:59.5Z":         "2026-06-10T09:00:59.500Z",
+		"2026-06-10T09:00:59.123456789Z": "2026-06-10T09:00:59.123Z",
+	} {
+		var got *string
+		if err := s.db.QueryRowContext(context.Background(),
+			`SELECT `+tsMillis+` FROM (SELECT ? AS ts)`, in).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || *got != want {
+			t.Errorf("tsMillis(%s) = %v, want %s", in, got, want)
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339Nano, *got); err != nil {
+			t.Errorf("tsMillis(%s) = %s: %v", in, *got, err)
+		}
+	}
+}
+
+// TestSessionsFractionalOrder: first project and first-event order
+// compare instants, not ts text (".5Z" sorts before "Z" as text).
+func TestSessionsFractionalOrder(t *testing.T) {
+	s := openTemp(t)
+	at := func(ms int) time.Time { return time.Date(2026, 6, 10, 9, 0, 0, ms*1e6, time.UTC) }
+	// t9: project A at .0 and .5, project B at .2, so A is first.
+	addSessionEvent(t, s, "claude-code", "x1", "t9", "/p/a", at(0), 1, 100)
+	addSessionEvent(t, s, "claude-code", "x2", "t9", "/p/a", at(500), 1, 100)
+	addSessionEvent(t, s, "claude-code", "x3", "t9", "/p/b", at(200), 1, 100)
+	// t1 ties t9 on value and starts at .1, after t9 (its id sorts first).
+	addSessionEvent(t, s, "claude-code", "y1", "t1", "/p/c", at(100), 3, 300)
+
+	rows, total, err := s.SessionsInRange(context.Background(), time.UTC, "", "", Filters{}, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || rows[0].Session != "t9" || rows[1].Session != "t1" {
+		t.Fatalf("order: %+v, want t9 (09:00:00Z) then t1 (09:00:00.1Z)", rows)
+	}
+	if rows[0].Project != "/p/a" {
+		t.Errorf("t9 project = %q, want /p/a (09:00:00Z before /p/b's .2Z)", rows[0].Project)
+	}
+	if rows[0].FirstTS != "2026-06-10T09:00:00Z" || rows[0].LastTS != "2026-06-10T09:00:00Z" ||
+		rows[0].Events != 3 || rows[0].CostAPIEquivMicro != 300 {
+		t.Errorf("t9 = %+v", rows[0])
 	}
 }
 

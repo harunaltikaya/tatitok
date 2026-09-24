@@ -273,6 +273,11 @@ func (f Filters) rollupPredicate() (string, []any) {
 // like a day's.
 const sumAPIEquiv = "SUM(COALESCE(cost_api_equiv_micro, 0))"
 
+// tsMillis is ts in one fixed width (millisecond precision), so MIN and
+// MAX over it are chronological. ts itself is RFC3339Nano with trailing
+// zeros trimmed, and text order puts "…:00.5Z" before "…:00Z".
+const tsMillis = "strftime('%Y-%m-%dT%H:%M:%fZ', ts)"
+
 // Daily returns per-day token sums bucketed in tz, oldest day first,
 // with per-model and per-harness breakdowns, restricted by f (M5
 // Task 3: OR within a dimension, AND across). Aggregation runs in SQL:
@@ -589,7 +594,8 @@ type SessionSummary struct {
 // by f, sorted by API-equivalent descending, then first event, and cut to
 // limit rows. total is the session count before the cut. A session is
 // the composite (machine, harness, session_id), as in Sessions. Its
-// project is the one of its first in-range event. The range uses
+// project is the one of its first in-range event. First and last are
+// instants to the millisecond (tsMillis), not text order. The range uses
 // tatitok_day, like Activity; the value sums with sumAPIEquiv, like Daily.
 func (s *Store) SessionsInRange(ctx context.Context, tz *time.Location, from, to string, f Filters, limit int) ([]SessionSummary, int, error) {
 	tzName := tz.String()
@@ -606,14 +612,14 @@ func (s *Store) SessionsInRange(ctx context.Context, tz *time.Location, from, to
 	pred, fargs := f.eventsPredicate()
 	where += pred
 	args = append(args, fargs...)
-	// One group per (session, project): MIN(ts) per project picks the
-	// session's first project below, without SQLite's bare-column rule
-	// (ambiguous when MIN and MAX share a query).
+	// One group per (session, project): the earliest instant per project
+	// picks the session's first project below, without SQLite's
+	// bare-column rule (ambiguous when MIN and MAX share a query).
 	rows, err := s.db.QueryContext(ctx, `SELECT machine,
 			COALESCE(harness, '') AS h,
 			COALESCE(session_id, '') AS sid,
 			COALESCE(project, '') AS p,
-			MIN(ts), MAX(ts), COUNT(*),
+			MIN(`+tsMillis+`), MAX(`+tsMillis+`), COUNT(*),
 			SUM(tokens_input), SUM(tokens_output),
 			SUM(tokens_cache_write), SUM(tokens_cache_read),
 			`+sumAPIEquiv+`
