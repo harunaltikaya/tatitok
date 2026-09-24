@@ -281,18 +281,37 @@ var filterParamNames = []string{"harness", "provider", "model", "project", "basi
 // are 30 to 36 characters.
 const maxSessionParam = 64
 
-// parseFilters reads the filter params. A session value must be at most
-// maxSessionParam characters and printable (unicode.IsPrint); "" is
-// allowed (sessions stored without an id).
+// maxNameParam bounds a harness, provider, model or basis filter value
+// in characters (runes); maxProjectParam bounds a project, which is a
+// directory path.
+const (
+	maxNameParam    = 128
+	maxProjectParam = 1024
+)
+
+// filterParamBounds is each filter param's character cap.
+var filterParamBounds = []struct {
+	name string
+	max  int
+}{
+	{"harness", maxNameParam}, {"provider", maxNameParam}, {"model", maxNameParam},
+	{"project", maxProjectParam}, {"basis", maxNameParam}, {"session", maxSessionParam},
+}
+
+// parseFilters reads the filter params. Every value must be at most its
+// filterParamBounds characters and printable (unicode.IsPrint); "" is
+// allowed (the "(none)" groups, sessions stored without an id).
 func parseFilters(r *http.Request) (store.Filters, error) {
 	q := r.URL.Query()
-	for _, v := range q["session"] {
-		if n := utf8.RuneCountInString(v); n > maxSessionParam {
-			return store.Filters{}, fmt.Errorf("session: %d characters (max %d)", n, maxSessionParam)
-		}
-		for _, c := range v {
-			if !unicode.IsPrint(c) {
-				return store.Filters{}, fmt.Errorf("session: non-printable character %U", c)
+	for _, b := range filterParamBounds {
+		for _, v := range q[b.name] {
+			if n := utf8.RuneCountInString(v); n > b.max {
+				return store.Filters{}, fmt.Errorf("%s: %d characters (max %d)", b.name, n, b.max)
+			}
+			for _, c := range v {
+				if !unicode.IsPrint(c) {
+					return store.Filters{}, fmt.Errorf("%s: non-printable character %U", b.name, c)
+				}
 			}
 		}
 	}

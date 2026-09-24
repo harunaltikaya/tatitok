@@ -619,6 +619,31 @@ func TestAPIStatsSessions(t *testing.T) {
 	}
 }
 
+// TestAPIFilterBounds: the other string filter params are bounded like
+// session — at most 128 printable runes (1024 for project, a path), ""
+// allowed for the "(none)" groups — else 400 bad_param. Runes are
+// counted, not bytes: each fits value is multibyte and passes.
+func TestAPIFilterBounds(t *testing.T) {
+	h := seedHub(t)
+	for _, b := range []struct {
+		param string
+		max   int
+	}{
+		{"harness", 128}, {"provider", 128}, {"model", 128}, {"basis", 128}, {"project", 1024},
+	} {
+		fits := strings.Repeat("aş界🙂", b.max/4)
+		if n := utf8.RuneCountInString(fits); n != b.max {
+			t.Fatalf("%s: fits has %d runes", b.param, n)
+		}
+		for _, bad := range []string{fits + "a", "a\x01b"} {
+			assertErrEnvelope(t, h, "/api/v1/stats/daily?"+b.param+"="+url.QueryEscape(bad), http.StatusBadRequest)
+		}
+		var ok map[string]any
+		getOK(t, h, "/api/v1/stats/daily?"+b.param+"="+url.QueryEscape(fits), &ok)
+		getOK(t, h, "/api/v1/stats/daily?"+b.param+"=", &ok)
+	}
+}
+
 // TestAPIMetaFacets (M5 Task 3): the facet rail's source — every
 // filterable dimension enumerated with event counts, equal to the
 // direct store query.
