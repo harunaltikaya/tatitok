@@ -354,6 +354,48 @@ func TestProjectFromCwd(t *testing.T) {
 	}
 }
 
+// Backfill lists the files the watcher lists (adapters.ListFiles): a
+// top-level session file and a nested <folder>/<session>/subagents/
+// transcript are both ingested.
+func TestBackfillNestedSubagents(t *testing.T) {
+	fixtures, err := filepath.Glob(filepath.Join(fixtureBase, "projects", "*", "*.jsonl"))
+	if err != nil || len(fixtures) == 0 {
+		t.Fatalf("no fixture session files: %v", err)
+	}
+	realLog, err := os.ReadFile(fixtures[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "projects")
+	top := filepath.Join(root, "-folder", "s.jsonl")
+	nested := filepath.Join(root, "-folder", "s", "subagents", "agent-a.jsonl")
+	for _, p := range []string{top, nested} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, realLog, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	src := adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}
+	sink := newCollectSink(t)
+	if err := (Adapter{}).Backfill(context.Background(), src, sink); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	got := map[string]int{}
+	for _, res := range sink.results {
+		got[res.Path] = res.Events
+	}
+	if len(got) != 2 || got[top] == 0 || got[nested] == 0 {
+		t.Fatalf("backfill files = %v, want both %s and %s with events", got, top, nested)
+	}
+	watched, _, err := adapters.ListFiles(root, (Adapter{}).WatchSpec(src).Match)
+	if err != nil || len(watched) != 2 || got[watched[0]] == 0 || got[watched[1]] == 0 {
+		t.Fatalf("watcher listing %v (err %v) differs from backfill's %v", watched, err, got)
+	}
+}
+
 // Hard rule 5: re-ingesting the same files twice must yield identical DB
 // contents.
 func TestReingestIdempotent(t *testing.T) {

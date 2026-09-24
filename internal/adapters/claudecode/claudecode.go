@@ -110,8 +110,10 @@ type usage struct {
 	CacheCreation            json.RawMessage `json:"cache_creation"`
 }
 
-// Backfill parses every session file under src.Root and emits one event
-// per billable assistant message, in size-bounded batches (contract v2).
+// Backfill parses every session file under src.Root, nested subagent
+// transcripts included (adapters.ListFiles, the watcher's listing), and
+// emits one event per billable assistant message, in size-bounded
+// batches (contract v2).
 // Files are processed in order of their earliest record timestamp —
 // ccusage's order, so when duplicated (message id, request id) pairs carry
 // diverging fields, the same copy wins on both sides.
@@ -123,18 +125,18 @@ type usage struct {
 // so the next run retries the whole file. A sink error cancels the
 // remaining backfill and is returned unchanged.
 func (Adapter) Backfill(ctx context.Context, src adapters.Source, sink adapters.Sink) error {
-	files, skipped, err := listSessionFiles(src.Root)
+	files, skipped, err := adapters.ListFiles(src.Root, matchJSONL)
 	if err != nil {
-		return err
+		return fmt.Errorf("read log root %s: %w", src.Root, err)
 	}
 	for _, s := range skipped {
 		slog.Warn("skipping unreadable project dir",
-			"adapter", harnessName, "dir", s.path, "error", s.err)
-		if err := sink.FileStart(s.path); err != nil {
+			"adapter", harnessName, "dir", s.Path, "error", s.Err)
+		if err := sink.FileStart(s.Path); err != nil {
 			return err
 		}
 		if err := sink.FileDone(adapters.FileResult{
-			Path: s.path, ReadError: s.err.Error(),
+			Path: s.Path, ReadError: s.Err.Error(),
 		}); err != nil {
 			return err
 		}
@@ -190,38 +192,6 @@ func matchJSONL(path string) string {
 		return path
 	}
 	return ""
-}
-
-// skippedSource is a directory or file that could not be read.
-type skippedSource struct {
-	path string
-	err  error
-}
-
-func listSessionFiles(root string) ([]string, []skippedSource, error) {
-	projects, err := os.ReadDir(root)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read log root %s: %w", root, err)
-	}
-	var files []string
-	var skipped []skippedSource
-	for _, p := range projects {
-		if !p.IsDir() {
-			continue
-		}
-		dir := filepath.Join(root, p.Name())
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			skipped = append(skipped, skippedSource{path: dir, err: err})
-			continue
-		}
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
-				files = append(files, filepath.Join(dir, e.Name()))
-			}
-		}
-	}
-	return files, skipped, nil
 }
 
 // sortByEarliestTimestamp orders files by the first timestamp field found

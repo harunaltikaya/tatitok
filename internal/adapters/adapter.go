@@ -27,6 +27,8 @@ package adapters
 
 import (
 	"context"
+	"io/fs"
+	"path/filepath"
 	"time"
 
 	"github.com/harunaltikaya/tatitok/internal/core"
@@ -121,6 +123,34 @@ type WatchSpec struct {
 	// and codex map a session/rollout .jsonl to itself; opencode maps
 	// the database and its -wal to the database.
 	Match func(path string) string
+}
+
+// SkippedDir is a directory ListFiles could not read.
+type SkippedDir struct {
+	Path string
+	Err  error
+}
+
+// ListFiles is the file discovery the hub watcher and backfill share, so
+// both list the same files: every file under root, at any depth
+// (claude-code's <folder>/<session>/subagents/ included), that match
+// accepts, in lexical order. A directory below root that cannot be read
+// is returned in skipped; an unreadable root is an error.
+func ListFiles(root string, match func(path string) string) (files []string, skipped []SkippedDir, err error) {
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if path == root {
+				return err
+			}
+			skipped = append(skipped, SkippedDir{Path: path, Err: err})
+			return nil
+		}
+		if !d.IsDir() && match(path) != "" {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files, skipped, err
 }
 
 // Adapter is the shared contract.

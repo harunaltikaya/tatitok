@@ -418,22 +418,15 @@ func (w *watcher) pollLoop(ctx context.Context) {
 
 // candidates lists the files a polling scan stats for one target:
 // the spec's explicit list (opencode: db + -wal, no tree walk), or a
-// walk of the root filtered through Match.
+// walk of the root filtered through Match (adapters.ListFiles, the same
+// listing backfill uses).
 func (w *watcher) candidates(t *watchTarget) []string {
 	if len(t.spec.PollPaths) > 0 {
 		return t.spec.PollPaths
 	}
-	var out []string
-	_ = filepath.WalkDir(t.src.Root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil //nolint:nilerr // unreadable subtrees are backfill's problem
-		}
-		if t.spec.Match(path) != "" {
-			out = append(out, path)
-		}
-		return nil
-	})
-	return out
+	// Unreadable subtrees are backfill's problem.
+	files, _, _ := adapters.ListFiles(t.src.Root, t.spec.Match)
+	return files
 }
 
 // ---- debounce + ingest ----
