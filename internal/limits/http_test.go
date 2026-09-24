@@ -248,6 +248,97 @@ func TestLimitsPostMalformed(t *testing.T) {
 	}
 }
 
+// textBody is a two-provider POST body: a good "codex" entry plus provider
+// with one window labelled label, so a rejection must drop the whole body.
+func textBody(t *testing.T, provider, label string) string {
+	t.Helper()
+	b, err := json.Marshal(Snapshot{
+		"codex":  {FetchedAt: 1, Windows: []Window{{Label: "5h", UsedPercent: 9, ResetAt: 1}}},
+		provider: {FetchedAt: 1, Windows: []Window{{Label: label, UsedPercent: 90, ResetAt: 1}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestLimitsPostRejectsUnsafeText: a provider key or window label that is
+// blank, longer than 64 characters or holds a non-printable rune (C0/C1
+// controls) is a 400 in the usual error shape, and the whole body is rejected —
+// the good "codex" entry beside it is not stored either. The consumers print
+// these names on a notification and a terminal status line.
+func TestLimitsPostRejectsUnsafeText(t *testing.T) {
+	bad := map[string]string{
+		"ESC":        "Fable\x1b[2J 7d",
+		"CR":         "Fable\r7d",
+		"LF":         "Fable\n7d",
+		"C1 CSI":     "Fable\u009b2J 7d",
+		"C1 NEL":     "Fable\u00857d",
+		"65 chars":   strings.Repeat("a", 65),
+		"blank":      "   ",
+		"only a tab": "\t",
+	}
+	for name, text := range bad {
+		for _, pos := range []string{"label", "provider"} {
+			t.Run(name+" as "+pos, func(t *testing.T) {
+				provider, label := "claude", text
+				if pos == "provider" {
+					provider, label = text, "7d"
+				}
+				st := NewStore()
+				rec := postLoopback(t, st, textBody(t, provider, label))
+				if rec.Code != http.StatusBadRequest {
+					t.Fatalf("POST = %d, want 400 (body %q)", rec.Code, rec.Body.String())
+				}
+				var e apiError
+				if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || e.Error.Code != "bad_request" {
+					t.Errorf("error body = %q, want the bad_request error shape", rec.Body.String())
+				}
+				if st.Get() != nil {
+					t.Error("rejected POST stored something — the whole body must be rejected")
+				}
+			})
+		}
+	}
+}
+
+// TestLimitsPostAcceptsRealNames: the names the feeders send today pass the
+// text bounds and are stored verbatim — the extension's Claude/Codex labels,
+// a 64-character name (the limit itself), and the agy hook's fixture labels
+// under its "agy" key.
+func TestLimitsPostAcceptsRealNames(t *testing.T) {
+	for _, label := range []string{
+		"iguana_necktie (cloud credit)", "Fable 7d", "Claude+GPT weekly",
+		"Sonnet 7d", "5h", "Weekly", strings.Repeat("a", 64),
+	} {
+		t.Run(label, func(t *testing.T) {
+			st := NewStore()
+			rec := postLoopback(t, st, textBody(t, "claude", label))
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("POST label %q = %d, want 204 (body %q)", label, rec.Code, rec.Body.String())
+			}
+			if got := st.Get()["claude"].Windows[0].Label; got != label {
+				t.Errorf("stored label = %q, want %q verbatim", got, label)
+			}
+		})
+	}
+
+	// The agy statusLine hook's payload (QUOTA_WINDOWS in
+	// extension/agy-statusline/tatitok-agy-statusline.py).
+	agy := `{"agy":{"fetchedAt":1,"windows":[
+		{"label":"gemini-5h","usedPercent":25,"resetAt":1},
+		{"label":"gemini-weekly","usedPercent":50,"resetAt":1},
+		{"label":"3p-5h","usedPercent":0,"resetAt":1},
+		{"label":"3p-weekly","usedPercent":100,"resetAt":1}]}}`
+	st := NewStore()
+	if rec := postLoopback(t, st, agy); rec.Code != http.StatusNoContent {
+		t.Fatalf("agy hook POST = %d, want 204 (body %q)", rec.Code, rec.Body.String())
+	}
+	if n := len(st.Get()["agy"].Windows); n != 4 {
+		t.Errorf("agy stored %d windows, want 4", n)
+	}
+}
+
 // TestLimitsPostNullDoesNotClear pins the harden-parsing rule: a JSON null body
 // is a 400 and must NOT clear an already-stored snapshot.
 func TestLimitsPostNullDoesNotClear(t *testing.T) {

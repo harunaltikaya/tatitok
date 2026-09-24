@@ -15,9 +15,13 @@
 package limits
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Window is one reported usage window for a provider — e.g. Claude's
@@ -39,25 +43,51 @@ type Provider struct {
 // ("claude", "codex") -> its latest reported limits.
 type Snapshot map[string]Provider
 
+// maxText bounds a provider key or window label, in characters (runes). Real
+// names are short ("5h", "Fable 7d", "iguana_necktie (cloud credit)"); the
+// consumers print them on a desktop notification or a terminal status line.
+const maxText = 64
+
+// checkText says why s is not a displayable name: blank after trimming, longer
+// than maxText characters, or holding a rune unicode.IsPrint rejects (C0/C1
+// controls, format characters, line/paragraph separators; the ASCII space is
+// printable). nil when s is fine.
+func checkText(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return errors.New("is empty")
+	}
+	if n := utf8.RuneCountInString(s); n > maxText {
+		return fmt.Errorf("is %d characters (max %d)", n, maxText)
+	}
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return fmt.Errorf("holds non-printable character %U", r)
+		}
+	}
+	return nil
+}
+
 // Validate rejects a malformed snapshot cleanly (the handler turns a non-nil
 // error into a 400). It guards the display invariants the dashboard relies on:
-// a present provider key, finite and non-negative percentages, and non-negative
-// epoch timestamps. A usedPercent ABOVE 100 is accepted and stored verbatim — a
-// provider may report over-cap, and the stored number stays truthful (the
-// frontend clamps the rendered bar to 100%). It deliberately does NOT constrain
-// WHICH providers or window labels may appear — new providers/windows pass
-// through unchanged (forward-compatible with the extension evolving).
+// provider keys and window labels that are non-blank, at most maxText
+// characters and printable (checkText), finite and non-negative percentages,
+// and non-negative epoch timestamps. A usedPercent ABOVE 100 is accepted and
+// stored verbatim — a provider may report over-cap, and the stored number stays
+// truthful (the frontend clamps the rendered bar to 100%). It deliberately does
+// NOT constrain WHICH providers or window labels may appear — new
+// providers/windows pass through unchanged (forward-compatible with the
+// extension evolving).
 func (s Snapshot) Validate() error {
 	for key, p := range s {
-		if key == "" {
-			return fmt.Errorf("limits: empty provider key")
+		if err := checkText(key); err != nil {
+			return fmt.Errorf("limits: provider key %q %v", key, err)
 		}
 		if p.FetchedAt < 0 {
 			return fmt.Errorf("limits: provider %q has negative fetchedAt %d", key, p.FetchedAt)
 		}
 		for i, w := range p.Windows {
-			if w.Label == "" {
-				return fmt.Errorf("limits: provider %q window %d has empty label", key, i)
+			if err := checkText(w.Label); err != nil {
+				return fmt.Errorf("limits: provider %q window %d label %q %v", key, i, w.Label, err)
 			}
 			if math.IsNaN(w.UsedPercent) || math.IsInf(w.UsedPercent, 0) {
 				return fmt.Errorf("limits: provider %q window %q usedPercent is not a finite number", key, w.Label)
