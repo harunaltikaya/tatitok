@@ -91,8 +91,10 @@ type Event struct {
 	PriceRates json.RawMessage `json:"price_rates,omitempty"`
 	// CostAPIEquivMicro is the computed API-equivalent value of a
 	// free-basis event (owner ruling, mirroring FR-9.3) — what the same
-	// tokens would have cost at the model's API price. Nil unless basis
-	// is free and the model (or its family) resolves in the snapshot.
+	// tokens would have cost at the model's API price. Nil when no
+	// equivalent resolves (see pricing.Apply for each basis). On basis
+	// api_price it equals CostUSDMicro (owner ruling 2026-09-25: the
+	// billed cost is the equivalent).
 	CostAPIEquivMicro *int64 `json:"cost_api_equiv_micro,omitempty"`
 
 	Accuracy Accuracy `json:"accuracy"`

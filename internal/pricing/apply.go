@@ -169,6 +169,13 @@ func Apply(e *core.Event, ov *Overrides) error {
 		return fmt.Errorf("%s: %w", e.ID, err)
 	}
 	detail := priceDetail{Rates: *q.Rates}
+	if q.Basis == BasisAPIPrice {
+		// Metered usage (owner ruling 2026-09-25): the owner paid API
+		// rates, so the API-equivalent IS the billed cost — without it
+		// pay-per-token use added $0 to the value headline.
+		ev := cost
+		e.CostAPIEquivMicro = &ev
+	}
 	if q.Basis == BasisFree {
 		// Owner-declared free (override file free:true): kept as its own
 		// basis source, distinct from source-reported $0 (M3.1 ruling).
