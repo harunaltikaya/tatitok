@@ -89,12 +89,13 @@ type Event struct {
 	// additionally carries the API-equivalent rates and their derivation
 	// ("model" or "family").
 	PriceRates json.RawMessage `json:"price_rates,omitempty"`
-	// CostAPIEquivMicro is the computed API-equivalent value of a
-	// free-basis event (owner ruling, mirroring FR-9.3) — what the same
-	// tokens would have cost at the model's API price. Nil when no
-	// equivalent resolves (see pricing.Apply for each basis). On basis
-	// api_price it equals CostUSDMicro (owner ruling 2026-09-25: the
-	// billed cost is the equivalent).
+	// CostAPIEquivMicro is the event's API-equivalent value, per basis:
+	// plan_included, the computed API cost of the included usage (nil
+	// when no rate resolves); api_price, the billed cost, equal to
+	// CostUSDMicro (owner ruling 2026-09-25); free, the cost at the
+	// model's own API rate (exact key, then family), nil without one;
+	// local, the cost at the configured reference model, nil without
+	// one; unknown, nil. Only pricing.Apply sets it.
 	CostAPIEquivMicro *int64 `json:"cost_api_equiv_micro,omitempty"`
 
 	Accuracy Accuracy `json:"accuracy"`
