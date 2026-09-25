@@ -8,7 +8,7 @@ A local-first dashboard that shows the API-equivalent value of your Claude Code,
 
 ## What it does
 
-tatitok reads the logs your coding agents already write to disk, prices that usage at each provider's published API rates, and puts two numbers next to each other: what the same tokens would have cost on the metered API, and what you actually pay out of pocket on your subscription.
+tatitok reads the logs your coding agents already write to disk, prices that usage at each provider's published API rates, and puts two numbers next to each other: what the same tokens would have cost on the metered API, and what you actually pay out of pocket on your subscription. Pay-per-token (`api_price`) usage counts its billed cost as its API-equivalent, so the value figure and the extracted ratio include metered use.
 
 What makes it different is the honesty stance. Everything runs on loopback (`127.0.0.1`) — nothing ever leaves your machine and there's no telemetry. And it never guesses your subscription: you declare your own plan and prices, because a wrong guess would fake the exact number the tool exists to make honest.
 
@@ -316,7 +316,6 @@ A few things to know going in:
 
 - **You build it from source.** No prebuilt binaries yet — clone and `make build`.
 - **The extension is unpacked.** Load-unpacked plus a Local Network Access grant, as above. Not in the Web Store yet.
-- **Metered-only users see $0 API-equivalent.** If you have no subscription at all on a provider (pure pay-per-token), the API-equivalent value for that provider currently shows $0. The numbers are correct for subscription users; closing this gap is on the list.
 
 <details>
 <summary><b>More screenshots — full pages at a glance</b></summary>
