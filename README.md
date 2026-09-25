@@ -116,6 +116,20 @@ It's add-only: tatitok prices an event from that file only when the pinned snaps
 
 To remove it, run the same script with `--uninstall`. It removes the two units only if they're still the ones it wrote.
 
+## Provider aliases (optional)
+
+Sometimes a harness records a provider under a name you'd rather change, such as a model server on your own machine that OpenCode reports under its own name. Add a `provider_aliases` map to `~/.config/tatitok/prices.json` (under `$XDG_CONFIG_HOME` if you set it), from the name as recorded to the name to use. It's a top-level key, next to your plans:
+
+```json
+"provider_aliases": {
+  "my-llama-server": "my-llama-server-local"
+}
+```
+
+tatitok applies it as it ingests each event, for every harness, before the event is priced, so every pricing rule sees the new name. tatitok counts a provider whose name ends in `-local` as local usage, run on your own hardware, which is what this example is for. A provider with no entry keeps its name. An empty name on either side makes the file fail to load, and `serve` won't start until you fix it.
+
+The new name only reaches stored usage when tatitok reads its source again. `serve` reads prices.json when it starts, so restart it after an edit. From then on it re-reads a log file or database whenever it changes, and `tatitok ingest --backfill` re-reads all of them at once. `recompute` doesn't rename anything, and usage whose log file is gone keeps its old name.
+
 ## Limit alerts (optional)
 
 `extension/quota-alert/` sends a desktop notification when a usage-limit window crosses a threshold you set. It's plain Python with the standard library only. Every 5 minutes it reads the same numbers the cards show from your running hub (`GET /api/v1/limits`, loopback only) and, for any window at or above its threshold, runs `notify-send`:
@@ -168,6 +182,8 @@ tatitok reads five coding-agent harnesses from the standard locations they alrea
 - **Antigravity CLI (agy)** — the log written by tatitok's [agy hook](#the-agy-hook-antigravity-cli), under `~/.local/share/tatitok/agy`
 
 It takes the provider-reported token counts verbatim (no tokenizers, no estimating), stores them in a local SQLite file, and prices them against a pinned snapshot of published rates. For agy, the counts are the differences between agy's own running totals. The rates come from LiteLLM's price list; the current snapshot is from 2026-09-03. Refreshing it is a deliberate maintainer step, never a runtime fetch. Models newer than the snapshot can also be priced from the optional [daily price file](#new-model-prices-optional), which only adds models the snapshot lacks.
+
+`serve` reads your history by itself. To load it without starting the hub, run `tatitok ingest --backfill`. For Claude Code, both find every transcript under the projects folder at any depth, including the subagent transcripts Claude Code writes under `<session>/subagents/`. If the projects folder is itself a symlink, they follow it; symlinks inside it aren't followed. Under a symlinked projects folder `serve` gets no file-change notices, so it picks up new activity on its rescan, once a minute by default.
 
 Click into a harness — or any chart — for the detail view: totals for the range you're looking at, then the day-by-day API-equivalent and actual-cost charts.
 
@@ -276,6 +292,23 @@ The panel reads `GET /api/v1/stats/sessions`. It takes `from` and `to` (`YYYY-MM
 ```
 
 `session` and `project` are the raw values (`""` when the harness left them empty). `firstTs` and `lastTs` are the first and last events inside the range, in UTC to the second. `costAPIEquivMicro` is the API-equivalent value in millionths of a dollar, so the row above is $54.48.
+
+### Filter limits
+
+The dashboard sends its filters to the hub as query parameters: `harness`, `provider`, `model`, `project`, `basis` and `session`, on `GET /api/v1/stats/daily`, `/api/v1/stats/activity`, `/api/v1/stats/sessions` and `/api/v1/totals`. The hub caps each value's length, counted in characters rather than bytes: 128 for `harness`, `provider`, `model` and `basis`, 1024 for `project`, which is a full path, and 64 for `session`. Each value must also be printable, so a control character, a tab or a line break is refused. A value over its cap, or with such a character, gets a 400 whose message names the parameter:
+
+```json
+{"error":{"code":"bad_param","message":"project: 1025 characters (max 1024)"}}
+```
+
+An empty value passes. It selects usage stored with that field empty, which the dashboard shows as "(none)".
+
+### Checked against ccusage
+
+tatitok's token counts are tested against [ccusage](https://github.com/ryoppippi/ccusage), which reads the same logs on its own. The daily input, output, cache-write and cache-read sums must match exactly, with no tolerance, and so must reasoning tokens where ccusage reports them. There are two checks:
+
+- The fixture check runs with `make test`. It ingests the sanitized sample logs in `testdata/fixtures/` (Claude Code, Codex and OpenCode) and compares them with expectations captured from ccusage 20.0.9 and committed beside them.
+- `make parity-full` compares your own Claude Code history with ccusage 20.0.24, the version pinned in the Makefile, run through `npx` (which downloads it the first time). It compares finished days only: today, in your local timezone, is left out on both sides, since it can still change while the check runs. It also runs with `-count=1`, so Go's test cache never replays an old pass. ccusage reads your logs in a separate process, and the cache can't see those reads.
 
 ## Honest scope (this is a v1)
 
