@@ -86,6 +86,31 @@ export function rangeFromURL(
   return { ...presetRange(preset, tz, now), preset };
 }
 
+// zonedRangeFromURL: the zone and range a URL restores (back/forward). The
+// zone is resolved first — the URL's tz, else the browser's — and the dates
+// in that same zone, so tz and dates are set together.
+export function zonedRangeFromURL(
+  u: { from: string | null; to: string | null; range: string | null; tz: string | null },
+  browserZone: string,
+  now: Date = new Date(),
+): { tz: string; from: string; to: string; preset: PresetLabel | null } {
+  const tz = u.tz ?? browserZone;
+  return { tz, ...rangeFromURL(u.from, u.to, u.range, tz, now) };
+}
+
+// rangeInZone: the dates to show after the zone changes to tz. An active
+// preset is recomputed in tz, since its URL names the preset and the zone
+// and must open on the dates on screen; calendar dates are kept.
+export function rangeInZone(
+  preset: PresetLabel | null,
+  from: string,
+  to: string,
+  tz: string,
+  now: Date = new Date(),
+): { from: string; to: string } {
+  return preset ? presetRange(preset, tz, now) : { from, to };
+}
+
 // activePreset: which preset button (if any) exactly matches the current
 // range at `now` in tz — null when the range is custom.
 export function activePreset(from: string, to: string, tz: string, now: Date = new Date()): PresetLabel | null {

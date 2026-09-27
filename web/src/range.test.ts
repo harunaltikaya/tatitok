@@ -2,7 +2,7 @@
 // preset detection (the "lit" button) — pure helpers, no .tsx.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { defaultRange, initialRange, activePreset, presetRange, daysAgo, shiftDay, precedingRange, parsePreset, rangeFromURL, ALL_FROM } from "./range.ts";
+import { defaultRange, initialRange, activePreset, presetRange, daysAgo, shiftDay, precedingRange, parsePreset, rangeFromURL, zonedRangeFromURL, rangeInZone, presets, ALL_FROM } from "./range.ts";
 import { filtersFromURL, filtersToURL, emptyFilters, DEFAULT_SORT } from "./filters.ts";
 
 const now = new Date("2026-09-03T11:30:00Z"); // 14:30 in Europe/Istanbul, 04:30 in America/Los_Angeles
@@ -190,4 +190,64 @@ test("range param: from/to win over range= when both are present", () => {
   assert.deepEqual(open("?range=30d&from=2026-06-11"), { from: "2026-06-11", to: "2026-09-03", preset: null });
   // An empty from is still a from (served as no start date, soul §6).
   assert.deepEqual(open("?range=30d&from=&to=2026-09-24"), { from: "", to: "2026-09-24", preset: null });
+});
+
+// Review 0928a F2. App's zone handler calls rangeInZone and its popstate
+// handler calls zonedRangeFromURL; the transitions themselves need a React
+// renderer this harness does not have, so the helpers are tested. Rule: at
+// any instant, the URL and the screen name the same dates.
+const late = new Date("2026-09-27T21:30:00Z"); // 00:30 on 09-28 in Istanbul, 21:30 on 09-27 in UTC
+
+// reopen: the dates a fresh open of the URL shows at the same instant.
+const reopen = (url: string, browserZone: string, at: Date) => zonedRangeFromURL(filtersFromURL(url), browserZone, at);
+
+test("zone change: an active preset is recomputed in the new zone; calendar dates stay", () => {
+  const f = emptyFilters();
+  const ist = presetRange("7d", "Europe/Istanbul", late);
+  assert.deepEqual(ist, { from: "2026-09-22", to: "2026-09-28" });
+  // Istanbul -> UTC with 7d active: the screen moves to UTC's 7 days ...
+  const r = rangeInZone("7d", ist.from, ist.to, "UTC", late);
+  assert.deepEqual(r, { from: "2026-09-21", to: "2026-09-27" });
+  // ... which is what ?range=7d&tz=UTC opens on at that instant.
+  const url = filtersToURL(f, r.from, r.to, "UTC", "home", "model", DEFAULT_SORT, "7d");
+  assert.equal(url, "?range=7d&tz=UTC");
+  assert.deepEqual(reopen(url, "Europe/Istanbul", late), { tz: "UTC", ...r, preset: "7d" });
+  // A calendar range keeps its dates in any zone, and its URL carries them.
+  assert.deepEqual(rangeInZone(null, "2026-09-01", "2026-09-05", "UTC", late), { from: "2026-09-01", to: "2026-09-05" });
+  // Every preset, every zone pair: the screen after the change equals a
+  // reopen of the URL written after it.
+  const zones = ["Europe/Istanbul", "UTC", "America/Los_Angeles", "Asia/Kolkata", "Pacific/Kiritimati"];
+  for (const p of presets) {
+    for (const z1 of zones) {
+      for (const z2 of zones) {
+        const before = presetRange(p.label, z1, late);
+        const after = rangeInZone(p.label, before.from, before.to, z2, late);
+        const u = filtersToURL(f, after.from, after.to, z2, "home", "model", DEFAULT_SORT, p.label);
+        assert.deepEqual(reopen(u, z1, late), { tz: z2, ...after, preset: p.label }, `${p.label} ${z1} -> ${z2}`);
+      }
+    }
+  }
+});
+
+test("popstate: the zone is resolved first (URL tz, else the browser's) and the dates in that zone", () => {
+  // No tz in the URL, browser in UTC, Istanbul selected before: tz and dates
+  // both come from UTC, and the URL written back reopens on the same dates.
+  const r = zonedRangeFromURL(filtersFromURL("?range=7d"), "UTC", late);
+  assert.deepEqual(r, { tz: "UTC", from: "2026-09-21", to: "2026-09-27", preset: "7d" });
+  const back = filtersToURL(emptyFilters(), r.from, r.to, r.tz, "home", "model", DEFAULT_SORT, r.preset);
+  assert.deepEqual(reopen(back, "Asia/Tokyo", late), r);
+  // A tz in the URL wins over the browser zone.
+  assert.deepEqual(zonedRangeFromURL(filtersFromURL("?range=7d&tz=Europe%2FIstanbul"), "UTC", late), {
+    tz: "Europe/Istanbul",
+    from: "2026-09-22",
+    to: "2026-09-28",
+    preset: "7d",
+  });
+  // Dates in the URL are kept; the zone still follows the same rule.
+  assert.deepEqual(zonedRangeFromURL(filtersFromURL("?from=2026-09-01&to=2026-09-05"), "UTC", late), {
+    tz: "UTC",
+    from: "2026-09-01",
+    to: "2026-09-05",
+    preset: null,
+  });
 });

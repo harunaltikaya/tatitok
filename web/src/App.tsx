@@ -57,7 +57,7 @@ import {
 } from "./filters";
 import { dayTotal, topModelsAtDay } from "./tooltip";
 import { touchedInRange } from "./invalidate";
-import { presets, presetRange, rangeFromURL, activePreset, precedingRange, type PresetLabel } from "./range";
+import { presets, presetRange, rangeFromURL, zonedRangeFromURL, rangeInZone, activePreset, precedingRange, type PresetLabel } from "./range";
 import {
   LAYOUT_KEY,
   defaultLayout,
@@ -365,11 +365,12 @@ export default function App() {
     const onPop = () => {
       const s = filtersFromURL(window.location.search);
       setFilters(s.filters);
-      const r = rangeFromURL(s.from, s.to, s.range, s.tz ?? browserTZ());
+      // One zone for both: the URL's tz, else the browser's (range.ts).
+      const r = zonedRangeFromURL(s, browserTZ());
+      setTz(r.tz);
       setPreset(r.preset);
       setFrom(r.from);
       setTo(r.to);
-      if (s.tz) setTz(s.tz);
       setView(s.view);
       setGroupBy(s.groupBy);
       setSort(s.sort);
@@ -807,7 +808,14 @@ export default function App() {
               name="timezone"
               aria-label="timezone for day bucketing"
               value={tz}
-              onChange={(e) => setTz(e.target.value)}
+              onChange={(e) => {
+                // An active preset follows the zone, so the URL (range= + tz)
+                // and the screen name the same dates; calendar dates stay.
+                const r = rangeInZone(preset, from, to, e.target.value);
+                setTz(e.target.value);
+                setFrom(r.from);
+                setTo(r.to);
+              }}
               options={tzOptions}
               style={{ maxWidth: "12rem" }}
             />
