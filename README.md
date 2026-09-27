@@ -33,6 +33,8 @@ Then open **http://127.0.0.1:8284** in your browser.
 
 On first run, `serve` scans the agent logs already on your machine and ingests your history automatically — there's no separate import step. Leave it running: it watches for new activity and updates the dashboard live. Stop it with Ctrl-C.
 
+On Linux, `./dist/tatitok serve --install` runs the hub as a systemd user service instead. It writes `~/.config/systemd/user/tatitok-serve.service` (that binary's `serve`, restarted after a crash, output appended to `~/.local/share/tatitok/serve.log`), then enables and starts it; stop a `serve` you started by hand first. It starts when you log in, or at boot after `loginctl enable-linger`. After `make build`, restart it with `systemctl --user restart tatitok-serve`. `serve --uninstall` stops, disables and removes it.
+
 ## Onboarding — set up your plans
 
 The first time you open the dashboard with usage present, tatitok pops up a panel titled **"set up your plans."** This is how it learns what you actually pay, so it can show plan-covered usage as $0 out of pocket with its API-equivalent value beside it.

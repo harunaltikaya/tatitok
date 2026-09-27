@@ -15,7 +15,8 @@ import (
 //	0   help
 //	1   valid command, invalid required flags (ingest needs --backfill,
 //	    stats needs exactly one of --daily/--session and --session accepts
-//	    no --by, doctor and recompute need exactly one mode flag)
+//	    no --by, doctor and recompute need exactly one mode flag, serve
+//	    --install/--uninstall take no other flag)
 func TestRunExitCodes(t *testing.T) {
 	tests := []struct {
 		name string
@@ -31,6 +32,8 @@ func TestRunExitCodes(t *testing.T) {
 		{"stats --session --by harness", []string{"stats", "--session", "--by", "harness"}, 1},
 		{"doctor with no mode", []string{"doctor"}, 1},
 		{"recompute with no mode", []string{"recompute"}, 1},
+		{"serve --install with another flag", []string{"serve", "--install", "--addr", "127.0.0.1:9"}, 1},
+		{"serve --install --uninstall", []string{"serve", "--install", "--uninstall"}, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -49,6 +49,7 @@ Usage:
   tatitok recompute --pricing    [--dry-run] [--db PATH]
   tatitok onboard [--claude TIER] [--codex TIER] [--claude-price USD] [--codex-price USD] [--dry-run]
   tatitok serve [--db PATH] [--addr HOST:PORT] [--debounce DUR] [--poll-interval DUR]
+  tatitok serve --install | --uninstall
 
 ingest with no --source runs every detected adapter and reports per
 source. stats buckets days in the local timezone by default (ccusage's
@@ -90,7 +91,11 @@ is local-only with no auth or TLS, so use an SSH/Tailscale tunnel for remote
 access) until SIGINT/SIGTERM, shutting down cleanly. It watches the detected
 sources for new usage, serves the JSON API and the live SSE stream, and hosts
 the embedded dashboard. Recompute stays CLI-only and owner-run;
-the hub never rewrites history on its own.`
+the hub never rewrites history on its own.
+serve --install writes ~/.config/systemd/user/` + serviceName + `.service (this
+binary's absolute path + " serve", restart on failure, log to serve.log beside
+the database), then enables and starts it; --uninstall stops, disables and
+removes it. Neither takes other flags.`
 
 func main() { os.Exit(run(os.Args[1:])) }
 

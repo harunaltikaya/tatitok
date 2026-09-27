@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"os"
@@ -28,7 +29,27 @@ func cmdServe(args []string) error {
 	addr := fs.String("addr", hub.DefaultAddr, "listen address (HOST:PORT; must be loopback — a non-loopback bind is refused)")
 	debounce := fs.Duration("debounce", hub.DefaultDebounce, "coalesce window: rapid log changes become one ingest pass")
 	pollEvery := fs.Duration("poll-interval", hub.DefaultPollInterval, "polling interval (opencode store; fsnotify fallback)")
+	install := fs.Bool("install", false, "write, enable and start the systemd user service "+serviceName+" (runs this binary's serve)")
+	uninstall := fs.Bool("uninstall", false, "stop, disable and remove the systemd user service "+serviceName)
 	_ = fs.Parse(args)
+
+	if *install || *uninstall {
+		if fs.NFlag() != 1 || fs.NArg() != 0 {
+			return errors.New("serve --install and --uninstall take no other flags or arguments")
+		}
+		unitDir, err := serviceUnitDir()
+		if err != nil {
+			return err
+		}
+		if *uninstall {
+			return uninstallService(unitDir, systemctlUser, os.Stdout)
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		return installService(unitDir, exe, serveLogPath(), os.Getenv, systemctlUser, os.Stdout)
+	}
 
 	probe := realProbe()
 	overrides, err := loadPriceOverrides(probe)
