@@ -1,8 +1,14 @@
 // SSE consumption (M4 Task 3 contract): there is no replay — on
 // reconnect, and on the server's `stale` event, the right move is to
 // refetch the REST endpoints. EventSource reconnects on its own.
+//
+// The stream is held only while the tab is visible. Every open
+// EventSource keeps one HTTP/1.1 socket, and Chrome allows 6 per host
+// across all tabs, so hidden dashboard tabs holding streams starve every
+// fetch (diag 0927). Hidden closes the stream; visible opens a new one,
+// and its hello refetches like any reconnect.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { IngestPass } from "./api";
 
 export interface StreamState {
@@ -15,33 +21,40 @@ export interface StreamState {
   touchedDays: string[];
 }
 
-export function useStream(): StreamState {
-  const [state, setState] = useState<StreamState>({
-    connected: false,
-    lastPass: null,
-    bump: 0,
-    touchedDays: [],
-  });
-  const wasConnected = useRef(false);
+// streamWhileVisible opens a stream from `open` while doc is visible and
+// closes it while hidden, feeding events to `update`. It returns the
+// cleanup: remove the listener, close the stream. Plain function (no
+// React) so node --test can drive it with a fake document and stream.
+export function streamWhileVisible(
+  doc: Pick<Document, "visibilityState" | "addEventListener" | "removeEventListener">,
+  open: () => EventSource,
+  update: (fn: (s: StreamState) => StreamState) => void,
+): () => void {
+  let es: EventSource | null = null;
+  let wasConnected = false;
 
-  useEffect(() => {
-    const es = new EventSource("/api/v1/stream");
+  const start = () => {
+    if (es) return;
+    const src = open();
+    es = src;
 
-    es.addEventListener("hello", () => {
-      const reconnected = wasConnected.current;
-      wasConnected.current = true;
-      setState((s) => ({
+    src.addEventListener("hello", () => {
+      const reconnected = wasConnected;
+      wasConnected = true;
+      update((s) => ({
         ...s,
         connected: true,
         // A hello after a previous connection means we may have missed
-        // events — refetch.
+        // events — refetch. touchedDays is cleared on every (re)open so
+        // the refetch covers the whole range.
         bump: reconnected ? s.bump + 1 : s.bump,
+        touchedDays: [],
       }));
     });
 
-    es.addEventListener("ingest_pass", (ev) => {
+    src.addEventListener("ingest_pass", (ev) => {
       const pass = JSON.parse((ev as MessageEvent).data) as IngestPass;
-      setState((s) => ({
+      update((s) => ({
         ...s,
         lastPass: pass,
         bump: s.bump + 1,
@@ -49,17 +62,43 @@ export function useStream(): StreamState {
       }));
     });
 
-    es.addEventListener("stale", () => {
+    src.addEventListener("stale", () => {
       // The hub dropped events for us (we were slow): refetch everything.
-      setState((s) => ({ ...s, bump: s.bump + 1, touchedDays: [] }));
+      update((s) => ({ ...s, bump: s.bump + 1, touchedDays: [] }));
     });
 
-    es.onerror = () => {
-      setState((s) => ({ ...s, connected: false }));
+    src.onerror = () => {
+      update((s) => ({ ...s, connected: false }));
     };
+  };
 
-    return () => es.close();
-  }, []);
+  const stop = () => {
+    if (!es) return;
+    es.close();
+    es = null;
+    update((s) => ({ ...s, connected: false }));
+  };
+
+  const onVisibility = () => (doc.visibilityState === "visible" ? start() : stop());
+  doc.addEventListener("visibilitychange", onVisibility);
+  onVisibility();
+
+  return () => {
+    doc.removeEventListener("visibilitychange", onVisibility);
+    es?.close();
+    es = null;
+  };
+}
+
+export function useStream(): StreamState {
+  const [state, setState] = useState<StreamState>({
+    connected: false,
+    lastPass: null,
+    bump: 0,
+    touchedDays: [],
+  });
+
+  useEffect(() => streamWhileVisible(document, () => new EventSource("/api/v1/stream"), setState), []);
 
   return state;
 }
