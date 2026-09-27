@@ -213,7 +213,7 @@ Under the home page's **value extracted** figure, and under the API-equivalent a
 
     prev $812.40 (+36%)
 
-The previous period has the same number of calendar days and ends the day before your range starts. Its days are counted in the timezone you've selected, and it uses the same filters. The percent is the change from the previous period to yours, rounded to a whole number. When the previous value is 0, the line shows the value with no percent. There's no line for the "all" preset, which starts at 1970-01-01 with nothing before it, or when the previous period fails to load. A page opened on a range the hub rejects, such as a hand-edited `from` in the URL, shows the error and no line.
+The previous period has the same number of calendar days and ends the day before your range starts. Its days are counted in the timezone you've selected, and it uses the same filters. The percent is the change from the previous period to yours, rounded to a whole number. When the previous value is 0, the line shows the value with no percent. There's no line for the "all" preset, which starts at 1970-01-01 with nothing before it, or when the previous period fails to load. The page URL keeps a preset by name, as `range=` with `7d`, `30d`, `90d` or `all`, resolved to the current days each time the page opens, and a calendar pick as `from` and `to`; when both are present, `from` and `to` win. A page opened on a range the hub rejects, such as a hand-edited `from` in the URL, shows the error and no line.
 
 ### Projects
 
