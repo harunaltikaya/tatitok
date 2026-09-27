@@ -1,11 +1,14 @@
 // Day-range defaults and preset matching (pure; node --test).
 //
-// The range lives in the URL (from/to). With NO range in the URL the
-// dashboard opens on the last 7 days in the selected timezone — today−6d →
-// today — and the "7d" preset reads as active. An explicit URL range always
-// wins (shareable links, refresh, back/forward). Presets are defined here so
-// the header buttons, the default and the active-state test agree on one
-// table.
+// The range lives in the URL: a preset by name (range=7d), or a calendar
+// pick as dates (from/to). A name resolves to dates in the selected
+// timezone each time the page opens, so a reopened tab or bookmark shows
+// the current days, not the ones of the day it was clicked. With NO range
+// in the URL the dashboard opens on the last 7 days in the selected
+// timezone — today−6d → today — and the "7d" preset reads as active.
+// Explicit dates always win (shareable links, refresh, back/forward).
+// Presets are defined here so the header buttons, the default and the
+// active-state test agree on one table.
 
 import { dayInTZ } from "./api.ts";
 
@@ -58,6 +61,29 @@ export function initialRange(
 ): { from: string; to: string } {
   const def = defaultRange(tz, now);
   return { from: urlFrom ?? def.from, to: urlTo ?? def.to };
+}
+
+// parsePreset: a URL range= value as a preset label; unknown or absent is
+// null (the default applies).
+export function parsePreset(v: string | null): PresetLabel | null {
+  return presets.find((p) => p.label === v)?.label ?? null;
+}
+
+// rangeFromURL: the range a URL opens on, and the preset it was picked by
+// (null = explicit dates). Any from or to in the URL wins over range=: the
+// dates are the absolute statement, older links carry only them, and the
+// app never writes both, so both appear only in a hand-edited link. Else a
+// known range= resolves at `now` in tz; else the 7d default.
+export function rangeFromURL(
+  urlFrom: string | null,
+  urlTo: string | null,
+  urlRange: string | null,
+  tz: string,
+  now: Date = new Date(),
+): { from: string; to: string; preset: PresetLabel | null } {
+  if (urlFrom !== null || urlTo !== null) return { ...initialRange(urlFrom, urlTo, tz, now), preset: null };
+  const preset = parsePreset(urlRange) ?? DEFAULT_PRESET;
+  return { ...presetRange(preset, tz, now), preset };
 }
 
 // activePreset: which preset button (if any) exactly matches the current

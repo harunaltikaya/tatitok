@@ -2,8 +2,8 @@
 // preset detection (the "lit" button) — pure helpers, no .tsx.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { defaultRange, initialRange, activePreset, presetRange, daysAgo, shiftDay, precedingRange, ALL_FROM } from "./range.ts";
-import { filtersFromURL } from "./filters.ts";
+import { defaultRange, initialRange, activePreset, presetRange, daysAgo, shiftDay, precedingRange, parsePreset, rangeFromURL, ALL_FROM } from "./range.ts";
+import { filtersFromURL, filtersToURL, emptyFilters, DEFAULT_SORT } from "./filters.ts";
 
 const now = new Date("2026-09-03T11:30:00Z"); // 14:30 in Europe/Istanbul, 04:30 in America/Los_Angeles
 
@@ -133,4 +133,61 @@ test("precedingRange: ?from=bad and an empty from, parsed like the app", () => {
     assert.doesNotThrow(() => precedingRange(r.from, r.to, "UTC"), search);
     assert.equal(precedingRange(r.from, r.to, "UTC"), null, search);
   }
+});
+
+// Round G: a preset is stored by name. A 7d click writes range=7d and no
+// from/to, and opening that URL resolves the dates at open time, so a tab
+// reopened the next zone day shows the new day.
+test("range param: a preset writes range=<label> and no from/to; a calendar pick writes dates", () => {
+  const f = emptyFilters();
+  const r = presetRange("7d", "Europe/Istanbul", now);
+  assert.equal(filtersToURL(f, r.from, r.to, "Europe/Istanbul", "home", "model", DEFAULT_SORT, "7d"), "?range=7d&tz=Europe%2FIstanbul");
+  const all = presetRange("all", "UTC", now);
+  assert.equal(filtersToURL(f, all.from, all.to, "UTC", "detail", "model", DEFAULT_SORT, "all"), "?range=all&tz=UTC&view=detail");
+  // No preset (the calendar, or a from/to link): dates, as before.
+  assert.equal(filtersToURL(f, "2026-06-11", "2026-06-17", "UTC", "home", "model", DEFAULT_SORT, null), "?from=2026-06-11&to=2026-06-17&tz=UTC");
+  assert.equal(filtersToURL(f, "2026-06-11", "2026-06-17", "UTC", "home", "model", DEFAULT_SORT), "?from=2026-06-11&to=2026-06-17&tz=UTC");
+  // Other params ride along unchanged.
+  const withFilter = { ...f, harness: ["codex"] };
+  assert.equal(filtersToURL(withFilter, r.from, r.to, "UTC", "home", "harness", DEFAULT_SORT, "30d"), "?range=30d&tz=UTC&groupBy=harness&harness=codex");
+});
+
+test("range param: parse resolves at open time; unknown or absent is the 7d default", () => {
+  assert.equal(parsePreset("7d"), "7d");
+  assert.equal(parsePreset("all"), "all");
+  assert.equal(parsePreset("8d"), null);
+  assert.equal(parsePreset(""), null);
+  assert.equal(parsePreset(null), null);
+  const open = (search: string, at: Date) => {
+    const u = filtersFromURL(search);
+    return rangeFromURL(u.from, u.to, u.range, "Europe/Istanbul", at);
+  };
+  // Clicked late on 09-27, reopened just after midnight on 09-28 (+03).
+  const url = filtersToURL(emptyFilters(), "2026-09-21", "2026-09-27", "Europe/Istanbul", "home", "model", DEFAULT_SORT, "7d");
+  assert.deepEqual(open(url, new Date("2026-09-27T20:30:00Z")), { from: "2026-09-21", to: "2026-09-27", preset: "7d" });
+  assert.deepEqual(open(url, new Date("2026-09-27T21:30:00Z")), { from: "2026-09-22", to: "2026-09-28", preset: "7d" });
+  assert.deepEqual(open("?range=30d&tz=Europe%2FIstanbul", now), { ...presetRange("30d", "Europe/Istanbul", now), preset: "30d" });
+  assert.deepEqual(open("?range=all", now), { from: ALL_FROM, to: "2026-09-03", preset: "all" });
+  // Unknown value: ignored, the default applies. No range at all: the default.
+  const def = { ...defaultRange("Europe/Istanbul", now), preset: "7d" };
+  assert.deepEqual(open("?range=8d", now), def);
+  assert.deepEqual(open("?range=", now), def);
+  assert.deepEqual(open("?tz=Europe%2FIstanbul", now), def);
+  assert.deepEqual(open("", now), def);
+});
+
+// Precedence: explicit from/to win over range=. The dates are the absolute
+// statement and every link written before round G carries only them; the
+// app never writes both, so both appear only in a hand-edited link.
+test("range param: from/to win over range= when both are present", () => {
+  const open = (search: string) => {
+    const u = filtersFromURL(search);
+    return rangeFromURL(u.from, u.to, u.range, "UTC", now);
+  };
+  assert.deepEqual(open("?from=2026-06-11&to=2026-06-17&tz=UTC"), { from: "2026-06-11", to: "2026-06-17", preset: null });
+  assert.deepEqual(open("?range=30d&from=2026-06-11&to=2026-06-17"), { from: "2026-06-11", to: "2026-06-17", preset: null });
+  // One date present still wins; the missing one falls back as before.
+  assert.deepEqual(open("?range=30d&from=2026-06-11"), { from: "2026-06-11", to: "2026-09-03", preset: null });
+  // An empty from is still a from (served as no start date, soul §6).
+  assert.deepEqual(open("?range=30d&from=&to=2026-09-24"), { from: "", to: "2026-09-24", preset: null });
 });

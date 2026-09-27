@@ -6,6 +6,8 @@
 // (shareable, bookmarkable, survives refresh) and nowhere else —
 // saved views are out of scope this milestone.
 
+import type { PresetLabel } from "./range.ts";
+
 export type FacetDim = "harness" | "provider" | "model" | "project" | "basis";
 
 export const facetDims: FacetDim[] = ["harness", "provider", "model", "project", "basis"];
@@ -135,17 +137,24 @@ export function filterQuery(f: FilterState): string {
 // all shareable, like every other filter). Layout is deliberately NOT here
 // (M6 Task 4): URLs share what you are looking at, not how your panels are
 // arranged.
-export function filtersFromURL(search: string): { filters: FilterState; from: string | null; to: string | null; tz: string | null; view: View; groupBy: GroupBy; sort: Sort } {
+export function filtersFromURL(search: string): { filters: FilterState; from: string | null; to: string | null; range: string | null; tz: string | null; view: View; groupBy: GroupBy; sort: Sort } {
   const p = new URLSearchParams(search);
   const filters = emptyFilters();
   for (const dim of filterParamNames) filters[dim] = p.getAll(dim);
-  return { filters, from: p.get("from"), to: p.get("to"), tz: p.get("tz"), view: parseView(p.get("view")), groupBy: parseGroupBy(p.get("groupBy")), sort: parseSort(p.get("sort"), p.get("dir")) };
+  return { filters, from: p.get("from"), to: p.get("to"), range: p.get("range"), tz: p.get("tz"), view: parseView(p.get("view")), groupBy: parseGroupBy(p.get("groupBy")), sort: parseSort(p.get("sort"), p.get("dir")) };
 }
 
-export function filtersToURL(f: FilterState, from: string, to: string, tz: string, view: View, groupBy: GroupBy, sort: Sort): string {
+// A range picked by preset is written by name (range=7d) with no from/to, so
+// the link resolves to the current days when opened (range.ts rangeFromURL);
+// a calendar pick (preset null) writes from/to.
+export function filtersToURL(f: FilterState, from: string, to: string, tz: string, view: View, groupBy: GroupBy, sort: Sort, preset: PresetLabel | null = null): string {
   const p = new URLSearchParams();
-  p.set("from", from);
-  p.set("to", to);
+  if (preset) {
+    p.set("range", preset);
+  } else {
+    p.set("from", from);
+    p.set("to", to);
+  }
   p.set("tz", tz);
   // Defaults (home, model, equiv-desc) stay out of the URL, so the common case
   // is the shortest link.

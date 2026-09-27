@@ -57,7 +57,7 @@ import {
 } from "./filters";
 import { dayTotal, topModelsAtDay } from "./tooltip";
 import { touchedInRange } from "./invalidate";
-import { presets, presetRange, initialRange, activePreset, precedingRange } from "./range";
+import { presets, presetRange, rangeFromURL, activePreset, precedingRange, type PresetLabel } from "./range";
 import {
   LAYOUT_KEY,
   defaultLayout,
@@ -292,12 +292,16 @@ export default function App() {
   // tz-offset clarity label next to the selector (M8 1I) — display only.
   const tzOffset = useMemo(() => tzOffsetLabel(tz), [tz]);
   const [filters, setFilters] = useState<FilterState>(initial.filters);
-  // Default range (no from/to in the URL): the last 7 days in the selected
-  // zone — today−6d → today — so the 7d preset reads as active; an explicit
-  // URL range wins (range.ts, tested).
-  const initialRangeValue = useMemo(() => initialRange(initial.from, initial.to, initialTZ), [initial, initialTZ]);
+  // Default range (no range, from or to in the URL): the last 7 days in the
+  // selected zone — today−6d → today — so the 7d preset reads as active; a
+  // range=<preset> resolves the same way; explicit URL dates win (range.ts,
+  // tested).
+  const initialRangeValue = useMemo(() => rangeFromURL(initial.from, initial.to, initial.range, initialTZ), [initial, initialTZ]);
   const [from, setFrom] = useState(initialRangeValue.from);
   const [to, setTo] = useState(initialRangeValue.to);
+  // The preset the range was picked by, written to the URL by name; null =
+  // dates from the calendar or a from/to link, written as dates.
+  const [preset, setPreset] = useState<PresetLabel | null>(initialRangeValue.preset);
   // Page (M8 1A): home | detail. Shareable view state → URL (owner ruling),
   // restored by popstate/refresh like filters/range/tz. Default home.
   const [view, setView] = useState<View>(initial.view);
@@ -352,17 +356,19 @@ export default function App() {
   // URL sync (replaceState — every click is not a history entry) and
   // back/forward restore. tz round-trips alongside filters and range.
   useEffect(() => {
-    const url = filtersToURL(filters, from, to, tz, view, groupBy, sort);
+    const url = filtersToURL(filters, from, to, tz, view, groupBy, sort, preset);
     if (window.location.search !== url) {
       window.history.replaceState(null, "", url);
     }
-  }, [filters, from, to, tz, view, groupBy, sort]);
+  }, [filters, from, to, tz, view, groupBy, sort, preset]);
   useEffect(() => {
     const onPop = () => {
       const s = filtersFromURL(window.location.search);
       setFilters(s.filters);
-      if (s.from) setFrom(s.from);
-      if (s.to) setTo(s.to);
+      const r = rangeFromURL(s.from, s.to, s.range, s.tz ?? browserTZ());
+      setPreset(r.preset);
+      setFrom(r.from);
+      setTo(r.to);
       if (s.tz) setTz(s.tz);
       setView(s.view);
       setGroupBy(s.groupBy);
@@ -753,6 +759,7 @@ export default function App() {
               aria-pressed={activeRangePreset === p.label}
               onClick={() => {
                 const r = presetRange(p.label, tz);
+                setPreset(p.label);
                 setFrom(r.from);
                 setTo(r.to);
               }}
@@ -766,7 +773,11 @@ export default function App() {
             name="range-from"
             aria-label={`range start (${tz} day)`}
             value={from}
-            onChange={(e) => e.target.value && setFrom(e.target.value)}
+            onChange={(e) => {
+              if (!e.target.value) return;
+              setPreset(null);
+              setFrom(e.target.value);
+            }}
             className="h-[30px] rounded-[10px] border-[0.5px] border-hairline bg-card px-2 text-secondary"
           />
           <span className="text-faint">→</span>
@@ -776,7 +787,11 @@ export default function App() {
             name="range-to"
             aria-label={`range end (${tz} day)`}
             value={to}
-            onChange={(e) => e.target.value && setTo(e.target.value)}
+            onChange={(e) => {
+              if (!e.target.value) return;
+              setPreset(null);
+              setTo(e.target.value);
+            }}
             className="h-[30px] rounded-[10px] border-[0.5px] border-hairline bg-card px-2 text-secondary"
           />
           {/* Days bucket in the selected zone (M6 Task 2). UTC stays the
