@@ -126,3 +126,28 @@ func TestServiceInstallUninstall(t *testing.T) {
 		t.Errorf("systemctl ran on a foreign unit: %v", calls)
 	}
 }
+
+// TestServiceUnitDir: systemd --user reads user units from
+// $XDG_CONFIG_HOME/systemd/user when that is set and absolute, else from
+// ~/.config/systemd/user; a relative XDG_CONFIG_HOME is ignored.
+func TestServiceUnitDir(t *testing.T) {
+	t.Setenv("HOME", "/home/user")
+	for _, tc := range []struct{ xdg, want string }{
+		{"/home/user/cfg", "/home/user/cfg/systemd/user"},
+		{"", "/home/user/.config/systemd/user"},
+		{"cfg", "/home/user/.config/systemd/user"},
+	} {
+		got, err := serviceUnitDir(func(k string) string {
+			if k == "XDG_CONFIG_HOME" {
+				return tc.xdg
+			}
+			return ""
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Errorf("XDG_CONFIG_HOME=%q: unit dir %q, want %q", tc.xdg, got, tc.want)
+		}
+	}
+}

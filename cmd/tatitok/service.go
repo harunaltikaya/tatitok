@@ -90,7 +90,14 @@ func serviceIsOurs(path string) bool {
 	return false
 }
 
-func serviceUnitDir() (string, error) {
+// serviceUnitDir is the directory systemd --user reads user units from:
+// $XDG_CONFIG_HOME/systemd/user when XDG_CONFIG_HOME is set and absolute (a
+// relative value is ignored, per the XDG spec), else ~/.config/systemd/user.
+// Install and uninstall both use it.
+func serviceUnitDir(getenv func(string) string) (string, error) {
+	if v := getenv("XDG_CONFIG_HOME"); v != "" && filepath.IsAbs(v) {
+		return filepath.Join(v, "systemd", "user"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

@@ -37,7 +37,7 @@ func cmdServe(args []string) error {
 		if fs.NFlag() != 1 || fs.NArg() != 0 {
 			return errors.New("serve --install and --uninstall take no other flags or arguments")
 		}
-		unitDir, err := serviceUnitDir()
+		unitDir, err := serviceUnitDir(os.Getenv)
 		if err != nil {
 			return err
 		}

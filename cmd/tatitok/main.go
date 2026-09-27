@@ -92,10 +92,10 @@ access) until SIGINT/SIGTERM, shutting down cleanly. It watches the detected
 sources for new usage, serves the JSON API and the live SSE stream, and hosts
 the embedded dashboard. Recompute stays CLI-only and owner-run;
 the hub never rewrites history on its own.
-serve --install writes ~/.config/systemd/user/` + serviceName + `.service (this
-binary's absolute path + " serve", restart on failure, log to serve.log beside
-the database), then enables and starts it; --uninstall stops, disables and
-removes it. Neither takes other flags.`
+serve --install writes ` + serviceName + `.service to $XDG_CONFIG_HOME/systemd/user,
+else ~/.config/systemd/user (this binary's absolute path + " serve", restart on
+failure, log to serve.log beside the database), then enables and starts it;
+--uninstall stops, disables and removes it. Neither takes other flags.`
 
 func main() { os.Exit(run(os.Args[1:])) }
 

@@ -33,7 +33,7 @@ Then open **http://127.0.0.1:8284** in your browser.
 
 On first run, `serve` scans the agent logs already on your machine and ingests your history automatically — there's no separate import step. Leave it running: it watches for new activity and updates the dashboard live. Stop it with Ctrl-C.
 
-On Linux, `./dist/tatitok serve --install` runs the hub as a systemd user service instead. It writes `~/.config/systemd/user/tatitok-serve.service` (that binary's `serve`, restarted after a crash, output appended to `~/.local/share/tatitok/serve.log`), then enables and starts it; stop a `serve` you started by hand first. It starts when you log in, or at boot after `loginctl enable-linger`. After `make build`, restart it with `systemctl --user restart tatitok-serve`. `serve --uninstall` stops, disables and removes it.
+On Linux, `./dist/tatitok serve --install` runs the hub as a systemd user service instead. It writes `~/.config/systemd/user/tatitok-serve.service` (that binary's `serve`, restarted after a crash, output appended to `~/.local/share/tatitok/serve.log`, or beside the database under `$XDG_DATA_HOME` if you set it), then enables and starts it; stop a `serve` you started by hand first. It starts when you log in, or at boot after `loginctl enable-linger`. After `make build`, restart it with `systemctl --user restart tatitok-serve`. `serve --uninstall` stops, disables and removes it.
 
 ## Onboarding — set up your plans
 
