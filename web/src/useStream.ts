@@ -32,6 +32,9 @@ export function streamWhileVisible(
 ): () => void {
   let es: EventSource | null = null;
   let wasConnected = false;
+  // Set while hidden (including a hidden mount): events may have been
+  // missed with no stream open, whether or not a hello ever arrived.
+  let wasHidden = false;
 
   const start = () => {
     if (es) return;
@@ -39,15 +42,17 @@ export function streamWhileVisible(
     es = src;
 
     src.addEventListener("hello", () => {
-      const reconnected = wasConnected;
+      const missed = wasConnected || wasHidden;
       wasConnected = true;
+      wasHidden = false;
       update((s) => ({
         ...s,
         connected: true,
-        // A hello after a previous connection means we may have missed
-        // events — refetch. touchedDays is cleared on every (re)open so
-        // the refetch covers the whole range.
-        bump: reconnected ? s.bump + 1 : s.bump,
+        // A hello after a previous connection, or after a hidden interval
+        // (even before the first hello), means we may have missed events —
+        // refetch. touchedDays is cleared on every (re)open so the refetch
+        // covers the whole range.
+        bump: missed ? s.bump + 1 : s.bump,
         touchedDays: [],
       }));
     });
@@ -79,7 +84,14 @@ export function streamWhileVisible(
     update((s) => ({ ...s, connected: false }));
   };
 
-  const onVisibility = () => (doc.visibilityState === "visible" ? start() : stop());
+  const onVisibility = () => {
+    if (doc.visibilityState === "visible") {
+      start();
+    } else {
+      wasHidden = true;
+      stop();
+    }
+  };
   doc.addEventListener("visibilitychange", onVisibility);
   onVisibility();
 
