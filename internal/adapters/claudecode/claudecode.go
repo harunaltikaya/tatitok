@@ -31,7 +31,13 @@ import (
 // event IDs unchanged.
 // v4: Project is the session's launch cwd — the file's first cwd, on
 // every record of the file; event IDs unchanged.
-const AdapterVersion = 4
+// v5: a message's consecutive block lines emit ONE event, the last line
+// (final usage, its timestamp); event IDs unchanged. Stored rows for a
+// finished file are what v4 left after its replacements, so a backfill
+// over v4 data is a no-op except where the last line's ts crosses a
+// local midnight relative to an earlier line (parity-full re-verified
+// 2026-10-15: the two such day pairs now match ccusage).
+const AdapterVersion = 5
 
 const harnessName = "claude-code"
 
@@ -173,10 +179,13 @@ func ingestFile(ctx context.Context, src adapters.Source, f string, sink adapter
 
 // BackfillFile is the watcher's incremental path (M4 Task 1): one
 // session file, whole-file re-read, replacement semantics verbatim.
-// Cross-file dedup order note: Backfill sorts files by earliest
-// timestamp (ccusage's order); incremental ingest is arrival-ordered
-// instead — last occurrence wins either way, and a later full backfill
-// reconciles the exotic cross-file-duplicate case.
+// Within a file a message's consecutive block lines collapse to ONE
+// event, the last line (see backfillFile), so an unchanged file
+// re-ingests to byte-identical rows. Cross-file dedup order note:
+// Backfill sorts files by earliest timestamp (ccusage's order);
+// incremental ingest is arrival-ordered instead — last occurrence wins
+// either way, and a later full backfill reconciles the exotic
+// cross-file-duplicate case.
 func (Adapter) BackfillFile(ctx context.Context, src adapters.Source, path string, sink adapters.Sink) error {
 	return ingestFile(ctx, src, path, sink)
 }
@@ -303,6 +312,40 @@ func backfillFile(ctx context.Context, src adapters.Source, path string, sink ad
 		batch = nil // the sink may retain the slice; never reuse it
 		return err
 	}
+	// In-file collapse of a message's block lines, LAST line wins. Claude
+	// Code writes one assistant message as several CONSECUTIVE lines —
+	// one per content block (thinking, text, tool_use) — sharing
+	// message.id and requestId, each with its own timestamp and content;
+	// the early lines carry a provisional usage (output_tokens of a few
+	// tokens) and the final line the real count, which is what ccusage
+	// reports (parity-full pins it). Emitting every line stored the last
+	// one anyway, but through a replacement per line — and a watch pass
+	// re-reading the unchanged file flip-flopped the row again: one
+	// replacement per block line per pass, every day marked touched, the
+	// dashboard refetching on a 2 s cadence with nothing new (hot loop,
+	// 2026-10-15). Now one event is held back until a line with a
+	// different id (or EOF) arrives, so the file emits each message once,
+	// final usage, and an unchanged file is an exact no-op in the store.
+	// Superseded lines are counted (Duplicates), never events or parse
+	// errors. A non-consecutive repeat (none in 3176 live files, 39.6k
+	// messages, 2026-10-15) would still emit twice and resolve as a
+	// replacement — last wins as before.
+	var held *core.Event
+	emit := func(ev core.Event) error {
+		if held != nil {
+			if held.ID == ev.ID {
+				res.Duplicates++
+				held = &ev
+				return nil
+			}
+			batch = append(batch, *held)
+		}
+		held = &ev
+		if len(batch) >= adapters.BatchSize {
+			return flush()
+		}
+		return nil
+	}
 	r := bufio.NewReaderSize(f, 256*1024)
 	for lineIdx := 0; ; lineIdx++ {
 		if lineIdx%cancelCheckInterval == 0 {
@@ -335,17 +378,17 @@ func backfillFile(ctx context.Context, src adapters.Source, path string, sink ad
 					"adapter", harnessName, "file", path,
 					"line", lineIdx+1, "error", perr)
 			case ok:
-				batch = append(batch, ev)
-				if len(batch) == adapters.BatchSize {
-					if err := flush(); err != nil {
-						return res, nil, err
-					}
+				if err := emit(ev); err != nil {
+					return res, nil, err
 				}
 			}
 		}
 		if lineErr != nil {
 			break
 		}
+	}
+	if held != nil {
+		batch = append(batch, *held)
 	}
 	if err := flush(); err != nil {
 		return res, nil, err

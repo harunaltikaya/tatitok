@@ -74,6 +74,11 @@ type FileResult struct {
 	// (the sum of its EmitBatch lengths).
 	Events      int
 	ParseErrors int
+	// Duplicates counts billable lines superseded by a later consecutive
+	// line of the SAME file with the same event id (a message's block
+	// lines; the last one is the event). Bookkeeping only: never a parse
+	// error, never an event.
+	Duplicates int
 	// ReadError, when non-empty, marks a SKIPPED source: the file or
 	// directory at Path could not be (fully) read. Any events already
 	// emitted for the file are discarded by the ingest layer so the next

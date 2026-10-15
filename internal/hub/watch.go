@@ -493,7 +493,7 @@ func (w *watcher) runPass(ctx context.Context, batch map[*watchTarget]map[string
 		slog.Info("watch ingest pass",
 			"harness", t.src.Harness, "files", sum.Files,
 			"lines", sum.Lines, "events", sum.Emitted,
-			"new", sum.Inserted, "replaced", sum.Replaced,
+			"new", sum.Inserted, "replaced", sum.Replaced, "dups", sum.Duplicates,
 			"empty_model", sum.EmptyModel, "parse_errors", sum.ParseErrors,
 			"skipped", sum.Skipped,
 			"duration_ms", time.Since(start).Milliseconds())

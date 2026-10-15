@@ -23,11 +23,16 @@ import (
 const fixtureBase = "../../../testdata/fixtures/claude-code/gx10"
 
 // Measured from the committed gx10 fixture set: 1323 assistant records
-// with usage, minus 2 <synthetic> ones; 721 duplicate (message id,
-// request id) occurrences collapse to 600 unique events.
+// with usage, minus 2 <synthetic> ones = 1321 billable lines; 721 of
+// them are a message's earlier block lines, superseded by the next
+// consecutive line with the same (message id, request id) in the same
+// file — so 600 events are emitted (one per message, its last line),
+// 600 stored.
 const (
-	wantEmitted = 1321
-	wantUnique  = 600
+	wantBillable   = 1321
+	wantDuplicates = 721
+	wantEmitted    = wantBillable - wantDuplicates
+	wantUnique     = 600
 )
 
 func fixtureSource(t *testing.T) adapters.Source {
@@ -221,8 +226,9 @@ func TestBackfillFixtures(t *testing.T) {
 	}
 
 	// Per-file health: every fixture file reports clean, with provenance.
-	totalEvents := 0
+	totalEvents, totalDups := 0, 0
 	for _, res := range sink.results {
+		totalDups += res.Duplicates
 		if res.Path == "" || res.LineCount == 0 {
 			t.Fatalf("missing file provenance: %+v", res)
 		}
@@ -236,6 +242,69 @@ func TestBackfillFixtures(t *testing.T) {
 	}
 	if totalEvents != wantEmitted {
 		t.Errorf("FileResult.Events sums to %d, want %d", totalEvents, wantEmitted)
+	}
+	if totalDups != wantDuplicates {
+		t.Errorf("FileResult.Duplicates sums to %d, want %d", totalDups, wantDuplicates)
+	}
+}
+
+// A message's consecutive block lines collapse to ONE emitted event
+// carrying the LAST line's timestamp and usage (the final count; the
+// early lines are provisional — parity-full vs ccusage pins last-wins),
+// so re-reading an unchanged file yields the same rows (the watcher's
+// whole-file re-ingest must not flip-flop between block lines).
+func TestInFileDuplicatesCollapseToLastLine(t *testing.T) {
+	sink := backfillAll(t)
+	filesWithDups := 0
+	for path, evs := range sink.byFile {
+		lastTS := map[string]string{} // event id → ts of its last line
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range bytes.Split(b, []byte("\n")) {
+			var rec struct {
+				Type      string `json:"type"`
+				Timestamp string `json:"timestamp"`
+				RequestID string `json:"requestId"`
+				Message   *struct {
+					ID    string          `json:"id"`
+					Model string          `json:"model"`
+					Usage json.RawMessage `json:"usage"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(line, &rec) != nil || rec.Type != "assistant" || rec.Message == nil ||
+				rec.Message.Usage == nil || rec.Message.Model == "<synthetic>" ||
+				rec.Message.ID == "" || rec.RequestID == "" {
+				continue
+			}
+			id := core.EventID(harnessName, rec.Message.ID, rec.RequestID)
+			if _, seen := lastTS[id]; seen {
+				filesWithDups++
+			}
+			lastTS[id] = rec.Timestamp
+		}
+		seen := map[string]bool{}
+		for _, e := range evs {
+			if seen[e.ID] {
+				t.Fatalf("%s: id %s emitted twice from one file", path, e.ID)
+			}
+			seen[e.ID] = true
+			want, ok := lastTS[e.ID]
+			if !ok {
+				continue // fallback-id event (no native ids); per-occurrence by design
+			}
+			wt, err := time.Parse(time.RFC3339Nano, want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !e.TS.Equal(wt) {
+				t.Fatalf("%s: event %s ts %s, want the last line's %s", path, e.ID, e.TS.UTC(), wt.UTC())
+			}
+		}
+	}
+	if filesWithDups == 0 {
+		t.Fatal("fixture set has no in-file duplicate lines; the test proves nothing")
 	}
 }
 

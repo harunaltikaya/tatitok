@@ -23,6 +23,11 @@ type IngestSummary struct {
 	// OpenCode rewrites a message row while the turn is in flight). The
 	// correction mirrors source truth; it is reported, never silent (AS-4).
 	Replaced int
+	// Duplicates counts billable lines an adapter collapsed into a later
+	// line of the same file with the same event id (claude-code's
+	// one-line-per-content-block messages; the last line is the event).
+	// Bookkeeping: not events, not parse errors, no store effect.
+	Duplicates int
 	// EmptyModel counts committed events that carry no model — legal
 	// (codex token_count records before the first turn_context) but a
 	// health signal worth surfacing; also queryable via doctor.
@@ -206,6 +211,7 @@ func (k *storeSink) FileDone(res FileResult) error {
 	k.sum.Files++
 	k.sum.Lines += res.LineCount
 	k.sum.ParseErrors += res.ParseErrors
+	k.sum.Duplicates += res.Duplicates
 	return nil
 }
 

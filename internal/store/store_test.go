@@ -120,6 +120,45 @@ func TestReplacementCrossingDayReportsBothDays(t *testing.T) {
 	}
 }
 
+// A replacement whose rollup footprint is unchanged — same UTC day, same
+// bucket key, same token and cost measures; only ts-within-day/raw/meta
+// moved — is counted and reported (AS-4) but touches NO day: the rollups
+// are byte-identical, so a live dashboard has nothing to refetch. A
+// replacement that changes a measure touches its day as before.
+func TestReplacementSameFootprintTouchesNoDay(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	sums := TokenSums{Input: 10, Output: 1}
+	if _, err := s.InsertBatch(ctx, []core.Event{event("m1", "r1", "model-a", "s1", ts, sums)}, testSource(1)); err != nil {
+		t.Fatal(err)
+	}
+	// Same id, ts a second later within the day, a meta key added: a
+	// payload change (replacement) with the same rollup footprint.
+	shifted := event("m1", "r1", "model-a", "s1", ts.Add(time.Second), sums)
+	shifted.Meta = map[string]any{"cwd": "/p"}
+	st, err := s.InsertBatch(ctx, []core.Event{shifted}, testSource(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Replaced != 1 || st.Inserted != 0 {
+		t.Fatalf("want 1 replaced, got %+v", st)
+	}
+	if len(st.TouchedDays) != 0 {
+		t.Fatalf("same-footprint replacement touched %v, want none", st.TouchedDays)
+	}
+	// A measure change touches the day.
+	grown := event("m1", "r1", "model-a", "s1", ts.Add(time.Second), TokenSums{Input: 10, Output: 2})
+	grown.Meta = map[string]any{"cwd": "/p"}
+	st, err = s.InsertBatch(ctx, []core.Event{grown}, testSource(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Replaced != 1 || len(st.TouchedDays) != 1 || st.TouchedDays[0] != "2026-06-10" {
+		t.Fatalf("measure change: got %+v, want 1 replaced touching [2026-06-10]", st)
+	}
+}
+
 // Mutable-store semantics: re-ingesting an event whose deterministic ID
 // already exists but whose payload changed (OpenCode finalizing an
 // in-flight message row) replaces the stored row to mirror the source;
