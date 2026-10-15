@@ -58,7 +58,7 @@ function mount(visibility: string) {
   return { doc, sources, stop, state: () => s };
 }
 
-test("hidden closes the stream; visible reopens it and its hello refetches with touchedDays empty", () => {
+test("hidden closes the stream; visible reopens it and its hello refetches with touchedDays null", () => {
   const { doc, sources, stop, state } = mount("visible");
   let s: StreamState;
 
@@ -80,15 +80,15 @@ test("hidden closes the stream; visible reopens it and its hello refetches with 
   assert.equal(sources.length, 1);
   assert.equal(s.connected, false);
 
-  // Visible again: a new stream; its hello bumps and clears touchedDays,
-  // so the range refetches whatever the last pass touched.
+  // Visible again: a new stream; its hello bumps with touchedDays null
+  // (resync), so the whole range refetches whatever was missed.
   doc.setVisibility("visible");
   assert.equal(sources.length, 2);
   sources[1].emit("hello");
   s = state();
   assert.equal(s.connected, true);
   assert.equal(s.bump, 2);
-  assert.deepEqual(s.touchedDays, []);
+  assert.equal(s.touchedDays, null);
 
   // Unmount: the stream closes and visibility no longer opens one.
   stop();
@@ -109,7 +109,7 @@ test("hidden mount, then visible: the first hello bumps", () => {
   sources[0].emit("hello");
   assert.equal(state().connected, true);
   assert.equal(state().bump, 1);
-  assert.deepEqual(state().touchedDays, []);
+  assert.equal(state().touchedDays, null);
 });
 
 test("visible mount hidden before its first hello, then visible: the hello bumps", () => {
@@ -121,7 +121,7 @@ test("visible mount hidden before its first hello, then visible: the hello bumps
   assert.equal(sources.length, 2);
   sources[1].emit("hello");
   assert.equal(state().bump, 1);
-  assert.deepEqual(state().touchedDays, []);
+  assert.equal(state().touchedDays, null);
 });
 
 test("plain visible mount: the first hello does not bump", () => {
@@ -129,4 +129,18 @@ test("plain visible mount: the first hello does not bump", () => {
   sources[0].emit("hello");
   assert.equal(state().connected, true);
   assert.equal(state().bump, 0);
+});
+
+// A pass that changed no rollup (touched_days []) still bumps — ingest
+// health refreshes — but reports an EMPTY touched list, distinct from
+// the null resync; the range refetch keys on that difference.
+test("a pass with no touched days bumps with an empty list, not null", () => {
+  const { sources, state } = mount("visible");
+  sources[0].emit("hello");
+  sources[0].emit("ingest_pass", JSON.stringify({ touched_days: [] }));
+  assert.equal(state().bump, 1);
+  assert.deepEqual(state().touchedDays, []);
+  sources[0].emit("stale");
+  assert.equal(state().bump, 2);
+  assert.equal(state().touchedDays, null);
 });

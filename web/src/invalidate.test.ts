@@ -24,6 +24,10 @@ test("touchedInRange: no overlap → no refetch", () => {
   assert.equal(touchedInRange(["2026-06-01"], "Asia/Tokyo", "2026-06-13", "2026-06-13"), false);
 });
 
-test("touchedInRange: empty touched (reconnect / lost events) → refetch", () => {
-  assert.equal(touchedInRange([], "UTC", "2026-06-01", "2026-06-30"), true);
+test("touchedInRange: null touched (resync: reconnect / lost events) → refetch", () => {
+  assert.equal(touchedInRange(null, "UTC", "2026-06-01", "2026-06-30"), true);
+});
+
+test("touchedInRange: empty touched (pass changed no rollup) → no refetch", () => {
+  assert.equal(touchedInRange([], "UTC", "2026-06-01", "2026-06-30"), false);
 });

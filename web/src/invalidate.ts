@@ -22,16 +22,18 @@ export function localDaysForUTCDay(utcDay: string, tz: string): string[] {
 }
 
 // touchedInRange reports whether any UTC touched-day overlaps the visible
-// [from, to] local-day range once mapped into tz. Empty touched (the
-// stream lost events / reconnected) returns true — refetch to be safe,
-// matching the prior behavior.
+// [from, to] local-day range once mapped into tz. null touched (resync:
+// the stream lost events / reconnected) returns true — refetch to be
+// safe. An EMPTY list means the pass changed no rollup the dashboard
+// reads (e.g. a replacement that moved only ts-within-day/raw) → false,
+// nothing to refetch.
 export function touchedInRange(
-  touchedUTCDays: string[],
+  touchedUTCDays: string[] | null,
   tz: string,
   from: string,
   to: string,
 ): boolean {
-  if (touchedUTCDays.length === 0) return true;
+  if (touchedUTCDays === null) return true;
   for (const d of touchedUTCDays) {
     for (const local of localDaysForUTCDay(d, tz)) {
       if (local >= from && local <= to) return true;

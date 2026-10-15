@@ -17,8 +17,11 @@ export interface StreamState {
   // bump increments whenever data may have changed server-side
   // (ingest_pass, stale, reconnect) — effects keyed on it refetch.
   bump: number;
-  // touchedDays from the most recent pass, for range-aware refetch.
-  touchedDays: string[];
+  // touchedDays from the most recent pass, for range-aware refetch: the
+  // UTC days whose rollups changed. [] = the pass changed nothing the
+  // dashboard shows (no refetch); null = resync (reconnect / lost events)
+  // — everything may have changed, refetch the whole range.
+  touchedDays: string[] | null;
 }
 
 // streamWhileVisible opens a stream from `open` while doc is visible and
@@ -50,10 +53,10 @@ export function streamWhileVisible(
         connected: true,
         // A hello after a previous connection, or after a hidden interval
         // (even before the first hello), means we may have missed events —
-        // refetch. touchedDays is cleared on every (re)open so the refetch
-        // covers the whole range.
+        // refetch. touchedDays is null (resync) on every (re)open so the
+        // refetch covers the whole range.
         bump: missed ? s.bump + 1 : s.bump,
-        touchedDays: [],
+        touchedDays: null,
       }));
     });
 
@@ -69,7 +72,7 @@ export function streamWhileVisible(
 
     src.addEventListener("stale", () => {
       // The hub dropped events for us (we were slow): refetch everything.
-      update((s) => ({ ...s, bump: s.bump + 1, touchedDays: [] }));
+      update((s) => ({ ...s, bump: s.bump + 1, touchedDays: null }));
     });
 
     src.onerror = () => {

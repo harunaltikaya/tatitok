@@ -57,6 +57,7 @@ import {
 } from "./filters";
 import { dayTotal, topModelsAtDay } from "./tooltip";
 import { touchedInRange } from "./invalidate";
+import { makeCoalescer } from "./coalesce";
 import { presets, presetRange, rangeFromURL, zonedRangeFromURL, rangeInZone, activePreset, precedingRange, type PresetLabel } from "./range";
 import {
   LAYOUT_KEY,
@@ -92,6 +93,12 @@ import { shouldOfferOnboarding } from "./onboarding";
 // Suppresses the first-run auto-open after the user skips (browser-only, like
 // the layout/theme). The header "plans" button always re-opens regardless.
 const ONBOARD_DISMISS_KEY = "tatitok.onboard.dismissed";
+
+// LIVE_REFETCH_MIN_MS: the shortest interval between two live refetches
+// of the heavy endpoints while ingest passes stream in (see the live
+// updates effect). The dashboard stays live — a burst of passes shows up
+// within this window — without a refetch per pass.
+const LIVE_REFETCH_MIN_MS = 10_000;
 
 // Range presets + default live in range.ts (pure, tested).
 
@@ -346,12 +353,22 @@ export default function App() {
   const [theme, setTheme] = useState(loadTheme);
   const stream = useStream();
   const lastRangeFetch = useRef(0);
+  // Live refetch coalescer (hot loop 2026-10-15): the heavy refetches —
+  // the range's eight requests, the plan meters, the facet counts — run
+  // at most once per LIVE_REFETCH_MIN_MS while passes stream in, and the
+  // trailing run reads the CURRENT range/filters/zone through liveArgs
+  // (the effect closure that scheduled it may be stale by then).
+  const liveRefetch = useRef(makeCoalescer(LIVE_REFETCH_MIN_MS));
+  const liveWantRange = useRef(false);
+
   // Request-generation guard (M6 Codex F5): each loadRange bumps this; a
   // response whose generation is no longer current is discarded, so a
   // slow earlier fetch can't overwrite newer filter/timezone/range state.
   const rangeGen = useRef(0);
 
   const fq = useMemo(() => filterQuery(filters), [filters]);
+  const liveArgs = useRef({ from, to, fq, tz });
+  liveArgs.current = { from, to, fq, tz };
 
   // URL sync (replaceState — every click is not a history entry) and
   // back/forward restore. tz round-trips alongside filters and range.
@@ -448,22 +465,37 @@ export default function App() {
     fetchHealth().then(setHealth).catch(() => {});
   }, [from, to, fq, tz]);
 
-  // Live updates: every pass refreshes the plan window meters, the ingest
-  // health and the facet counts; the range refetches only when a touched day
-  // falls inside it (or when the stream says we lost events / reconnected:
-  // touchedDays empty).
+  // Live updates. Every pass refreshes the ingest health (one cheap
+  // request). A pass that touched no rollup day (touchedDays []) does
+  // nothing else: the numbers did not move. A pass that did (or a resync,
+  // touchedDays null) refreshes the plan window meters and the facet
+  // counts, and the range when a touched day falls inside it — all through
+  // the coalescer, so a stream of passes costs one refetch per window
+  // instead of one per pass (each was ~6 s of SQL; passes come every ~2 s
+  // while sessions are active). Range-membership is OR-ed across the
+  // folded passes so an in-range pass is never lost to a later out-of-
+  // range one.
   useEffect(() => {
-    fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
     fetchSources().then((s) => setSources(s.sources ?? [])).catch(() => {});
     if (stream.bump === 0 || stream.bump === lastRangeFetch.current) return;
-    fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
+    if (stream.touchedDays !== null && stream.touchedDays.length === 0) return;
     // SSE touched-days are UTC; the visible range is local — map before
     // comparing so a boundary event invalidates the right local day (F1).
     if (touchedInRange(stream.touchedDays, tz, from, to)) {
       lastRangeFetch.current = stream.bump;
-      loadRange(from, to, fq, tz);
+      liveWantRange.current = true;
     }
+    liveRefetch.current.request(() => {
+      fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
+      fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
+      if (liveWantRange.current) {
+        liveWantRange.current = false;
+        const a = liveArgs.current;
+        loadRange(a.from, a.to, a.fq, a.tz);
+      }
+    });
   }, [stream.bump]);
+  useEffect(() => () => liveRefetch.current.cancel(), []);
 
   // Reported usage limits (M9): display-only and INDEPENDENT — its own fetch
   // with its own error handling, deliberately NOT joined into loadRange's
