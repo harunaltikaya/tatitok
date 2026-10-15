@@ -88,7 +88,7 @@ func TestFilterSemantics(t *testing.T) {
 			}
 		}
 		// DailyBy under the same filter sums to the same totals.
-		byRows, err := s.DailyBy(ctx, time.UTC, "harness", c.f)
+		byRows, err := s.DailyBy(ctx, time.UTC, "harness", "", "", c.f)
 		if err != nil {
 			t.Fatal(err)
 		}

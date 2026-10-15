@@ -302,7 +302,7 @@ func TestAPIStatsDailyBy(t *testing.T) {
 			DailyBy []store.DailyByRow `json:"daily_by"`
 		}
 		getOK(t, h, "/api/v1/stats/daily?by="+by, &got)
-		want, err := h.st.DailyBy(context.Background(), time.UTC, by, store.Filters{})
+		want, err := h.st.DailyBy(context.Background(), time.UTC, by, "", "", store.Filters{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -372,7 +372,7 @@ func TestAPIFilters(t *testing.T) {
 	if got.Source != "events" {
 		t.Fatalf("by+filter source = %q, want events", got.Source)
 	}
-	wantBy, err := h.st.DailyBy(ctx, time.UTC, "model", store.Filters{Provider: []string{"anthropic"}})
+	wantBy, err := h.st.DailyBy(ctx, time.UTC, "model", "", "", store.Filters{Provider: []string{"anthropic"}})
 	if err != nil {
 		t.Fatal(err)
 	}

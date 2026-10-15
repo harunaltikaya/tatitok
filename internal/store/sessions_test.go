@@ -265,7 +265,7 @@ func TestSessionFilter(t *testing.T) {
 		t.Errorf("session row %+v != daily sums %+v / %d", sess, sum, equiv)
 	}
 	// Daily by harness under the session filter holds the one harness.
-	by, err := s.DailyBy(ctx, time.UTC, "harness", f)
+	by, err := s.DailyBy(ctx, time.UTC, "harness", "", "", f)
 	if err != nil {
 		t.Fatal(err)
 	}

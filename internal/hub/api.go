@@ -358,7 +358,7 @@ func (h *Hub) apiStatsDaily(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if by := r.URL.Query().Get("by"); by != "" {
-		rows, err := h.st.DailyBy(ctx, tz, by, f)
+		rows, err := h.st.DailyBy(ctx, tz, by, from, to, f)
 		if err != nil {
 			if strings.Contains(err.Error(), "unknown --by dimension") {
 				writeErr(w, http.StatusBadRequest, "bad_param",

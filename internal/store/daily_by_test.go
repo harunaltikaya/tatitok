@@ -31,7 +31,7 @@ func TestDailyByMachine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows, err := s.DailyBy(ctx, time.UTC, "machine", Filters{})
+	rows, err := s.DailyBy(ctx, time.UTC, "machine", "", "", Filters{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestDailyByMachineFilterInteraction(t *testing.T) {
 	// Filtering by harness (claude-code, the default in eventH) restricts to
 	// the events whose harness matches, while --by machine still groups by
 	// machine within that filter.
-	rows, err := s.DailyBy(ctx, time.UTC, "machine", Filters{Harness: []string{"claude-code"}})
+	rows, err := s.DailyBy(ctx, time.UTC, "machine", "", "", Filters{Harness: []string{"claude-code"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestDailyByUnknownDimensionMentionsMachine(t *testing.T) {
 	if _, err := s.InsertBatch(ctx, []core.Event{e}, testSource(1)); err != nil {
 		t.Fatal(err)
 	}
-	_, err := s.DailyBy(ctx, time.UTC, "nonexistent", Filters{})
+	_, err := s.DailyBy(ctx, time.UTC, "nonexistent", "", "", Filters{})
 	if err == nil {
 		t.Fatal("unknown dimension did not error")
 	}

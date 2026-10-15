@@ -268,6 +268,34 @@ func (f Filters) rollupPredicate() (string, []any) {
 	return f.predicate("harness", "provider", "model", "project", "", "")
 }
 
+// tsBounds is a sargable pre-filter on ts for a local-day range [from,
+// to] (YYYY-MM-DD, either may be empty = open). Every event whose LOCAL
+// day falls in the range — in any zone, offsets within ±14h — has a UTC
+// ts within [from-1d, to+2d), so the bound never excludes a member;
+// tatitok_day still decides membership exactly. ts is stored as
+// RFC3339Nano UTC ("YYYY-MM-DDTHH:MM:SS[.frac]Z"), and comparing it
+// against a bare date is correct text order: "2026-10-08" sorts before
+// "2026-10-08T…" and "2026-10-16T23:59:59.9Z" before "2026-10-17". With
+// the bound, idx_events_ts prunes the scan to the range's days instead
+// of walking every stored event per dashboard refetch (hot loop seen
+// 2026-10-15). An unparseable date yields no bound (the exact predicate
+// alone governs, as before).
+const dayFormat = "2006-01-02"
+
+func tsBounds(from, to string) (string, []any) {
+	var where string
+	var args []any
+	if t, err := time.Parse(dayFormat, from); err == nil {
+		where += " AND ts >= ?"
+		args = append(args, t.AddDate(0, 0, -1).Format(dayFormat))
+	}
+	if t, err := time.Parse(dayFormat, to); err == nil {
+		where += " AND ts < ?"
+		args = append(args, t.AddDate(0, 0, 2).Format(dayFormat))
+	}
+	return where, args
+}
+
 // sumAPIEquiv is the events path's API-equivalent sum. Daily and
 // SessionsInRange both use it, so a session's value is summed exactly
 // like a day's.
@@ -473,11 +501,14 @@ var dailyByDims = map[string]string{
 // DailyBy returns per-day sums broken down by one dimension, oldest day
 // first, keys ordered within the day, restricted by f. Totals across a
 // day's keys equal the Daily row for that day (tested).
-func (s *Store) DailyBy(ctx context.Context, tz *time.Location, dim string, f Filters) ([]DailyByRow, error) {
+func (s *Store) DailyBy(ctx context.Context, tz *time.Location, dim, from, to string, f Filters) ([]DailyByRow, error) {
 	expr, ok := dailyByDims[dim]
 	if !ok {
 		return nil, fmt.Errorf("unknown --by dimension %q (supported: harness, provider, model, project, machine)", dim)
 	}
+	// from/to only PRUNE (tsBounds): the caller still range-filters the
+	// returned local days exactly, as it always did.
+	bounds, bargs := tsBounds(from, to)
 	pred, fargs := f.eventsPredicate()
 	rows, err := s.db.QueryContext(ctx, `SELECT tatitok_day(ts, ?) AS day,
 			`+expr+` AS key,
@@ -490,9 +521,9 @@ func (s *Store) DailyBy(ctx context.Context, tz *time.Location, dim string, f Fi
 			SUM(cost_usd_micro IS NOT NULL
 				AND NOT (cost_basis = 'plan_included' AND cost_api_equiv_micro IS NULL))
 		FROM usage_events
-		WHERE 1=1`+pred+`
+		WHERE 1=1`+bounds+pred+`
 		GROUP BY day, key
-		ORDER BY day, key`, append([]any{tz.String()}, fargs...)...)
+		ORDER BY day, key`, append(append([]any{tz.String()}, bargs...), fargs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -537,7 +568,8 @@ type ActivityBucket struct {
 func (s *Store) Activity(ctx context.Context, tz *time.Location, from, to string, f Filters) ([]ActivityBucket, error) {
 	tzName := tz.String()
 	args := []any{tzName, tzName} // tatitok_weekday, tatitok_hour
-	where := ""
+	where, args2 := tsBounds(from, to)
+	args = append(args, args2...)
 	if from != "" {
 		where += " AND tatitok_day(ts, ?) >= ?"
 		args = append(args, tzName, from)
@@ -599,8 +631,7 @@ type SessionSummary struct {
 // tatitok_day, like Activity; the value sums with sumAPIEquiv, like Daily.
 func (s *Store) SessionsInRange(ctx context.Context, tz *time.Location, from, to string, f Filters, limit int) ([]SessionSummary, int, error) {
 	tzName := tz.String()
-	var args []any
-	where := ""
+	where, args := tsBounds(from, to)
 	if from != "" {
 		where += " AND tatitok_day(ts, ?) >= ?"
 		args = append(args, tzName, from)

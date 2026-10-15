@@ -351,7 +351,7 @@ func cmdStats(args []string) error {
 	ctx := context.Background()
 	switch {
 	case *daily && *by != "":
-		rows, err := st.DailyBy(ctx, tz, *by, filters)
+		rows, err := st.DailyBy(ctx, tz, *by, "", "", filters)
 		if err != nil {
 			return err
 		}
