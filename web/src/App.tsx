@@ -511,11 +511,15 @@ export default function App() {
   // across the folded passes so an in-range pass is never lost to a later
   // out-of-range one. A resync after a hidden spell (the hello) also
   // catches up the plan meters and facet counts; no pass ever refetches
-  // them. Nothing runs while the tab is hidden: hiding cancels the
-  // pending trailing run (see the visibility listener below) and the
-  // queued work checks visibility before it starts; the hello on return
-  // resyncs the range (touchedDays null).
+  // them. Nothing runs while the tab is hidden: a bump processed after
+  // the hide (an SSE update whose effect was still pending, review 1017b)
+  // returns first, so it schedules nothing, loads nothing and leaves
+  // hiddenSpell set; hiding cancels the pending trailing run (see the
+  // visibility listener below) and the queued work checks visibility
+  // before it starts; the hello on return resyncs the range, plans and
+  // facets (touchedDays null).
   useEffect(() => {
+    if (document.visibilityState !== "visible") return;
     fetchSources().then((s) => setSources(s.sources ?? [])).catch(() => {});
     if (stream.bump === 0 || stream.bump === lastRangeFetch.current) return;
     if (stream.touchedDays !== null && stream.touchedDays.length === 0) return;
