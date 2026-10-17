@@ -24,10 +24,10 @@ const fixtureBase = "../../../testdata/fixtures/claude-code/gx10"
 
 // Measured from the committed gx10 fixture set: 1323 assistant records
 // with usage, minus 2 <synthetic> ones = 1321 billable lines; 721 of
-// them are a message's earlier block lines, superseded by the next
+// them are a message's other block lines, collapsed into the
 // consecutive line with the same (message id, request id) in the same
-// file — so 600 events are emitted (one per message, its last line),
-// 600 stored.
+// file that carries the greatest usage — so 600 events are emitted (one
+// per message), 600 stored.
 const (
 	wantBillable   = 1321
 	wantDuplicates = 721
@@ -249,40 +249,48 @@ func TestBackfillFixtures(t *testing.T) {
 }
 
 // A message's consecutive block lines collapse to ONE emitted event
-// carrying the LAST line's timestamp and usage (the final count; the
-// early lines are provisional — parity-full vs ccusage pins last-wins),
-// so re-reading an unchanged file yields the same rows (the watcher's
-// whole-file re-ingest must not flip-flop between block lines).
-func TestInFileDuplicatesCollapseToLastLine(t *testing.T) {
+// carrying the timestamp and usage of the line with the greatest
+// four-field total, the first of equals (ccusage 20.0.24's rule;
+// parity-full pins it), so re-reading an unchanged file yields the same
+// rows (the watcher's whole-file re-ingest must not flip-flop between
+// block lines).
+func TestInFileDuplicatesCollapseToGreatestUsage(t *testing.T) {
 	sink := backfillAll(t)
-	filesWithDups := 0
+	type kept struct {
+		ts    string
+		total int64
+	}
+	filesWithDups, firstOfEquals := 0, 0
 	for path, evs := range sink.byFile {
-		lastTS := map[string]string{} // event id → ts of its last line
+		want := map[string]kept{} // event id → its kept line so far
 		b, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, line := range bytes.Split(b, []byte("\n")) {
-			var rec struct {
-				Type      string `json:"type"`
-				Timestamp string `json:"timestamp"`
-				RequestID string `json:"requestId"`
-				Message   *struct {
-					ID    string          `json:"id"`
-					Model string          `json:"model"`
-					Usage json.RawMessage `json:"usage"`
-				} `json:"message"`
-			}
+			var rec record
 			if json.Unmarshal(line, &rec) != nil || rec.Type != "assistant" || rec.Message == nil ||
 				rec.Message.Usage == nil || rec.Message.Model == "<synthetic>" ||
 				rec.Message.ID == "" || rec.RequestID == "" {
 				continue
 			}
-			id := core.EventID(harnessName, rec.Message.ID, rec.RequestID)
-			if _, seen := lastTS[id]; seen {
-				filesWithDups++
+			u := rec.Message.Usage
+			if u.InputTokens == nil || u.OutputTokens == nil {
+				continue
 			}
-			lastTS[id] = rec.Timestamp
+			total := *u.InputTokens + *u.OutputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+			id := core.EventID(harnessName, rec.Message.ID, rec.RequestID)
+			prev, seen := want[id]
+			if seen {
+				filesWithDups++
+				if total <= prev.total {
+					if total == prev.total && rec.Timestamp != prev.ts {
+						firstOfEquals++
+					}
+					continue
+				}
+			}
+			want[id] = kept{ts: rec.Timestamp, total: total}
 		}
 		seen := map[string]bool{}
 		for _, e := range evs {
@@ -290,21 +298,112 @@ func TestInFileDuplicatesCollapseToLastLine(t *testing.T) {
 				t.Fatalf("%s: id %s emitted twice from one file", path, e.ID)
 			}
 			seen[e.ID] = true
-			want, ok := lastTS[e.ID]
+			w, ok := want[e.ID]
 			if !ok {
 				continue // fallback-id event (no native ids); per-occurrence by design
 			}
-			wt, err := time.Parse(time.RFC3339Nano, want)
+			wt, err := time.Parse(time.RFC3339Nano, w.ts)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !e.TS.Equal(wt) {
-				t.Fatalf("%s: event %s ts %s, want the last line's %s", path, e.ID, e.TS.UTC(), wt.UTC())
+			if !e.TS.Equal(wt) || usageTotal(&e) != w.total {
+				t.Fatalf("%s: event %s ts %s total %d, want the kept line's %s total %d",
+					path, e.ID, e.TS.UTC(), usageTotal(&e), wt.UTC(), w.total)
 			}
 		}
 	}
 	if filesWithDups == 0 {
 		t.Fatal("fixture set has no in-file duplicate lines; the test proves nothing")
+	}
+	if firstOfEquals == 0 {
+		t.Fatal("fixture set has no equal-usage block lines with distinct timestamps; the tie rule is unexercised")
+	}
+}
+
+// The tie and the maximum, on real fixture lines with only timestamp and
+// usage rewritten (hard rule 1: no fabricated log lines). Two block
+// lines with equal usage either side of 21:00Z (Istanbul midnight, the
+// 2026-09-29 shape): the FIRST line's ts is the event's. Two with
+// different usage: the larger wins whether it comes first or last.
+func TestBlockLinesKeepGreatestUsageFirstOnTie(t *testing.T) {
+	fixtures, err := filepath.Glob(filepath.Join(fixtureBase, "projects", "*", "*.jsonl"))
+	if err != nil || len(fixtures) == 0 {
+		t.Fatalf("no fixture session files: %v", err)
+	}
+	var tmpl []byte
+	for _, f := range fixtures {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range bytes.Split(b, []byte("\n")) {
+			var rec record
+			if json.Unmarshal(l, &rec) == nil && rec.Type == "assistant" && rec.RequestID != "" &&
+				rec.Message != nil && rec.Message.ID != "" && rec.Message.Model != "<synthetic>" &&
+				rec.Message.Usage != nil && rec.Message.Usage.InputTokens != nil &&
+				rec.Message.Usage.OutputTokens != nil {
+				tmpl = l
+				break
+			}
+		}
+		if tmpl != nil {
+			break
+		}
+	}
+	if tmpl == nil {
+		t.Fatal("need one fixture assistant record with native ids and usage")
+	}
+	block := func(ts string, output int64) []byte {
+		var obj map[string]any
+		if err := json.Unmarshal(tmpl, &obj); err != nil {
+			t.Fatal(err)
+		}
+		obj["timestamp"] = ts
+		obj["message"].(map[string]any)["usage"].(map[string]any)["output_tokens"] = output
+		out, err := json.Marshal(obj)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	root := filepath.Join(t.TempDir(), "projects")
+	src := adapters.Source{Harness: harnessName, Root: root, Machine: "gx10"}
+	run := func(name string, lines ...[]byte) core.Event {
+		t.Helper()
+		path := filepath.Join(root, "-folder", name+".jsonl")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(bytes.Join(lines, []byte("\n")), '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		sink := newCollectSink(t)
+		if err := (Adapter{}).BackfillFile(context.Background(), src, path, sink); err != nil {
+			t.Fatal(err)
+		}
+		if len(sink.events) != 1 || sink.results[0].Duplicates != len(lines)-1 {
+			t.Fatalf("%s: %d events, %d duplicates; want 1 and %d",
+				name, len(sink.events), sink.results[0].Duplicates, len(lines)-1)
+		}
+		return sink.events[0]
+	}
+	const before, after = "2026-09-29T20:59:56.454Z", "2026-09-29T21:00:00.997Z"
+	at := func(s string) time.Time {
+		ts, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ts
+	}
+
+	if e := run("tie", block(before, 500), block(after, 500)); !e.TS.Equal(at(before)) || e.TokensOutput != 500 {
+		t.Errorf("equal usage: ts %s output %d, want the first line's %s, 500", e.TS, e.TokensOutput, before)
+	}
+	if e := run("rising", block(before, 3), block(after, 500)); !e.TS.Equal(at(after)) || e.TokensOutput != 500 {
+		t.Errorf("larger last: ts %s output %d, want %s, 500", e.TS, e.TokensOutput, after)
+	}
+	if e := run("falling", block(before, 500), block(after, 3)); !e.TS.Equal(at(before)) || e.TokensOutput != 500 {
+		t.Errorf("larger first: ts %s output %d, want %s, 500", e.TS, e.TokensOutput, before)
 	}
 }
 
