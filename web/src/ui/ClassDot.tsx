@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 // ClassDot — the small filled circle that encodes the economic class of
 // usage (subscription / metered / local / free), liveness, or status. The
@@ -33,7 +33,10 @@ const TONE: Record<DotTone, string> = {
 // component runs it with the Web Animations API, not a CSS animation: a CSS
 // animation fires animationiteration, and React's root listener for it
 // woke the main thread every cycle. index.css's prefers-reduced-motion rule
-// reaches CSS animations only, not this one.
+// reaches CSS animations only, not this one, so the component checks the
+// preference itself: under reduce the pulse never starts and the disc is
+// not rendered (no tt-dot-pulse class), leaving the plain dot. Read once
+// per mount; a later change of the setting is not followed.
 if (typeof document !== "undefined" && !document.getElementById("tt-dot-css")) {
   const el = document.createElement("style");
   el.id = "tt-dot-css";
@@ -45,6 +48,11 @@ if (typeof document !== "undefined" && !document.getElementById("tt-dot-css")) {
 
 // var(--ease-out) (tokens/spacing.css); WAAPI easing takes no var().
 const EASE_OUT = "cubic-bezier(0.2, 0.7, 0.3, 1)";
+
+const reducedMotion = () =>
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 export default function ClassDot({
   tone = "neutral",
@@ -62,9 +70,11 @@ export default function ClassDot({
   style?: CSSProperties;
 }) {
   const ref = useRef<HTMLSpanElement>(null);
+  const [still] = useState(reducedMotion);
+  const pulsing = pulse && !still;
   useEffect(() => {
     const el = ref.current;
-    if (!pulse || !el) return;
+    if (!pulsing || !el) return;
     // The disc's peak scale: the dot plus 5 px on each side. The easing
     // sits on each keyframe, as animation-timing-function did.
     const peak = (size + 10) / size;
@@ -77,12 +87,12 @@ export default function ClassDot({
       { duration: 1800, iterations: Infinity, pseudoElement: "::after" },
     );
     return () => anim.cancel();
-  }, [pulse, size]);
+  }, [pulsing, size]);
   return (
     <span
       ref={ref}
       title={title}
-      className={pulse ? `tt-dot-pulse ${className}` : className}
+      className={pulsing ? `tt-dot-pulse ${className}` : className}
       style={{
         display: "inline-block",
         width: size,
