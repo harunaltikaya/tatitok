@@ -120,11 +120,11 @@ func TestReplacementCrossingDayReportsBothDays(t *testing.T) {
 	}
 }
 
-// A replacement whose rollup footprint is unchanged — same UTC day, same
-// bucket key, same token and cost measures; only ts-within-day/raw/meta
-// moved — is counted and reported (AS-4) but touches NO day: the rollups
-// are byte-identical, so a live dashboard has nothing to refetch. A
-// replacement that changes a measure touches its day as before.
+// A replacement whose footprint is unchanged — same ts, session, bucket
+// key, token and cost measures; only raw/meta moved — is counted and
+// reported (AS-4) but touches NO day: no dashboard number moved, so a
+// live dashboard has nothing to refetch. A replacement that changes a
+// measure touches its day as before.
 func TestReplacementSameFootprintTouchesNoDay(t *testing.T) {
 	s := openTemp(t)
 	ctx := context.Background()
@@ -133,9 +133,9 @@ func TestReplacementSameFootprintTouchesNoDay(t *testing.T) {
 	if _, err := s.InsertBatch(ctx, []core.Event{event("m1", "r1", "model-a", "s1", ts, sums)}, testSource(1)); err != nil {
 		t.Fatal(err)
 	}
-	// Same id, ts a second later within the day, a meta key added: a
-	// payload change (replacement) with the same rollup footprint.
-	shifted := event("m1", "r1", "model-a", "s1", ts.Add(time.Second), sums)
+	// Same id, a meta key added: a payload change (replacement) with the
+	// same footprint.
+	shifted := event("m1", "r1", "model-a", "s1", ts, sums)
 	shifted.Meta = map[string]any{"cwd": "/p"}
 	st, err := s.InsertBatch(ctx, []core.Event{shifted}, testSource(1))
 	if err != nil {
@@ -148,7 +148,7 @@ func TestReplacementSameFootprintTouchesNoDay(t *testing.T) {
 		t.Fatalf("same-footprint replacement touched %v, want none", st.TouchedDays)
 	}
 	// A measure change touches the day.
-	grown := event("m1", "r1", "model-a", "s1", ts.Add(time.Second), TokenSums{Input: 10, Output: 2})
+	grown := event("m1", "r1", "model-a", "s1", ts, TokenSums{Input: 10, Output: 2})
 	grown.Meta = map[string]any{"cwd": "/p"}
 	st, err = s.InsertBatch(ctx, []core.Event{grown}, testSource(1))
 	if err != nil {
@@ -156,6 +156,67 @@ func TestReplacementSameFootprintTouchesNoDay(t *testing.T) {
 	}
 	if st.Replaced != 1 || len(st.TouchedDays) != 1 || st.TouchedDays[0] != "2026-06-10" {
 		t.Fatalf("measure change: got %+v, want 1 replaced touching [2026-06-10]", st)
+	}
+}
+
+// Review 1017a P1: a replacement with the same usage whose ts or session
+// moved, inside one UTC day, still moves dashboard numbers — the local
+// day (Istanbul midnight is 21:00Z), the activity hour, the session
+// grouping — so it touches its UTC day.
+func TestReplacementMovingTSOrSessionTouchesDay(t *testing.T) {
+	sums := TokenSums{Input: 1748, Output: 1098, CacheWrite: 4696, CacheRead: 164212}
+	at := func(s string) time.Time {
+		ts, err := time.Parse(time.RFC3339Nano, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ts
+	}
+	replace := func(first, second core.Event) InsertStats {
+		t.Helper()
+		s := openTemp(t)
+		ctx := context.Background()
+		if _, err := s.InsertBatch(ctx, []core.Event{first}, testSource(1)); err != nil {
+			t.Fatal(err)
+		}
+		st, err := s.InsertBatch(ctx, []core.Event{second}, testSource(1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Replaced != 1 {
+			t.Fatalf("want 1 replaced, got %+v", st)
+		}
+		return st
+	}
+	touches := func(st InsertStats, day string) bool {
+		for _, d := range st.TouchedDays {
+			if d == day {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Across Istanbul midnight, same UTC day (09-29 → 09-30 local).
+	st := replace(
+		event("m1", "r1", "model-a", "s1", at("2026-09-29T20:59:56.454Z"), sums),
+		event("m1", "r1", "model-a", "s1", at("2026-09-29T21:00:00.997Z"), sums))
+	if !touches(st, "2026-09-29") {
+		t.Errorf("ts across local midnight: touched %v, want 2026-09-29", st.TouchedDays)
+	}
+	// Another hour, same UTC and local day: the activity cell moves.
+	st = replace(
+		event("m1", "r1", "model-a", "s1", at("2026-09-29T10:30:00Z"), sums),
+		event("m1", "r1", "model-a", "s1", at("2026-09-29T11:30:00Z"), sums))
+	if !touches(st, "2026-09-29") {
+		t.Errorf("ts to another hour: touched %v, want 2026-09-29", st.TouchedDays)
+	}
+	// Same ts, another session: the session grouping moves.
+	st = replace(
+		event("m1", "r1", "model-a", "s1", at("2026-09-29T10:30:00Z"), sums),
+		event("m1", "r1", "model-a", "s2", at("2026-09-29T10:30:00Z"), sums))
+	if !touches(st, "2026-09-29") {
+		t.Errorf("session change: touched %v, want 2026-09-29", st.TouchedDays)
 	}
 }
 

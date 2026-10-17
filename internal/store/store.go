@@ -858,18 +858,19 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Pro
 			f.touched[e.TS.UTC().Format("2006-01-02")] = struct{}{}
 			continue
 		}
-		// Conflict: the row already exists. Capture its stored rollup
-		// footprint BEFORE the update: the UTC day, so a replacement that
-		// moves the event across a day boundary invalidates BOTH days —
-		// the rollup triggers subtract from the old day's bucket and add
-		// to the new, and the live refresh must refetch either visible
-		// day (M6 Codex F1) — and the rollup key + measures, so a
-		// replacement that changes only non-rollup payload (a shifted
-		// ts within the day, raw, meta, request_id) is counted and
-		// logged like any replacement (AS-4) but touches NO day: the
-		// rollups did not change, and the dashboard has nothing to
-		// refetch. A PK point lookup, only on a conflict.
-		old, oldOK := f.rollupFootprint(ctx, e.ID)
+		// Conflict: the row already exists. Capture its stored footprint
+		// BEFORE the update: the full ts, so a replacement that moves the
+		// event across a day boundary invalidates BOTH days — the rollup
+		// triggers subtract from the old day's bucket and add to the new,
+		// and the live refresh must refetch either visible day (M6 Codex
+		// F1) — and so does any ts move within the UTC day, which can
+		// still cross a local midnight or an hour (review 1017a P1); the
+		// session id, which session grouping reads; and the rollup key +
+		// measures. A replacement that changes only payload no dashboard
+		// number reads (raw, meta, request_id) is counted and logged like
+		// any replacement (AS-4) but touches NO day: the dashboard has
+		// nothing to refetch. A PK point lookup, only on a conflict.
+		old, oldOK := f.storedFootprint(ctx, e.ID)
 		res, err = f.upd.ExecContext(ctx, args...)
 		if err != nil {
 			return fmt.Errorf("replace %s: %w", e.ID, err)
@@ -879,7 +880,7 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Pro
 		}
 		if n == 1 {
 			f.stats.Replaced++
-			if !oldOK || old != rollupFootprintOf(e) {
+			if !oldOK || old != footprintOf(e) {
 				f.touched[e.TS.UTC().Format("2006-01-02")] = struct{}{}
 				if oldOK {
 					f.touched[old.day] = struct{}{} // no-op when old == new day
@@ -894,24 +895,28 @@ func (f *FileTx) InsertEvents(ctx context.Context, events []core.Event, prov Pro
 	return nil
 }
 
-// rollupFootprint is the part of a stored event the rollup triggers
-// read: the bucket key (UTC day, machine, harness, provider, model,
-// model_family, project) and the additive measures. Two events with an
-// equal footprint land in the same rollup bucket with the same
-// contribution, so replacing one with the other leaves rollup_daily
-// and rollup_hourly byte-identical. The advisory version columns
+// footprint is the part of a stored event a dashboard number reads: the
+// rollup bucket key (UTC day, machine, harness, provider, model,
+// model_family, project) and the additive measures, plus the full ts
+// (the local day, the hour and the activity cell all follow it) and the
+// session id (session grouping). Two events with an equal
+// footprint land in the same rollup bucket with the same contribution
+// and the same local day, hour and session, so replacing one with the
+// other moves no dashboard number. The advisory version columns
 // (map_version, snapshot) are deliberately left out — they never move
 // a dashboard number.
-type rollupFootprint struct {
-	day, machine, harness, provider, model, family, project string
-	in, out, cw, cr, reasoning                              int64
-	cost, equiv                                             int64
-	costNull, equivNull                                     bool
+type footprint struct {
+	ts, day, session                                   string
+	machine, harness, provider, model, family, project string
+	in, out, cw, cr, reasoning                         int64
+	cost, equiv                                        int64
+	costNull, equivNull                                bool
 }
 
-func rollupFootprintOf(e *core.Event) rollupFootprint {
-	fp := rollupFootprint{
-		day: e.TS.UTC().Format("2006-01-02"), machine: e.Machine,
+func footprintOf(e *core.Event) footprint {
+	fp := footprint{
+		ts: e.TS.UTC().Format(time.RFC3339Nano), day: e.TS.UTC().Format("2006-01-02"),
+		session: e.SessionID, machine: e.Machine,
 		harness: e.Harness, provider: e.Provider, model: e.Model,
 		family: e.ModelFamily, project: e.Project,
 		in: e.TokensInput, out: e.TokensOutput,
@@ -933,27 +938,28 @@ func rollupFootprintOf(e *core.Event) rollupFootprint {
 	return fp
 }
 
-// rollupFootprint reads the stored row's footprint inside the open
+// storedFootprint reads the stored row's footprint inside the open
 // transaction; ok is false when the row cannot be read (the caller then
 // treats the replacement as touching its day, the conservative answer).
-func (f *FileTx) rollupFootprint(ctx context.Context, id string) (rollupFootprint, bool) {
-	var fp rollupFootprint
+func (f *FileTx) storedFootprint(ctx context.Context, id string) (footprint, bool) {
+	var fp footprint
 	var ts string
 	var reasoning, cost, equiv sql.NullInt64
-	err := f.tx.QueryRowContext(ctx, `SELECT ts, machine, COALESCE(harness, ''),
-			provider, model, model_family, COALESCE(project, ''),
+	err := f.tx.QueryRowContext(ctx, `SELECT ts, COALESCE(session_id, ''), machine,
+			COALESCE(harness, ''), provider, model, model_family, COALESCE(project, ''),
 			tokens_input, tokens_output, tokens_cache_write, tokens_cache_read,
 			tokens_reasoning, cost_usd_micro, cost_api_equiv_micro
-		FROM usage_events WHERE id = ?`, id).Scan(&ts, &fp.machine, &fp.harness,
-		&fp.provider, &fp.model, &fp.family, &fp.project,
+		FROM usage_events WHERE id = ?`, id).Scan(&ts, &fp.session, &fp.machine,
+		&fp.harness, &fp.provider, &fp.model, &fp.family, &fp.project,
 		&fp.in, &fp.out, &fp.cw, &fp.cr, &reasoning, &cost, &equiv)
 	if err != nil {
-		return rollupFootprint{}, false
+		return footprint{}, false
 	}
 	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
-		return rollupFootprint{}, false
+		return footprint{}, false
 	}
+	fp.ts = t.UTC().Format(time.RFC3339Nano)
 	fp.day = t.UTC().Format("2006-01-02")
 	fp.reasoning = reasoning.Int64 // NULL reads as 0, as the triggers COALESCE it
 	fp.cost, fp.costNull = cost.Int64, !cost.Valid
