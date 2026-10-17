@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 
 // ClassDot — the small filled circle that encodes the economic class of
 // usage (subscription / metered / local / free), liveness, or status. The
@@ -26,15 +26,25 @@ const TONE: Record<DotTone, string> = {
   danger: "var(--color-danger)",
 };
 
-// The breathing pulse (the live SSE dot). prefers-reduced-motion is honored
-// globally in index.css, which neutralizes this animation's duration.
+// The breathing pulse (the live SSE dot): a live-colored disc on the dot's
+// ::after grows 5 px past the dot and fades out. Transform and opacity
+// only, on its own layer, so Chrome runs it on the compositor; the old
+// box-shadow keyframes restyled the page every frame (profile 10-17). The
+// component runs it with the Web Animations API, not a CSS animation: a CSS
+// animation fires animationiteration, and React's root listener for it
+// woke the main thread every cycle. index.css's prefers-reduced-motion rule
+// reaches CSS animations only, not this one.
 if (typeof document !== "undefined" && !document.getElementById("tt-dot-css")) {
   const el = document.createElement("style");
   el.id = "tt-dot-css";
   el.textContent =
-    "@keyframes tt-dot-pulse{0%{box-shadow:0 0 0 0 var(--color-live)}70%{box-shadow:0 0 0 5px transparent}100%{box-shadow:0 0 0 0 transparent}}";
+    ".tt-dot-pulse{position:relative}" +
+    '.tt-dot-pulse::after{content:"";position:absolute;inset:0;border-radius:inherit;background:var(--color-live);will-change:transform,opacity}';
   document.head.appendChild(el);
 }
+
+// var(--ease-out) (tokens/spacing.css); WAAPI easing takes no var().
+const EASE_OUT = "cubic-bezier(0.2, 0.7, 0.3, 1)";
 
 export default function ClassDot({
   tone = "neutral",
@@ -51,10 +61,28 @@ export default function ClassDot({
   className?: string;
   style?: CSSProperties;
 }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!pulse || !el) return;
+    // The disc's peak scale: the dot plus 5 px on each side. The easing
+    // sits on each keyframe, as animation-timing-function did.
+    const peak = (size + 10) / size;
+    const anim = el.animate(
+      [
+        { offset: 0, transform: "scale(1)", opacity: 1, easing: EASE_OUT },
+        { offset: 0.7, transform: `scale(${peak})`, opacity: 0, easing: EASE_OUT },
+        { offset: 1, transform: "scale(1)", opacity: 0 },
+      ],
+      { duration: 1800, iterations: Infinity, pseudoElement: "::after" },
+    );
+    return () => anim.cancel();
+  }, [pulse, size]);
   return (
     <span
+      ref={ref}
       title={title}
-      className={className}
+      className={pulse ? `tt-dot-pulse ${className}` : className}
       style={{
         display: "inline-block",
         width: size,
@@ -62,7 +90,6 @@ export default function ClassDot({
         borderRadius: "999px",
         background: TONE[tone],
         flex: "0 0 auto",
-        animation: pulse ? "tt-dot-pulse 1.8s var(--ease-out) infinite" : undefined,
         ...style,
       }}
     />
