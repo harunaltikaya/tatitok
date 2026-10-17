@@ -35,6 +35,8 @@ On first run, `serve` scans the agent logs already on your machine and ingests y
 
 On Linux, `./dist/tatitok serve --install` runs the hub as a systemd user service instead. It writes `~/.config/systemd/user/tatitok-serve.service` (that binary's `serve`, restarted after a crash, output appended to `~/.local/share/tatitok/serve.log`, or beside the database under `$XDG_DATA_HOME` if you set it), then enables and starts it; stop a `serve` you started by hand first. It starts when you log in, or at boot after `loginctl enable-linger`. After `make build`, restart it with `systemctl --user restart tatitok-serve`. `serve --uninstall` stops, disables and removes it.
 
+The dashboard streams live updates only to a tab you can see. A hidden tab holds no stream and skips live refetches; only the limit windows keep refreshing, every 60 seconds. In a visible tab, live refetches of the page's figures run at most once every 10 seconds however often new usage arrives, and an update that touched no day refetches only the [ingest health](#ingest-health) panel. The plan cards and the facet rail's counts refresh when the page loads, every 60 seconds while the tab is visible, and once when you come back to the tab after it was hidden.
+
 ## Onboarding — set up your plans
 
 The first time you open the dashboard with usage present, tatitok pops up a panel titled **"set up your plans."** This is how it learns what you actually pay, so it can show plan-covered usage as $0 out of pocket with its API-equivalent value beside it.
@@ -311,6 +313,8 @@ tatitok's token counts are tested against [ccusage](https://github.com/ryoppippi
 
 - The fixture check runs with `make test`. It ingests the sanitized sample logs in `testdata/fixtures/` (Claude Code, Codex and OpenCode) and compares them with expectations captured from ccusage 20.0.9 and committed beside them.
 - `make parity-full` compares your own Claude Code history with ccusage 20.0.24, the version pinned in the Makefile, run through `npx` (which downloads it the first time). It compares finished days only: today, in your local timezone, is left out on both sides, since it can still change while the check runs. It also runs with `-count=1`, so Go's test cache never replays an old pass. ccusage reads your logs in a separate process, and the cache can't see those reads.
+
+Claude Code can write one message's usage on several consecutive transcript lines. tatitok stores one event per message: it keeps the line with the greatest total of input, output, cache-write and cache-read tokens, the first one on a tie, with that line's timestamp (claude-code adapter version 6). On 2026-10-17, `make parity-full` matched ccusage 20.0.24 on all 54 finished days.
 
 ## Honest scope (this is a v1)
 
