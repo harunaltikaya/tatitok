@@ -488,7 +488,10 @@ export default function App() {
   // across the folded passes so an in-range pass is never lost to a later
   // out-of-range one. A resync after a hidden spell (the hello) also
   // catches up the plan meters and facet counts; no pass ever refetches
-  // them.
+  // them. Nothing runs while the tab is hidden: hiding cancels the
+  // pending trailing run (see the visibility listener below) and the
+  // queued work checks visibility before it starts; the hello on return
+  // resyncs the range (touchedDays null).
   useEffect(() => {
     fetchSources().then((s) => setSources(s.sources ?? [])).catch(() => {});
     if (stream.bump === 0 || stream.bump === lastRangeFetch.current) return;
@@ -504,6 +507,7 @@ export default function App() {
       liveWantRange.current = true;
     }
     liveRefetch.current.request(() => {
+      if (document.visibilityState !== "visible") return;
       if (liveWantRange.current) {
         liveWantRange.current = false;
         const a = liveArgs.current;
@@ -537,8 +541,13 @@ export default function App() {
       load();
       if (document.visibilityState === "visible") loadPlansFacets();
     }, 60_000);
+    // Hiding also drops a pending coalesced live refetch (review 1017a):
+    // closing the stream does not cancel its timer.
     const onVisibility = () => {
-      if (document.visibilityState !== "visible") hiddenSpell.current = true;
+      if (document.visibilityState !== "visible") {
+        hiddenSpell.current = true;
+        liveRefetch.current.cancel();
+      }
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
