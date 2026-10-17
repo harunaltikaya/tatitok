@@ -353,13 +353,21 @@ export default function App() {
   const [theme, setTheme] = useState(loadTheme);
   const stream = useStream();
   const lastRangeFetch = useRef(0);
-  // Live refetch coalescer (hot loop 2026-10-15): the heavy refetches —
-  // the range's eight requests, the plan meters, the facet counts — run
-  // at most once per LIVE_REFETCH_MIN_MS while passes stream in, and the
-  // trailing run reads the CURRENT range/filters/zone through liveArgs
-  // (the effect closure that scheduled it may be stale by then).
+  // Live refetch coalescer (hot loop 2026-10-15): the heavy refetch — the
+  // range's eight requests — runs at most once per LIVE_REFETCH_MIN_MS
+  // while passes stream in, and the trailing run reads the CURRENT
+  // range/filters/zone through liveArgs (the effect closure that
+  // scheduled it may be stale by then).
   const liveRefetch = useRef(makeCoalescer(LIVE_REFETCH_MIN_MS));
   const liveWantRange = useRef(false);
+  // The plan meters and facet counts are off the live path (round H 10-17:
+  // ~1.5 s of serve CPU each, and every coalesced live refetch paid both,
+  // in range or not). They load on mount, ride the limits' 60 s tick while
+  // the tab is visible, and catch up once on the first hello after a
+  // hidden spell (the tick skips them while hidden). hiddenSpell is set by
+  // any hidden interval, a hidden mount included, and cleared by that
+  // hello.
+  const hiddenSpell = useRef(document.visibilityState !== "visible");
 
   // Request-generation guard (M6 Codex F5): each loadRange bumps this; a
   // response whose generation is no longer current is discarded, so a
@@ -458,6 +466,11 @@ export default function App() {
       });
   };
 
+  const loadPlansFacets = () => {
+    fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
+    fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
+  };
+
   useEffect(() => {
     loadRange(from, to, fq, tz);
     fetchModels().then((m) => setModels(m.models ?? [])).catch(() => {});
@@ -468,17 +481,22 @@ export default function App() {
   // Live updates. Every pass refreshes the ingest health (one cheap
   // request). A pass that touched no rollup day (touchedDays []) does
   // nothing else: the numbers did not move. A pass that did (or a resync,
-  // touchedDays null) refreshes the plan window meters and the facet
-  // counts, and the range when a touched day falls inside it — all through
-  // the coalescer, so a stream of passes costs one refetch per window
-  // instead of one per pass (each was ~6 s of SQL; passes come every ~2 s
-  // while sessions are active). Range-membership is OR-ed across the
-  // folded passes so an in-range pass is never lost to a later out-of-
-  // range one.
+  // touchedDays null) refreshes the range when a touched day falls inside
+  // it, through the coalescer, so a stream of passes costs one refetch per
+  // window instead of one per pass (each was ~6 s of SQL; passes come
+  // every ~2 s while sessions are active). Range-membership is OR-ed
+  // across the folded passes so an in-range pass is never lost to a later
+  // out-of-range one. A resync after a hidden spell (the hello) also
+  // catches up the plan meters and facet counts; no pass ever refetches
+  // them.
   useEffect(() => {
     fetchSources().then((s) => setSources(s.sources ?? [])).catch(() => {});
     if (stream.bump === 0 || stream.bump === lastRangeFetch.current) return;
     if (stream.touchedDays !== null && stream.touchedDays.length === 0) return;
+    if (stream.touchedDays === null && hiddenSpell.current) {
+      hiddenSpell.current = false;
+      loadPlansFacets();
+    }
     // SSE touched-days are UTC; the visible range is local — map before
     // comparing so a boundary event invalidates the right local day (F1).
     if (touchedInRange(stream.touchedDays, tz, from, to)) {
@@ -486,8 +504,6 @@ export default function App() {
       liveWantRange.current = true;
     }
     liveRefetch.current.request(() => {
-      fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
-      fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
       if (liveWantRange.current) {
         liveWantRange.current = false;
         const a = liveArgs.current;
@@ -502,6 +518,9 @@ export default function App() {
   // Promise.all (a failed secondary fetch must never error the whole dashboard).
   // Refreshes on a ~60s interval to track the companion extension's polls; a
   // failure or empty result just leaves the cards in their waiting state.
+  // The plan meters load here on mount (the facet counts already load with
+  // the range above), and both ride the tick while the tab is visible (see
+  // hiddenSpell).
   useEffect(() => {
     let alive = true;
     const load = () =>
@@ -513,8 +532,17 @@ export default function App() {
           /* hub limits unavailable — cards render the empty-state, page is fine */
         });
     load();
-    const id = setInterval(load, 60_000);
+    fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
+    const id = setInterval(() => {
+      load();
+      if (document.visibilityState === "visible") loadPlansFacets();
+    }, 60_000);
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") hiddenSpell.current = true;
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
       alive = false;
       clearInterval(id);
     };
