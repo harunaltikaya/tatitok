@@ -373,6 +373,13 @@ export default function App() {
   // response whose generation is no longer current is discarded, so a
   // slow earlier fetch can't overwrite newer filter/timezone/range state.
   const rangeGen = useRef(0);
+  // The same guard for the plan meters and the facet counts (review
+  // 1017a): one counter per resource, bumped by every writer (mount, the
+  // 60 s tick, the hidden-spell hello, the range effect for facets, the
+  // onboarding apply for plans), so a slow older response never replaces
+  // a newer one.
+  const plansGen = useRef(0);
+  const facetsGen = useRef(0);
 
   const fq = useMemo(() => filterQuery(filters), [filters]);
   const liveArgs = useRef({ from, to, fq, tz });
@@ -466,15 +473,31 @@ export default function App() {
       });
   };
 
+  const loadPlans = () => {
+    const gen = ++plansGen.current;
+    fetchPlans()
+      .then((p) => {
+        if (gen === plansGen.current) setPlans(p.plans ?? []);
+      })
+      .catch(() => {});
+  };
+  const loadFacets = () => {
+    const gen = ++facetsGen.current;
+    fetchFacets()
+      .then((f) => {
+        if (gen === facetsGen.current) setFacets(f.facets ?? {});
+      })
+      .catch(() => {});
+  };
   const loadPlansFacets = () => {
-    fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
-    fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
+    loadPlans();
+    loadFacets();
   };
 
   useEffect(() => {
     loadRange(from, to, fq, tz);
     fetchModels().then((m) => setModels(m.models ?? [])).catch(() => {});
-    fetchFacets().then((f) => setFacets(f.facets ?? {})).catch(() => {});
+    loadFacets();
     fetchHealth().then(setHealth).catch(() => {});
   }, [from, to, fq, tz]);
 
@@ -536,7 +559,7 @@ export default function App() {
           /* hub limits unavailable — cards render the empty-state, page is fine */
         });
     load();
-    fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
+    loadPlans();
     const id = setInterval(() => {
       load();
       if (document.visibilityState === "visible") loadPlansFacets();
@@ -603,7 +626,7 @@ export default function App() {
         /* private mode — first-run may offer again next load */
       }
     }
-    fetchPlans().then((p) => setPlans(p.plans ?? [])).catch(() => {});
+    loadPlans();
     loadRange(from, to, fq, tz);
     fetchOnboardDetect().then(setOnboardDetect).catch(() => {});
   };
